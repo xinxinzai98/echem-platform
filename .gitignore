@@ -15,6 +15,7 @@ config.local.json
 private_data/
 private_fixtures/
 inventory/
+/work/
 
 # Generated platform state
 state/*

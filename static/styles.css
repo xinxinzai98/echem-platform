@@ -344,6 +344,11 @@ textarea {
   box-shadow: inset 3px 0 var(--teal);
 }
 
+.run-item.source-missing:not(.active) {
+  border-color: #efc4b7;
+  background: #fffaf8;
+}
+
 .run-item-top,
 .run-item-meta {
   display: flex;
@@ -364,6 +369,22 @@ textarea {
   color: var(--teal);
   font-size: 10px;
   font-weight: 800;
+}
+
+.run-item-tags {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.source-state {
+  padding: 3px 6px;
+  border-radius: 6px;
+  color: #9d3b2c;
+  background: var(--red-soft);
+  font-size: 9px;
+  font-weight: 750;
 }
 
 .run-item-meta {
@@ -472,6 +493,16 @@ textarea {
   color: var(--muted);
   background: var(--soft);
   font-size: 10px;
+}
+
+.stat-chip.source-ok {
+  color: var(--teal-dark);
+  background: var(--teal-soft);
+}
+
+.stat-chip.source-warning {
+  color: #9d3b2c;
+  background: var(--red-soft);
 }
 
 .lower-grid {

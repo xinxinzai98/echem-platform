@@ -95,7 +95,10 @@ function renderStatus() {
   elements.parsedCount.textContent = status.parsed;
   elements.integrityCount.textContent = status.total;
   const available = status.watch_roots.filter((root) => root.available).length;
-  elements.sourceSummary.textContent = `${available}/${status.watch_roots.length} 个目录可用`;
+  const unavailableSources = status.unavailable_sources || 0;
+  elements.sourceSummary.textContent = unavailableSources
+    ? `${available}/${status.watch_roots.length} 个目录可用 · ${unavailableSources} 条源文件不可用`
+    : `${available}/${status.watch_roots.length} 个目录可用`;
   elements.watchRoots.innerHTML = status.watch_roots
     .map(
       (root) =>
@@ -115,10 +118,13 @@ function renderRunList() {
       const label = run.sample_id || run.source_name;
       const secondary = run.sample_id ? run.source_name : run.instrument;
       return `
-        <button class="run-item ${run.id === state.selectedId ? "active" : ""}" data-run-id="${run.id}" type="button">
+        <button class="run-item ${run.id === state.selectedId ? "active" : ""} ${run.source_available ? "" : "source-missing"}" data-run-id="${run.id}" type="button">
           <span class="run-item-top">
             <span class="run-item-name" title="${escapeHtml(label)}">${escapeHtml(label)}</span>
-            <span class="run-item-method">${escapeHtml(run.technique)}</span>
+            <span class="run-item-tags">
+              <span class="run-item-method">${escapeHtml(run.technique)}</span>
+              ${run.source_available ? "" : '<span class="source-state">源文件不可用</span>'}
+            </span>
           </span>
           <span class="run-item-meta">
             <span>${escapeHtml(secondary)}</span>
@@ -143,13 +149,20 @@ function fillMetadata(run) {
   elements.saveMetadata.disabled = !run;
 }
 
+function sourceAvailabilityChip(run) {
+  if (!run) return "";
+  const className = run.source_available ? "source-ok" : "source-warning";
+  const label = run.source_available ? "源文件可用" : "源文件已移动或删除";
+  return `<span class="stat-chip ${className}">${label}</span>`;
+}
+
 function drawChart(run) {
   const canvas = elements.curveChart;
   const points = run?.points || [];
   if (!points.length) {
     elements.chartEmpty.style.display = "grid";
     elements.chartStats.innerHTML = run
-      ? `<span class="stat-chip">${escapeHtml(run.parse_error || "该文件当前仅登记元数据")}</span>`
+      ? `<span class="stat-chip">${escapeHtml(run.parse_error || "该文件当前仅登记元数据")}</span>${sourceAvailabilityChip(run)}`
       : "";
     const context = canvas.getContext("2d");
     context.clearRect(0, 0, canvas.width, canvas.height);
@@ -253,8 +266,9 @@ function drawChart(run) {
     run.encoding,
     run.parser_id,
   ]
+    .filter(Boolean)
     .map((value) => `<span class="stat-chip">${escapeHtml(value)}</span>`)
-    .join("");
+    .join("") + sourceAvailabilityChip(run);
 }
 
 function renderDetail(run) {

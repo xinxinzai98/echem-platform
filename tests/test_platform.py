@@ -19,6 +19,9 @@ SPEC.loader.exec_module(APP)
 
 
 class ParserTests(unittest.TestCase):
+    def test_parser_implementation_is_split_from_main_app(self):
+        self.assertEqual(APP.parse_curve.__module__, "echem_platform.parsers.text")
+
     def test_chi_cv_text_is_parsed(self):
         path = ROOT / "demo_data" / "chi_cv_demo.txt"
         curve = APP.parse_curve(path, path.read_bytes(), 2000)
@@ -104,8 +107,31 @@ class ScannerTests(unittest.TestCase):
         self.assertEqual(after_stat.st_size, source_stat.st_size)
         self.assertEqual(after_stat.st_mtime_ns, source_stat.st_mtime_ns)
         run = database.list_runs()[0]
+        self.assertTrue(run["source_available"])
         self.assertEqual(run["sha256"], APP.hashlib.sha256(payload).hexdigest())
         self.assertEqual(run["parser_id"], "chi.delimited_text")
+
+    def test_missing_source_is_reported_without_deleting_cached_record(self):
+        path = self.source / "chi_cv_test.txt"
+        path.write_bytes((ROOT / "demo_data" / "chi_cv_demo.txt").read_bytes())
+        database, scanner = self.make_scanner()
+        scanner.scan()
+        run_id = database.list_runs()[0]["id"]
+        database.update_metadata(run_id, {"sample_id": "NiMo-cache-test"})
+
+        path.unlink()
+
+        listed = database.list_runs()[0]
+        detail = database.get_run(run_id)
+        counts = database.status_counts()
+        self.assertFalse(listed["source_available"])
+        self.assertIsNotNone(detail)
+        self.assertFalse(detail["source_available"])
+        self.assertGreater(detail["point_count"], 0)
+        self.assertEqual(detail["sample_id"], "NiMo-cache-test")
+        self.assertEqual(counts["total"], 1)
+        self.assertEqual(counts["available_sources"], 0)
+        self.assertEqual(counts["unavailable_sources"], 1)
 
     def test_metadata_update_only_changes_platform_database(self):
         path = self.source / "corrtest_demo.cor"

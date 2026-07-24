@@ -22,24 +22,14 @@ from typing import Any, Iterable
 
 from echem_platform.configuration import load_config, resolve_watch_roots
 from echem_platform.parsers import (
+    PARSER_VERSION,
     ParsedCurve,
-    choose_delimiter,
-    decimate_points,
-    decode_bytes,
-    find_axis_indices,
-    infer_instrument,
-    infer_technique,
-    normalized_header,
     parse_curve,
-    parse_float,
-    split_fields,
-    unit_from_header,
 )
 
 
 APP_NAME = "电化学测试平台 V0.2"
-APP_VERSION = "0.2.0-dev.2"
-PARSER_VERSION = "2026.07.24.2"
+APP_VERSION = "0.2.0-dev.3"
 APP_ROOT = Path(__file__).resolve().parent
 STATIC_ROOT = APP_ROOT / "static"
 DEFAULT_CONFIG = APP_ROOT / "config.json"
@@ -60,17 +50,6 @@ def as_local_time(value: str | None) -> str:
         return parsed.astimezone().isoformat(timespec="seconds")
     except ValueError:
         return value
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        while True:
-            chunk = handle.read(1024 * 1024)
-            if not chunk:
-                break
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def source_is_available(source_path: str) -> bool:

@@ -1,6 +1,6 @@
 # 电化学测试平台 V0.2
 
-当前版本：0.2.0-dev.2
+当前版本：0.2.0-dev.3
 
 这是一个默认只读的本地电化学数据工作台。V0.2 正在开发真实数据接入和解析溯源能力。它不会连接串口、启动仪器软件或修改原始测试文件。
 
@@ -79,8 +79,24 @@ Windows 示例：
 ## 私有数据隔离
 
 - `config.local.json`、`private_data/`、`private_fixtures/` 和 `inventory/` 不进入 Git
-- 真实实验数据只保留在 Windows 本机
+- 真实实验数据默认只保留在 Windows 本机；经单独确认的最小样例只能进入 Mac 上被 Git 忽略的私有目录
 - 公开测试样例必须先脱敏并经过人工确认
 - CHI/CorrTest 帮助文件、SDK 和安装文件不进入公开仓库
+
+## 私有真实样例回归
+
+真实样例复制到 Mac 前必须先获得确认。获准后，把样例放入被 Git 忽略的
+`private_fixtures/`，并复制示例清单：
+
+```sh
+mkdir -p private_fixtures/chi private_fixtures/corrtest
+cp docs/private-fixture-manifest.example.json private_fixtures/manifest.local.json
+python3 scripts/validate_private_fixtures.py
+```
+
+清单中的文件路径只能相对于清单目录，不能使用绝对路径或 `..`。`id` 应使用
+匿名编号，不要写样品名。验证器只读文件，检查解析状态、仪器、方法、解析器、
+点数和可选 SHA-256；输出不包含绝对路径、文件名或原始数据，也不会自动生成
+或提交报告。
 
 详细边界见 `SECURITY.md`，本地验收结果见 `VALIDATION.md`。

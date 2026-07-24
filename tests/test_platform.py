@@ -9,6 +9,9 @@ import time
 import unittest
 from pathlib import Path
 
+from echem_platform.fixture_validation import ManifestError, validate_fixture_manifest
+from echem_platform.parsers import decimate_points
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("echem_app", ROOT / "app.py")
@@ -61,7 +64,7 @@ class ParserTests(unittest.TestCase):
 
     def test_decimation_preserves_endpoints(self):
         points = [[float(index), float(index * index)] for index in range(100)]
-        result = APP.decimate_points(points, 12)
+        result = decimate_points(points, 12)
         self.assertEqual(len(result), 12)
         self.assertEqual(result[0], points[0])
         self.assertEqual(result[-1], points[-1])
@@ -174,6 +177,153 @@ class ScannerTests(unittest.TestCase):
         result = scanner.scan()
         self.assertEqual(result["skipped"], 1)
         self.assertEqual(database.status_counts()["total"], 0)
+
+
+class FixtureValidationTests(unittest.TestCase):
+    def test_missing_manifest_error_does_not_disclose_path(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            missing = Path(temporary) / "sensitive-project-name.json"
+            with self.assertRaises(ManifestError) as raised:
+                validate_fixture_manifest(missing)
+            self.assertNotIn(str(missing), str(raised.exception))
+
+    def test_private_manifest_validates_read_only_without_disclosing_paths_or_names(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            chi_dir = root / "chi"
+            corrtest_dir = root / "corrtest"
+            chi_dir.mkdir()
+            corrtest_dir.mkdir()
+            chi_path = chi_dir / "private-cv-export.txt"
+            corrtest_path = corrtest_dir / "private-eis-export.z60"
+            chi_payload = (ROOT / "demo_data" / "chi_cv_demo.txt").read_bytes()
+            corrtest_payload = (ROOT / "demo_data" / "corrtest_eis_demo.z60").read_bytes()
+            chi_path.write_bytes(chi_payload)
+            corrtest_path.write_bytes(corrtest_payload)
+            before = {
+                path: (path.stat().st_size, path.stat().st_mtime_ns, path.read_bytes())
+                for path in (chi_path, corrtest_path)
+            }
+            manifest_path = root / "manifest.local.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "max_points_per_curve": 2000,
+                        "cases": [
+                            {
+                                "id": "chi-cv-01",
+                                "file": "chi/private-cv-export.txt",
+                                "expected": {
+                                    "status": "parsed",
+                                    "instrument": "CHI",
+                                    "technique": "CV",
+                                    "parser_id": "chi.delimited_text",
+                                    "point_count": 29,
+                                    "x_name": "Potential/V",
+                                    "y_name": "Current/A",
+                                },
+                            },
+                            {
+                                "id": "corrtest-eis-01",
+                                "file": "corrtest/private-eis-export.z60",
+                                "expected": {
+                                    "status": "parsed",
+                                    "instrument": "CorrTest",
+                                    "technique": "EIS",
+                                    "parser_id": "corrtest.z60_text",
+                                    "point_count": 15,
+                                    "x_name": "Zreal(ohm)",
+                                    "y_name": "Zimag(ohm)",
+                                },
+                            },
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            report = validate_fixture_manifest(manifest_path)
+
+            self.assertTrue(report["passed"])
+            self.assertTrue(report["read_only"])
+            self.assertEqual(report["summary"], {"total": 2, "passed": 2, "failed": 0})
+            self.assertTrue(all(case["source_unchanged"] for case in report["cases"]))
+            serialized = json.dumps(report, ensure_ascii=False)
+            self.assertNotIn(str(root), serialized)
+            self.assertNotIn("private-cv-export.txt", serialized)
+            self.assertNotIn("private-eis-export.z60", serialized)
+            self.assertNotIn("DEMO-NiMo-01", serialized)
+            for path, snapshot in before.items():
+                self.assertEqual(
+                    (path.stat().st_size, path.stat().st_mtime_ns, path.read_bytes()),
+                    snapshot,
+                )
+
+    def test_private_manifest_rejects_parent_directory_escape(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            private_root = root / "private"
+            private_root.mkdir()
+            manifest_path = private_root / "manifest.local.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "cases": [
+                            {
+                                "id": "unsafe-01",
+                                "file": "../outside.txt",
+                                "expected": {
+                                    "status": "parsed",
+                                    "instrument": "CHI",
+                                    "technique": "CV",
+                                    "parser_id": "chi.delimited_text",
+                                },
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(ManifestError):
+                validate_fixture_manifest(manifest_path)
+
+    def test_private_manifest_reports_assertion_mismatch_without_source_path(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixture_path = root / "cv-export.txt"
+            fixture_path.write_bytes((ROOT / "demo_data" / "chi_cv_demo.txt").read_bytes())
+            manifest_path = root / "manifest.local.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "cases": [
+                            {
+                                "id": "chi-cv-mismatch",
+                                "file": "cv-export.txt",
+                                "expected": {
+                                    "status": "parsed",
+                                    "instrument": "CHI",
+                                    "technique": "CV",
+                                    "parser_id": "chi.delimited_text",
+                                    "point_count": 999,
+                                },
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            report = validate_fixture_manifest(manifest_path)
+
+            self.assertFalse(report["passed"])
+            self.assertEqual(report["summary"]["failed"], 1)
+            self.assertIn("point_count 不符合清单预期。", report["cases"][0]["errors"])
+            self.assertNotIn(str(root), json.dumps(report, ensure_ascii=False))
 
 
 class SafetyTests(unittest.TestCase):

@@ -14,9 +14,12 @@ from .text import (
     unit_from_header,
 )
 
+PARSER_VERSION = "2026.07.24.2"
+
 __all__ = [
     "ParsedCurve",
     "ParserRoute",
+    "PARSER_VERSION",
     "choose_delimiter",
     "decimate_points",
     "decode_bytes",

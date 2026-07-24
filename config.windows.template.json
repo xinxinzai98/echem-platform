@@ -1,0 +1,20 @@
+{
+  "bind": "127.0.0.1",
+  "port": 8787,
+  "scan_interval_seconds": 15,
+  "stable_age_seconds": 2,
+  "max_file_bytes": 52428800,
+  "max_points_per_curve": 2000,
+  "watch_roots": [
+    "D:\\请替换为CorrTest数据目录",
+    "D:\\请替换为CHI文本导出目录"
+  ],
+  "extensions": [
+    ".txt",
+    ".csv",
+    ".cor",
+    ".z60",
+    ".bin",
+    ".dat"
+  ]
+}

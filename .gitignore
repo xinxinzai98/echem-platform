@@ -1,0 +1,26 @@
+.DS_Store
+
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Local runtime and deployment payloads
+runtime/
+packages/
+logs/
+
+# Generated platform state
+state/*
+!state/.gitkeep
+*.sqlite3
+*.sqlite3-*
+server.pid
+
+# Local editor files
+.idea/
+.vscode/
+*.swp
+*~

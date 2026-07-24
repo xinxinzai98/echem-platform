@@ -1,10 +1,10 @@
-# 电化学测试平台 V0
+# 电化学测试平台 V0.2
 
-当前版本：0.1.4
+当前版本：0.2.0-dev.1
 
-这是一个默认只读的本地电化学数据工作台。它不会连接串口、启动仪器软件或修改原始测试文件。
+这是一个默认只读的本地电化学数据工作台。V0.2 正在开发真实数据接入和解析溯源能力。它不会连接串口、启动仪器软件或修改原始测试文件。
 
-## V0 能做什么
+## 当前能做什么
 
 - 监听指定数据目录并建立文件索引
 - 识别常见 CHI 文本导出、CorrTest `.cor` / `.z60` 文本数据
@@ -12,6 +12,7 @@
 - 展示 CV、LSV、EIS、OCP、CA/CP 等二维曲线
 - 保存样品编号、材料、电解液、电极面积、标签和备注
 - 记录导入、更新和人工编辑审计日志
+- 为每条记录保存明确的解析器标识，便于后续按仪器版本复核
 - 默认只监听 `127.0.0.1`，仅供 Windows 本机浏览器访问
 
 ## 安全边界
@@ -55,7 +56,11 @@ python3 -m unittest discover -s tests -v
 
 ## 配置实际数据目录
 
-编辑 `config.json` 中的 `watch_roots`。可以使用绝对路径；相对路径以平台目录为基准。
+不要把实际实验路径直接写入公开仓库中的 `config.json`。复制
+`config.local.example.json` 为 `config.local.json`，然后只修改本地文件中的
+`watch_roots`。程序会先读取 `config.json`，再用 `config.local.json` 覆盖本机配置。
+
+`config.local.json` 已被 Git 忽略。路径可以使用绝对路径；相对路径以平台目录为基准。
 
 Windows 示例：
 
@@ -69,5 +74,12 @@ Windows 示例：
 ```
 
 部署到 Windows 前会生成独立的便携运行环境，避免改动系统 Python、PATH 和注册表。
+
+## 私有数据隔离
+
+- `config.local.json`、`private_data/`、`private_fixtures/` 和 `inventory/` 不进入 Git
+- 真实实验数据只保留在 Windows 本机
+- 公开测试样例必须先脱敏并经过人工确认
+- CHI/CorrTest 帮助文件、SDK 和安装文件不进入公开仓库
 
 详细边界见 `SECURITY.md`，本地验收结果见 `VALIDATION.md`。

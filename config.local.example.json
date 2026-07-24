@@ -1,0 +1,6 @@
+{
+  "watch_roots": [
+    "C:\\Path\\To\\CorrTest\\Data",
+    "D:\\Path\\To\\CHI\\ExportedData"
+  ]
+}

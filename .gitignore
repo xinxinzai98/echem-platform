@@ -11,6 +11,10 @@ venv/
 runtime/
 packages/
 logs/
+config.local.json
+private_data/
+private_fixtures/
+inventory/
 
 # Generated platform state
 state/*

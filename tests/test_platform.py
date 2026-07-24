@@ -25,6 +25,7 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(curve.status, "parsed")
         self.assertEqual(curve.instrument, "CHI")
         self.assertEqual(curve.technique, "CV")
+        self.assertEqual(curve.parser_id, "chi.delimited_text")
         self.assertEqual(curve.x_name, "Potential/V")
         self.assertEqual(curve.y_name, "Current/A")
         self.assertEqual(curve.point_count, 29)
@@ -35,6 +36,7 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(curve.status, "parsed")
         self.assertEqual(curve.instrument, "CorrTest")
         self.assertEqual(curve.technique, "EIS")
+        self.assertEqual(curve.parser_id, "corrtest.z60_text")
         self.assertEqual(curve.x_name, "Zreal(ohm)")
         self.assertEqual(curve.y_name, "Zimag(ohm)")
         self.assertEqual(curve.point_count, 15)
@@ -44,6 +46,7 @@ class ParserTests(unittest.TestCase):
         curve = APP.parse_curve(path, path.read_bytes(), 2000)
         self.assertEqual(curve.status, "metadata_only")
         self.assertEqual(curve.instrument, "CHI")
+        self.assertEqual(curve.parser_id, "chi.binary.metadata")
         self.assertEqual(curve.point_count, 0)
 
     def test_galstatic_defaults_to_potential_over_time(self):
@@ -102,6 +105,7 @@ class ScannerTests(unittest.TestCase):
         self.assertEqual(after_stat.st_mtime_ns, source_stat.st_mtime_ns)
         run = database.list_runs()[0]
         self.assertEqual(run["sha256"], APP.hashlib.sha256(payload).hexdigest())
+        self.assertEqual(run["parser_id"], "chi.delimited_text")
 
     def test_metadata_update_only_changes_platform_database(self):
         path = self.source / "corrtest_demo.cor"
@@ -168,6 +172,65 @@ class SafetyTests(unittest.TestCase):
             base = Path(temporary)
             config = {"watch_roots": ["data"]}
             self.assertEqual(APP.resolve_watch_roots(config, base), [(base / "data").resolve()])
+
+    def test_untracked_local_config_overrides_public_base(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            config_path = base / "config.json"
+            local_path = base / "config.local.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "bind": "127.0.0.1",
+                        "port": 8787,
+                        "watch_roots": ["demo_data"],
+                        "extensions": [".txt"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            local_path.write_text(
+                json.dumps(
+                    {
+                        "port": 8877,
+                        "watch_roots": ["private_data"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            config = APP.load_config(config_path)
+
+            self.assertEqual(config["port"], 8877)
+            self.assertEqual(config["watch_roots"], ["private_data"])
+            self.assertTrue(config["local_override_active"])
+            self.assertEqual(
+                config["config_sources"],
+                [str(config_path.resolve()), str(local_path.resolve())],
+            )
+
+    def test_local_config_cannot_enable_network_bind(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            config_path = base / "config.json"
+            local_path = base / "config.local.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "bind": "127.0.0.1",
+                        "watch_roots": [],
+                        "extensions": [".txt"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            local_path.write_text(
+                json.dumps({"bind": "0.0.0.0"}),
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(ValueError):
+                APP.load_config(config_path)
 
 
 if __name__ == "__main__":

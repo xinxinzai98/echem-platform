@@ -251,6 +251,7 @@ function drawChart(run) {
     `X: ${formatNumber(Math.min(...points.map((p) => p[0])))} → ${formatNumber(Math.max(...points.map((p) => p[0])))}`,
     `Y: ${formatNumber(Math.min(...points.map((p) => p[1])))} → ${formatNumber(Math.max(...points.map((p) => p[1])))}`,
     run.encoding,
+    run.parser_id,
   ]
     .map((value) => `<span class="stat-chip">${escapeHtml(value)}</span>`)
     .join("");

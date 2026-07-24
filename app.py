@@ -21,10 +21,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Iterable
 
+from echem_platform.configuration import load_config, resolve_watch_roots
+from echem_platform.parsers import select_parser
 
-APP_NAME = "电化学测试平台 V0"
-APP_VERSION = "0.1.4"
-PARSER_VERSION = "2026.07.24.1"
+
+APP_NAME = "电化学测试平台 V0.2"
+APP_VERSION = "0.2.0-dev.1"
+PARSER_VERSION = "2026.07.24.2"
 APP_ROOT = Path(__file__).resolve().parent
 STATIC_ROOT = APP_ROOT / "static"
 DEFAULT_CONFIG = APP_ROOT / "config.json"
@@ -45,38 +48,6 @@ def as_local_time(value: str | None) -> str:
         return parsed.astimezone().isoformat(timespec="seconds")
     except ValueError:
         return value
-
-
-def load_config(path: Path) -> dict[str, Any]:
-    with path.open("r", encoding="utf-8") as handle:
-        raw = json.load(handle)
-
-    config = {
-        "bind": str(raw.get("bind", "127.0.0.1")),
-        "port": int(raw.get("port", 8787)),
-        "scan_interval_seconds": max(3, int(raw.get("scan_interval_seconds", 15))),
-        "stable_age_seconds": max(0, int(raw.get("stable_age_seconds", 2))),
-        "max_file_bytes": max(1024, int(raw.get("max_file_bytes", 50 * 1024 * 1024))),
-        "max_points_per_curve": max(100, int(raw.get("max_points_per_curve", 2000))),
-        "watch_roots": list(raw.get("watch_roots", [])),
-        "extensions": [
-            str(item).lower() if str(item).startswith(".") else "." + str(item).lower()
-            for item in raw.get("extensions", [])
-        ],
-    }
-    if config["bind"] not in {"127.0.0.1", "::1", "localhost"}:
-        raise ValueError("V0 safety policy only permits a loopback bind address.")
-    return config
-
-
-def resolve_watch_roots(config: dict[str, Any], base: Path) -> list[Path]:
-    roots: list[Path] = []
-    for raw in config["watch_roots"]:
-        candidate = Path(os.path.expandvars(os.path.expanduser(str(raw))))
-        if not candidate.is_absolute():
-            candidate = base / candidate
-        roots.append(candidate.resolve())
-    return roots
 
 
 def sha256_file(path: Path) -> str:
@@ -196,12 +167,7 @@ def find_axis_indices(headers: list[str], technique: str = "") -> tuple[int, int
 
 
 def infer_instrument(path: Path, text: str) -> str:
-    probe = f"{path.name}\n{text[:3000]}".lower()
-    if path.suffix.lower() in {".cor", ".z60"} or "csstudiofile" in probe or "corrtest" in probe:
-        return "CorrTest"
-    if path.suffix.lower() == ".bin" or "chi instrument" in probe or re.search(r"\bchi\d", probe):
-        return "CHI"
-    return "未知"
+    return select_parser(path, text).instrument
 
 
 def infer_technique(path: Path, headers: list[str], text: str) -> str:
@@ -248,11 +214,13 @@ class ParsedCurve:
     points: list[list[float]]
     instrument: str
     technique: str
+    parser_id: str
     error: str = ""
 
 
 def parse_curve(path: Path, data: bytes, max_points: int) -> ParsedCurve:
-    if path.suffix.lower() == ".bin":
+    route = select_parser(path)
+    if route.mode == "metadata_only":
         return ParsedCurve(
             status="metadata_only",
             encoding="binary",
@@ -264,11 +232,13 @@ def parse_curve(path: Path, data: bytes, max_points: int) -> ParsedCurve:
             y_unit="",
             point_count=0,
             points=[],
-            instrument="CHI",
+            instrument=route.instrument,
             technique=infer_technique(path, [], ""),
+            parser_id=route.parser_id,
         )
 
     text, encoding = decode_bytes(data)
+    route = select_parser(path, text)
     lines = [line.replace("\x00", "").strip() for line in text.splitlines()]
     lines = [line for line in lines if line and not line.startswith(("#", "//"))]
     candidates: list[tuple[int, int, str, list[str]]] = []
@@ -306,7 +276,7 @@ def parse_curve(path: Path, data: bytes, max_points: int) -> ParsedCurve:
 
     selected = max(candidates, default=None, key=lambda item: item[0])
 
-    instrument = infer_instrument(path, text)
+    instrument = route.instrument
     if not selected:
         return ParsedCurve(
             status="unparsed",
@@ -321,6 +291,7 @@ def parse_curve(path: Path, data: bytes, max_points: int) -> ParsedCurve:
             points=[],
             instrument=instrument,
             technique=infer_technique(path, [], text),
+            parser_id=route.parser_id,
             error="未找到至少包含两列数值的表格。",
         )
 
@@ -357,6 +328,7 @@ def parse_curve(path: Path, data: bytes, max_points: int) -> ParsedCurve:
         points=decimate_points(points, max_points),
         instrument=instrument,
         technique=technique,
+        parser_id=route.parser_id,
         error=error,
     )
 
@@ -397,6 +369,7 @@ class Database:
                     parse_status TEXT NOT NULL,
                     parse_error TEXT NOT NULL DEFAULT '',
                     parser_version TEXT NOT NULL DEFAULT '',
+                    parser_id TEXT NOT NULL DEFAULT '',
                     sha256 TEXT NOT NULL,
                     size_bytes INTEGER NOT NULL,
                     modified_utc TEXT NOT NULL,
@@ -436,6 +409,10 @@ class Database:
                 connection.execute(
                     "ALTER TABLE runs ADD COLUMN parser_version TEXT NOT NULL DEFAULT ''"
                 )
+            if "parser_id" not in columns:
+                connection.execute(
+                    "ALTER TABLE runs ADD COLUMN parser_id TEXT NOT NULL DEFAULT ''"
+                )
 
     def audit(self, action: str, target: str, detail: str) -> None:
         with self._lock, self.session() as connection:
@@ -460,6 +437,7 @@ class Database:
             curve.status,
             curve.error,
             PARSER_VERSION,
+            curve.parser_id,
             fingerprint,
             size,
             modified_utc,
@@ -491,7 +469,7 @@ class Database:
                     """
                     UPDATE runs SET
                         source_name=?, instrument=?, technique=?, parse_status=?, parse_error=?,
-                        parser_version=?, sha256=?, size_bytes=?, modified_utc=?, imported_utc=?, encoding=?,
+                        parser_version=?, parser_id=?, sha256=?, size_bytes=?, modified_utc=?, imported_utc=?, encoding=?,
                         delimiter=?, headers_json=?, x_name=?, x_unit=?, y_name=?, y_unit=?,
                         point_count=?, points_json=?
                     WHERE source_path=?
@@ -504,15 +482,20 @@ class Database:
                     """
                     INSERT INTO runs (
                         source_name, instrument, technique, parse_status, parse_error,
-                        parser_version, sha256, size_bytes, modified_utc, imported_utc, encoding,
+                        parser_version, parser_id, sha256, size_bytes, modified_utc, imported_utc, encoding,
                         delimiter, headers_json, x_name, x_unit, y_name, y_unit,
                         point_count, points_json, source_path
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     payload,
                 )
                 action = "imported"
-        self.audit(action, path.name, f"{curve.instrument} / {curve.technique} / {curve.point_count} points")
+        self.audit(
+            action,
+            path.name,
+            f"{curve.instrument} / {curve.technique} / {curve.parser_id} / "
+            f"{curve.point_count} points",
+        )
         return action
 
     def list_runs(self, instrument: str = "", technique: str = "", query: str = "") -> list[dict[str, Any]]:
@@ -534,7 +517,7 @@ class Database:
         with self.session() as connection:
             rows = connection.execute(
                 f"""
-                SELECT id, source_name, instrument, technique, parse_status, sha256,
+                SELECT id, source_name, instrument, technique, parse_status, parser_id, sha256,
                        size_bytes, modified_utc, imported_utc, point_count, sample_id,
                        material, electrolyte, area_cm2, tags, x_name, x_unit, y_name, y_unit
                 FROM runs{where}
@@ -723,6 +706,8 @@ class RuntimeState:
             "loopback_only": True,
             "instrument_control": False,
             "serial_access": False,
+            "local_override_active": self.config["local_override_active"],
+            "config_sources": self.config["config_sources"],
             "uptime_seconds": round(time.monotonic() - self.started),
             "last_scan": self.scanner.last_scan,
             "last_scan_result": self.scanner.last_result,
@@ -733,7 +718,7 @@ class RuntimeState:
 
 def create_handler(runtime: RuntimeState):
     class Handler(BaseHTTPRequestHandler):
-        server_version = "EchemPlatform/0.1"
+        server_version = "EchemPlatform/0.2"
 
         def log_message(self, fmt: str, *args: Any) -> None:
             sys.stdout.write(

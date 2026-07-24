@@ -13,7 +13,10 @@ from echem_platform.control import (
     CHI_MACRO_HEADER,
     MacroValidationError,
     ProtocolValidationError,
+    build_dry_run,
     compile_protocol,
+    default_dry_run_draft,
+    dry_run_capabilities,
     inspect_macro,
     normalize_protocol,
 )
@@ -307,6 +310,68 @@ class OfflineControlSafetyTests(unittest.TestCase):
             with self.subTest(filename=filename):
                 payload = json.loads((ROOT / filename).read_text(encoding="utf-8"))
                 self.assertIs(payload["instrument_control_enabled"], False)
+
+    def test_web_dry_run_capabilities_have_no_launch_surface(self):
+        capabilities = dry_run_capabilities()
+        self.assertEqual(capabilities["stage"], "web_dry_run")
+        self.assertFalse(capabilities["instrument_control_enabled"])
+        self.assertFalse(capabilities["instrument_started"])
+        self.assertFalse(capabilities["launch_available"])
+        self.assertFalse(capabilities["serial_access"])
+        self.assertTrue(capabilities["draft_persistence"])
+
+    def test_web_dry_run_compiles_in_memory_without_writing_or_starting(self):
+        draft = default_dry_run_draft()
+        protocol = valid_protocol()
+        protocol["name"] = "网页预览测试"
+        response = build_dry_run(
+            {
+                "protocol": protocol,
+                "output_folder": RUN_FOLDER,
+                "allowed_run_root": RUN_ROOT,
+            },
+            include_macro_preview=True,
+        )
+        self.assertEqual(response["status"], "valid")
+        self.assertEqual(response["mode"], "compile_preview")
+        self.assertIn("macro_preview", response)
+        self.assertIn("folder: D:/EchemPlatform/Runs/RUN-TEST-001", response["macro_preview"])
+        self.assertNotIn("网页预览测试", response["macro_preview"])
+        self.assertFalse(response["macro_written"])
+        self.assertFalse(response["instrument_started"])
+        self.assertFalse(response["launch_available"])
+        self.assertFalse(response["serial_access"])
+        self.assertFalse(response["network_control"])
+        self.assertEqual(len(response["output_files"]), 4)
+        self.assertFalse(response["expected_seconds_complete"])
+        self.assertEqual(draft["id"], "draft-main")
+
+    def test_web_validation_response_omits_macro_body(self):
+        draft = default_dry_run_draft()
+        response = build_dry_run(
+            {
+                "protocol": draft["protocol"],
+                "output_folder": draft["output_folder"],
+                "allowed_run_root": draft["allowed_run_root"],
+            },
+            include_macro_preview=False,
+        )
+        self.assertEqual(response["mode"], "validation")
+        self.assertNotIn("macro_preview", response)
+        self.assertTrue(response["expected_seconds_complete"])
+
+    def test_web_dry_run_request_rejects_unknown_fields(self):
+        draft = default_dry_run_draft()
+        with self.assertRaises(ValueError):
+            build_dry_run(
+                {
+                    "protocol": draft["protocol"],
+                    "output_folder": draft["output_folder"],
+                    "allowed_run_root": draft["allowed_run_root"],
+                    "start": True,
+                },
+                include_macro_preview=True,
+            )
 
     def test_control_package_contains_no_launch_or_hardware_imports(self):
         control_root = ROOT / "echem_platform" / "control"

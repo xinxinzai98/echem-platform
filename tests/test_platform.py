@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import json
 import os
 import sys
@@ -9,6 +10,7 @@ import time
 import unittest
 from pathlib import Path
 
+from echem_platform.control import default_dry_run_draft
 from echem_platform.fixture_validation import ManifestError, validate_fixture_manifest
 from echem_platform.parsers import decimate_points
 
@@ -177,6 +179,125 @@ class ScannerTests(unittest.TestCase):
         result = scanner.scan()
         self.assertEqual(result["skipped"], 1)
         self.assertEqual(database.status_counts()["total"], 0)
+
+
+class ProtocolDraftDatabaseTests(unittest.TestCase):
+    def test_draft_is_persisted_with_revision_without_requiring_valid_protocol(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            database_path = Path(temporary) / "state.sqlite3"
+            database = APP.Database(database_path)
+            draft = database.save_protocol_draft(
+                "draft-main",
+                {"schema_version": 1, "name": "", "steps": []},
+                "D:/EchemPlatform/Runs/RUN-DRAFT-001",
+                "D:/EchemPlatform/Runs",
+            )
+            self.assertEqual(draft["revision"], 1)
+            self.assertEqual(draft["protocol"]["steps"], [])
+
+            reopened = APP.Database(database_path)
+            updated = reopened.save_protocol_draft(
+                "draft-main",
+                {"schema_version": 1, "name": "恢复测试", "steps": []},
+                "D:/EchemPlatform/Runs/RUN-DRAFT-002",
+                "D:/EchemPlatform/Runs",
+            )
+            self.assertEqual(updated["revision"], 2)
+            self.assertEqual(
+                reopened.get_protocol_draft("draft-main")["protocol"]["name"],
+                "恢复测试",
+            )
+            self.assertEqual(len(reopened.list_protocol_drafts()), 1)
+
+
+class ProtocolApiTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.database_path = self.root / "state.sqlite3"
+        self.database = APP.Database(self.database_path)
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def test_capabilities_are_offline_and_start_route_does_not_exist(self):
+        capabilities = APP.dry_run_capabilities()
+        self.assertEqual(capabilities["stage"], "web_dry_run")
+        self.assertFalse(capabilities["instrument_control_enabled"])
+        self.assertFalse(capabilities["launch_available"])
+        self.assertFalse(capabilities["serial_access"])
+        handler_source = inspect.getsource(APP.create_handler)
+        self.assertIn('path == "/api/control/capabilities"', handler_source)
+        self.assertNotIn("/api/control/runs", handler_source)
+        self.assertNotIn("/start", handler_source)
+
+    def test_draft_save_list_and_restore(self):
+        draft = default_dry_run_draft()
+        saved = self.database.save_protocol_draft(
+            draft["id"],
+            draft["protocol"],
+            draft["output_folder"],
+            draft["allowed_run_root"],
+        )
+        self.assertEqual(saved["revision"], 1)
+        self.assertEqual(saved["protocol"]["name"], draft["protocol"]["name"])
+        listed = self.database.list_protocol_drafts()
+        self.assertEqual(len(listed), 1)
+        self.assertEqual(listed[0]["id"], "draft-main")
+        restored = self.database.get_protocol_draft("draft-main")
+        self.assertEqual(restored["output_folder"], draft["output_folder"])
+
+    def test_validate_and_compile_preview_never_write_or_start(self):
+        draft = default_dry_run_draft()
+        request_payload = {
+            "protocol": draft["protocol"],
+            "output_folder": draft["output_folder"],
+            "allowed_run_root": draft["allowed_run_root"],
+        }
+        validation = APP.build_dry_run(
+            request_payload,
+            include_macro_preview=False,
+        )
+        self.assertEqual(validation["mode"], "validation")
+        self.assertNotIn("macro_preview", validation)
+
+        preview = APP.build_dry_run(
+            request_payload,
+            include_macro_preview=True,
+        )
+        self.assertEqual(preview["mode"], "compile_preview")
+        self.assertTrue(preview["macro_preview"].startswith("folder:"))
+        self.assertFalse(preview["macro_written"])
+        self.assertFalse(preview["instrument_started"])
+        self.assertFalse(preview["launch_available"])
+        self.assertFalse(preview["serial_access"])
+        self.assertFalse(preview["network_control"])
+
+    def test_validation_errors_are_structured(self):
+        draft = default_dry_run_draft()
+        draft["protocol"]["steps"][0]["params"]["unknown_parameter"] = 1
+        with self.assertRaises(APP.ProtocolValidationError) as raised:
+            APP.build_dry_run(
+                {
+                    "protocol": draft["protocol"],
+                    "output_folder": draft["output_folder"],
+                    "allowed_run_root": draft["allowed_run_root"],
+                },
+                include_macro_preview=False,
+            )
+        payload = raised.exception.to_dict()
+        self.assertEqual(payload["error"], "protocol_validation_failed")
+        self.assertTrue(
+            any(issue["code"] == "unknown_field" for issue in payload["issues"])
+        )
+
+    def test_protocol_page_is_served_with_restrictive_headers(self):
+        body = (ROOT / "static" / "protocol.html").read_text(encoding="utf-8")
+        handler_source = inspect.getsource(APP.create_handler)
+        self.assertIn("协议 Dry-run", body)
+        self.assertIn('path in {"/protocol", "/protocol.html"}', handler_source)
+        self.assertIn("Content-Security-Policy", handler_source)
+        self.assertIn("X-Content-Type-Options", handler_source)
 
 
 class FixtureValidationTests(unittest.TestCase):

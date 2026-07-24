@@ -10,6 +10,12 @@ from .macro_compiler import (
     inspect_macro,
     normalize_run_folder,
 )
+from .dry_run import (
+    DRY_RUN_STAGE,
+    build_dry_run,
+    default_dry_run_draft,
+    dry_run_capabilities,
+)
 from .models import (
     CONTROL_COMPILER_VERSION,
     PROTOCOL_SCHEMA_VERSION,
@@ -26,6 +32,7 @@ from .validation import normalize_protocol
 __all__ = [
     "CHI_MACRO_HEADER",
     "CONTROL_COMPILER_VERSION",
+    "DRY_RUN_STAGE",
     "PROTOCOL_SCHEMA_VERSION",
     "CompiledMacro",
     "MacroInspection",
@@ -34,7 +41,10 @@ __all__ = [
     "NormalizedStep",
     "ProtocolValidationError",
     "ValidationIssue",
+    "build_dry_run",
     "compile_protocol",
+    "default_dry_run_draft",
+    "dry_run_capabilities",
     "inspect_macro",
     "normalize_protocol",
     "normalize_run_folder",

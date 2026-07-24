@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>协议 Dry-run · 电化学测试平台</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%2317212b'/%3E%3Cpath d='M10 38c8-24 16 20 24-8s14 16 20-10' fill='none' stroke='%237ee2d7' stroke-width='5' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/protocol.css">
+</head>
+<body class="protocol-page">
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 48 48" role="img">
+          <path d="M8 28c5-15 10 14 16-4s11 10 16-6"/>
+          <circle cx="8" cy="28" r="3"/>
+          <circle cx="40" cy="18" r="3"/>
+        </svg>
+      </div>
+      <div>
+        <h1>协议 Dry-run</h1>
+        <p>V0.3 阶段 B · 离线校验与宏预览</p>
+      </div>
+    </div>
+    <div class="top-actions">
+      <a class="top-link" href="/">数据工作台</a>
+      <div class="safety-pill"><span></span>无仪器启动入口</div>
+    </div>
+  </header>
+
+  <main class="protocol-main">
+    <section class="protocol-intro">
+      <div>
+        <span class="eyebrow">Offline protocol studio</span>
+        <h2>先把连续工步变成可审查的运行快照</h2>
+        <p>在浏览器中编辑、保存、校验并预览 CHI 宏。所有计算都在本机完成，不连接 Windows，不启动软件，不访问串口。</p>
+      </div>
+      <div class="dry-run-seal">
+        <span class="seal-dot"></span>
+        <div>
+          <strong>Dry-run only</strong>
+          <small>instrument_control_enabled = false</small>
+        </div>
+      </div>
+    </section>
+
+    <section class="protocol-metrics" aria-label="协议状态">
+      <article class="metric-card">
+        <span>工步总数</span>
+        <strong id="stepCount">0</strong>
+        <small>最多 100 个工步</small>
+      </article>
+      <article class="metric-card">
+        <span>已启用</span>
+        <strong id="activeStepCount">0</strong>
+        <small>仅启用工步写入预览宏</small>
+      </article>
+      <article class="metric-card">
+        <span>预计时间</span>
+        <strong id="expectedTime">待校验</strong>
+        <small id="expectedTimeNote">EIS 不生成虚假精确时间</small>
+      </article>
+      <article class="metric-card status-metric" id="validationMetric">
+        <span>校验状态</span>
+        <strong id="validationState">未校验</strong>
+        <small id="validationStateNote">参数变化后需重新校验</small>
+      </article>
+    </section>
+
+    <section class="protocol-layout">
+      <div class="editor-column">
+        <article class="panel protocol-panel">
+          <div class="panel-heading">
+            <div>
+              <span class="eyebrow">Protocol metadata</span>
+              <h2>协议与输出目录</h2>
+            </div>
+            <span class="draft-state" id="draftState">正在读取草稿…</span>
+          </div>
+          <div class="protocol-form-grid">
+            <label class="span-two">协议名称
+              <input id="protocolName" maxlength="160" placeholder="例如：演示协议">
+            </label>
+            <label>样品编号
+              <input id="protocolSampleId" maxlength="120" placeholder="匿名编号">
+            </label>
+            <label>操作者
+              <input id="protocolOperator" maxlength="120" placeholder="可选">
+            </label>
+            <label>材料
+              <input id="protocolMaterial" maxlength="200" placeholder="可选">
+            </label>
+            <label>电解液
+              <input id="protocolElectrolyte" maxlength="200" placeholder="可选">
+            </label>
+            <label>参比电极
+              <input id="protocolReference" maxlength="120" placeholder="运行前必须复核">
+            </label>
+            <label>电极面积 / cm²
+              <input id="protocolArea" type="number" min="0" step="any" placeholder="可选">
+            </label>
+            <label class="span-two">允许的 Windows 运行根目录
+              <input id="allowedRunRoot" spellcheck="false" placeholder="D:/EchemPlatform/Runs">
+            </label>
+            <label class="span-two">本次新输出目录
+              <input id="outputFolder" spellcheck="false" placeholder="D:/EchemPlatform/Runs/RUN-DRY-001">
+            </label>
+            <label class="span-two">备注
+              <textarea id="protocolNotes" rows="3" maxlength="4000" placeholder="备注保存在草稿中，不会写入宏"></textarea>
+            </label>
+          </div>
+        </article>
+
+        <article class="panel steps-panel">
+          <div class="panel-heading steps-heading">
+            <div>
+              <span class="eyebrow">Continuous steps</span>
+              <h2>连续工步</h2>
+            </div>
+            <div class="add-step-menu" aria-label="添加工步">
+              <button type="button" data-add-technique="cv">+ CV</button>
+              <button type="button" data-add-technique="ocp">+ OCP</button>
+              <button type="button" data-add-technique="lsv">+ LSV</button>
+              <button type="button" data-add-technique="eis">+ EIS</button>
+            </div>
+          </div>
+          <div id="stepList" class="step-list" aria-live="polite"></div>
+        </article>
+      </div>
+
+      <aside class="preview-column">
+        <article class="panel action-panel">
+          <div>
+            <span class="eyebrow">Review gate</span>
+            <h2>离线审查</h2>
+            <p>先保存草稿，再校验或生成宏预览。这里永远不会执行宏。</p>
+          </div>
+          <div class="action-stack">
+            <button id="saveDraftButton" class="ghost-button" type="button">保存草稿</button>
+            <button id="validateButton" class="outline-button" type="button">仅校验</button>
+            <button id="compileButton" class="primary-button wide-button" type="button">生成 Dry-run 预览</button>
+          </div>
+        </article>
+
+        <article class="panel safety-panel">
+          <div class="panel-heading">
+            <div>
+              <span class="eyebrow">Safety checklist</span>
+              <h2>安全清单</h2>
+            </div>
+            <span class="locked-label">控制锁定</span>
+          </div>
+          <div id="safetyList" class="safety-list">
+            <div class="safety-row manual">
+              <span>○</span>
+              <p>完成校验后显示自动检查与人工复核项。</p>
+            </div>
+          </div>
+        </article>
+
+        <article class="panel result-panel">
+          <div class="panel-heading">
+            <div>
+              <span class="eyebrow">Validation report</span>
+              <h2>校验结果</h2>
+            </div>
+            <span id="resultBadge" class="result-badge neutral">等待</span>
+          </div>
+          <div id="issueList" class="issue-list">
+            <div class="result-empty">编辑协议后点击“仅校验”或“生成 Dry-run 预览”。</div>
+          </div>
+          <div id="warningSection" class="result-section" hidden>
+            <h3>警告与人工复核</h3>
+            <div id="warningList"></div>
+          </div>
+          <div id="stepSummarySection" class="result-section" hidden>
+            <h3>规范化工步</h3>
+            <div id="stepSummary" class="step-summary"></div>
+          </div>
+          <div id="outputSection" class="result-section" hidden>
+            <h3>目标文件</h3>
+            <div id="outputList" class="output-list"></div>
+          </div>
+        </article>
+
+        <article id="macroPanel" class="panel macro-preview-panel" hidden>
+          <div class="panel-heading">
+            <div>
+              <span class="eyebrow">Compiled preview</span>
+              <h2>宏预览</h2>
+            </div>
+            <button id="copyMacroButton" class="mini-button" type="button">复制文本</button>
+          </div>
+          <div id="macroMeta" class="macro-meta"></div>
+          <pre id="macroPreview" tabindex="0"></pre>
+          <details class="normalized-details">
+            <summary>查看规范化协议 JSON</summary>
+            <pre id="normalizedPreview"></pre>
+          </details>
+        </article>
+      </aside>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/static/protocol.js"></script>
+</body>
+</html>

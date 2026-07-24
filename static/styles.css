@@ -103,6 +103,22 @@ button {
   gap: 12px;
 }
 
+.top-link {
+  padding: 9px 12px;
+  border-radius: 9px;
+  color: var(--ink);
+  background: var(--soft);
+  font-size: 12px;
+  font-weight: 750;
+  text-decoration: none;
+  transition: background 0.15s ease, transform 0.15s ease;
+}
+
+.top-link:hover {
+  background: #e2e9eb;
+  transform: translateY(-1px);
+}
+
 .safety-pill,
 .method-badge,
 .hash-badge {

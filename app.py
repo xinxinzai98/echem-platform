@@ -21,6 +21,14 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from echem_platform.configuration import load_config, resolve_watch_roots
+from echem_platform.control import (
+    DRY_RUN_STAGE,
+    MacroValidationError,
+    ProtocolValidationError,
+    build_dry_run,
+    default_dry_run_draft,
+    dry_run_capabilities,
+)
 from echem_platform.parsers import (
     PARSER_VERSION,
     ParsedCurve,
@@ -28,12 +36,13 @@ from echem_platform.parsers import (
 )
 
 
-APP_NAME = "电化学测试平台 V0.2"
-APP_VERSION = "0.2.0-dev.3"
+APP_NAME = "电化学测试平台 V0.3 Dry-run"
+APP_VERSION = "0.3.0-dev.2"
 APP_ROOT = Path(__file__).resolve().parent
 STATIC_ROOT = APP_ROOT / "static"
 DEFAULT_CONFIG = APP_ROOT / "config.json"
 DEFAULT_DATABASE = APP_ROOT / "state" / "echem-platform.sqlite3"
+MAX_JSON_REQUEST_BYTES = 1024 * 1024
 
 
 def utc_now() -> str:
@@ -126,6 +135,16 @@ class Database:
                     target TEXT NOT NULL,
                     detail TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS protocol_drafts (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    protocol_json TEXT NOT NULL,
+                    output_folder TEXT NOT NULL,
+                    allowed_run_root TEXT NOT NULL,
+                    revision INTEGER NOT NULL,
+                    created_utc TEXT NOT NULL,
+                    updated_utc TEXT NOT NULL
+                );
                 """
             )
             columns = {
@@ -146,6 +165,107 @@ class Database:
                 "INSERT INTO audit(created_utc, action, target, detail) VALUES (?, ?, ?, ?)",
                 (utc_now(), action, target, detail),
             )
+
+    def save_protocol_draft(
+        self,
+        draft_id: str,
+        protocol: dict[str, Any],
+        output_folder: str,
+        allowed_run_root: str,
+    ) -> dict[str, Any]:
+        if not isinstance(draft_id, str) or not re.fullmatch(
+            r"[a-z0-9][a-z0-9_-]{0,63}",
+            draft_id,
+        ):
+            raise ValueError("草稿 id 只允许小写字母、数字、下划线和连字符。")
+        if not isinstance(protocol, dict):
+            raise ValueError("protocol 必须是 JSON 对象。")
+        if not isinstance(output_folder, str) or len(output_folder) > 240:
+            raise ValueError("output_folder 必须是长度不超过 240 的字符串。")
+        if not isinstance(allowed_run_root, str) or len(allowed_run_root) > 240:
+            raise ValueError("allowed_run_root 必须是长度不超过 240 的字符串。")
+        serialized = json.dumps(
+            protocol,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        if len(serialized.encode("utf-8")) > MAX_JSON_REQUEST_BYTES:
+            raise ValueError("协议草稿超过 1 MiB。")
+        name = str(protocol.get("name") or "未命名协议").strip()[:160] or "未命名协议"
+        now = utc_now()
+        with self._lock, self.session() as connection:
+            existing = connection.execute(
+                "SELECT revision, created_utc FROM protocol_drafts WHERE id = ?",
+                (draft_id,),
+            ).fetchone()
+            if existing:
+                revision = int(existing["revision"]) + 1
+                connection.execute(
+                    """
+                    UPDATE protocol_drafts
+                    SET name=?, protocol_json=?, output_folder=?, allowed_run_root=?,
+                        revision=?, updated_utc=?
+                    WHERE id=?
+                    """,
+                    (
+                        name,
+                        serialized,
+                        output_folder,
+                        allowed_run_root,
+                        revision,
+                        now,
+                        draft_id,
+                    ),
+                )
+            else:
+                revision = 1
+                connection.execute(
+                    """
+                    INSERT INTO protocol_drafts(
+                        id, name, protocol_json, output_folder, allowed_run_root,
+                        revision, created_utc, updated_utc
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        draft_id,
+                        name,
+                        serialized,
+                        output_folder,
+                        allowed_run_root,
+                        revision,
+                        now,
+                        now,
+                    ),
+                )
+        saved = self.get_protocol_draft(draft_id)
+        assert saved is not None
+        return saved
+
+    def get_protocol_draft(self, draft_id: str) -> dict[str, Any] | None:
+        with self.session() as connection:
+            row = connection.execute(
+                "SELECT * FROM protocol_drafts WHERE id = ?",
+                (draft_id,),
+            ).fetchone()
+        if not row:
+            return None
+        result = dict(row)
+        result["protocol"] = json.loads(result.pop("protocol_json"))
+        return result
+
+    def list_protocol_drafts(self) -> list[dict[str, Any]]:
+        with self.session() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, name, output_folder, allowed_run_root, revision,
+                       created_utc, updated_utc
+                FROM protocol_drafts
+                ORDER BY updated_utc DESC, id ASC
+                LIMIT 100
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def upsert_run(
         self,
@@ -444,10 +564,11 @@ class RuntimeState:
         return {
             "app": APP_NAME,
             "version": APP_VERSION,
-            "mode": "read_only_sources",
+            "mode": "read_only_sources_and_offline_dry_run",
             "loopback_only": True,
             "instrument_control": self.config["instrument_control_enabled"],
-            "control_stage": "offline_compile_only",
+            "control_stage": DRY_RUN_STAGE,
+            "launch_available": False,
             "serial_access": False,
             "local_override_active": self.config["local_override_active"],
             "config_sources": self.config["config_sources"],
@@ -461,7 +582,7 @@ class RuntimeState:
 
 def create_handler(runtime: RuntimeState):
     class Handler(BaseHTTPRequestHandler):
-        server_version = "EchemPlatform/0.2"
+        server_version = "EchemPlatform/0.3"
 
         def log_message(self, fmt: str, *args: Any) -> None:
             sys.stdout.write(
@@ -475,6 +596,7 @@ def create_handler(runtime: RuntimeState):
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
             self.end_headers()
             self.wfile.write(data)
 
@@ -483,9 +605,15 @@ def create_handler(runtime: RuntimeState):
 
         def read_json(self) -> dict[str, Any]:
             length = int(self.headers.get("Content-Length", "0"))
-            if length <= 0 or length > 65536:
+            if length <= 0 or length > MAX_JSON_REQUEST_BYTES:
                 raise ValueError("请求内容为空或过大。")
-            return json.loads(self.rfile.read(length).decode("utf-8"))
+            try:
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            except UnicodeDecodeError as exc:
+                raise ValueError("请求 JSON 必须使用 UTF-8。") from exc
+            if not isinstance(payload, dict):
+                raise ValueError("请求 JSON 顶层必须是对象。")
+            return payload
 
         def send_static(self, relative: str) -> None:
             candidate = (STATIC_ROOT / relative).resolve()
@@ -503,6 +631,14 @@ def create_handler(runtime: RuntimeState):
             ))
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-cache")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header(
+                "Content-Security-Policy",
+                "default-src 'self'; style-src 'self'; script-src 'self'; "
+                "connect-src 'self'; img-src 'self' data:; "
+                "object-src 'none'; form-action 'self'; "
+                "base-uri 'none'; frame-ancestors 'none'",
+            )
             self.end_headers()
             self.wfile.write(data)
 
@@ -513,6 +649,25 @@ def create_handler(runtime: RuntimeState):
             try:
                 if path == "/api/status":
                     self.send_json(runtime.status())
+                elif path == "/api/control/capabilities":
+                    self.send_json(dry_run_capabilities())
+                elif path == "/api/protocols":
+                    self.send_json(runtime.database.list_protocol_drafts())
+                elif re.fullmatch(r"/api/protocols/[a-z0-9][a-z0-9_-]{0,63}", path):
+                    draft_id = path.rsplit("/", 1)[-1]
+                    draft = runtime.database.get_protocol_draft(draft_id)
+                    if draft:
+                        self.send_json(draft)
+                    elif draft_id == "draft-main":
+                        self.send_json(
+                            {
+                                **default_dry_run_draft(),
+                                "revision": 0,
+                                "persisted": False,
+                            }
+                        )
+                    else:
+                        self.send_error_json(HTTPStatus.NOT_FOUND, "协议草稿不存在。")
                 elif path == "/api/runs":
                     self.send_json(
                         runtime.database.list_runs(
@@ -533,6 +688,8 @@ def create_handler(runtime: RuntimeState):
                     self.send_json(runtime.database.recent_audit(limit))
                 elif path == "/":
                     self.send_static("index.html")
+                elif path in {"/protocol", "/protocol.html"}:
+                    self.send_static("protocol.html")
                 elif path.startswith("/static/"):
                     self.send_static(path[len("/static/") :])
                 else:
@@ -547,6 +704,45 @@ def create_handler(runtime: RuntimeState):
                 if path == "/api/scan":
                     self.send_json(runtime.scanner.scan())
                     return
+                if path == "/api/protocols":
+                    payload = self.read_json()
+                    unknown = sorted(
+                        set(payload)
+                        - {
+                            "id",
+                            "protocol",
+                            "output_folder",
+                            "allowed_run_root",
+                        }
+                    )
+                    if unknown:
+                        raise ValueError(
+                            f"协议草稿请求包含未知字段：{', '.join(unknown)}"
+                        )
+                    draft = runtime.database.save_protocol_draft(
+                        str(payload.get("id", "draft-main")),
+                        payload.get("protocol"),
+                        payload.get("output_folder", ""),
+                        payload.get("allowed_run_root", ""),
+                    )
+                    self.send_json(draft)
+                    return
+                if path == "/api/protocols/validate":
+                    self.send_json(
+                        build_dry_run(
+                            self.read_json(),
+                            include_macro_preview=False,
+                        )
+                    )
+                    return
+                if path == "/api/protocols/compile":
+                    self.send_json(
+                        build_dry_run(
+                            self.read_json(),
+                            include_macro_preview=True,
+                        )
+                    )
+                    return
                 match = re.fullmatch(r"/api/runs/(\d+)/metadata", path)
                 if match:
                     payload = self.read_json()
@@ -557,6 +753,10 @@ def create_handler(runtime: RuntimeState):
                         self.send_error_json(HTTPStatus.NOT_FOUND, "记录不存在。")
                     return
                 self.send_error_json(HTTPStatus.NOT_FOUND, "Not found")
+            except ProtocolValidationError as exc:
+                self.send_json(exc.to_dict(), HTTPStatus.BAD_REQUEST)
+            except MacroValidationError as exc:
+                self.send_json(exc.to_dict(), HTTPStatus.BAD_REQUEST)
             except (ValueError, json.JSONDecodeError) as exc:
                 self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
             except Exception:
@@ -607,7 +807,7 @@ def main() -> int:
     port = args.port or runtime.config["port"]
     server = ThreadingHTTPServer((bind, port), create_handler(runtime))
     print(f"{APP_NAME} {APP_VERSION}")
-    print("只读源文件模式：开启；串口和仪器控制：关闭")
+    print("只读源文件模式：开启；网页 Dry-run：开启；串口和仪器控制：关闭")
     print(f"浏览器地址：http://{bind}:{port}")
     try:
         server.serve_forever(poll_interval=0.5)

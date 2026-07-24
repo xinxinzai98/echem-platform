@@ -1,4 +1,5 @@
 {
+  "instrument_control_enabled": false,
   "watch_roots": [
     "C:\\Path\\To\\CorrTest\\Data",
     "D:\\Path\\To\\CHI\\ExportedData"

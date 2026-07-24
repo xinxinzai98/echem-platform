@@ -15,6 +15,7 @@ CONFIG_KEYS = {
     "max_points_per_curve",
     "watch_roots",
     "extensions",
+    "instrument_control_enabled",
 }
 
 
@@ -66,6 +67,11 @@ def load_config(
     port = int(raw.get("port", 8787))
     if not 1 <= port <= 65535:
         raise ValueError("端口必须在 1 到 65535 之间。")
+    instrument_control_enabled = raw.get("instrument_control_enabled", False)
+    if not isinstance(instrument_control_enabled, bool):
+        raise ValueError("instrument_control_enabled 必须是布尔值。")
+    if instrument_control_enabled:
+        raise ValueError("V0.3 阶段 A 只支持离线编译，禁止启用仪器控制。")
 
     config = {
         "bind": str(raw.get("bind", "127.0.0.1")),
@@ -81,6 +87,7 @@ def load_config(
         ],
         "config_sources": [str(source) for source in sources],
         "local_override_active": len(sources) > 1,
+        "instrument_control_enabled": False,
     }
     if config["bind"] not in {"127.0.0.1", "::1", "localhost"}:
         raise ValueError("安全策略只允许监听本机回环地址。")

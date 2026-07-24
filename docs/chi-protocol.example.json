@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "name": "Public schema demonstration only",
+  "sample_id": "DEMO-001",
+  "notes": "Field-format example only. Values are not an experimental recommendation and must not be run without review.",
+  "execution_mode": "single_macro",
+  "steps": [
+    {
+      "id": "demo-cv",
+      "name": "CV field example",
+      "technique": "cv",
+      "enabled": true,
+      "save_basename": "DEMO_CV",
+      "params": {
+        "initial_v": 0.05,
+        "high_v": 0.05,
+        "low_v": -0.05,
+        "direction": "n",
+        "scan_rate_v_s": 0.01,
+        "segments": 2,
+        "sample_interval_v": 0.001,
+        "quiet_time_s": 0,
+        "auto_sensitivity": true
+      }
+    },
+    {
+      "id": "demo-ocp",
+      "name": "OCP field example",
+      "technique": "ocp",
+      "enabled": false,
+      "save_basename": "DEMO_OCP",
+      "params": {
+        "duration_s": 10,
+        "sample_interval_s": 1,
+        "quiet_time_s": 0,
+        "upper_limit_v": 2,
+        "lower_limit_v": -2
+      }
+    },
+    {
+      "id": "demo-lsv",
+      "name": "LSV field example",
+      "technique": "lsv",
+      "enabled": false,
+      "save_basename": "DEMO_LSV",
+      "params": {
+        "initial_v": 0,
+        "final_v": -0.05,
+        "scan_rate_v_s": 0.01,
+        "sample_interval_v": 0.001,
+        "quiet_time_s": 0,
+        "auto_sensitivity": true
+      }
+    },
+    {
+      "id": "demo-eis",
+      "name": "EIS field example",
+      "technique": "eis",
+      "enabled": false,
+      "save_basename": "DEMO_EIS",
+      "params": {
+        "bias_mode": "ocp",
+        "high_frequency_hz": 1000,
+        "low_frequency_hz": 10,
+        "amplitude_v": 0.005,
+        "quiet_time_s": 0
+      }
+    }
+  ]
+}

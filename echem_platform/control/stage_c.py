@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import ctypes
 import datetime as dt
 import hashlib
 import json
@@ -144,6 +145,50 @@ class WindowsChiAdapter:
             processes.append(ProcessInfo(pid=pid, image_name=row[0]))
         return processes
 
+    def current_session_id(self) -> int:
+        if not self.supported:
+            raise RuntimeError("Windows 会话探测只支持 Windows。")
+        session_id = ctypes.c_uint()
+        success = ctypes.windll.kernel32.ProcessIdToSessionId(
+            os.getpid(),
+            ctypes.byref(session_id),
+        )
+        if not success:
+            raise RuntimeError("无法读取平台进程的 Windows 会话编号。")
+        return int(session_id.value)
+
+    def interactive_session_ids(self) -> list[int]:
+        if not self.supported:
+            raise RuntimeError("Windows 会话探测只支持 Windows。")
+        creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        completed = subprocess.run(
+            [
+                "tasklist.exe",
+                "/FI",
+                "IMAGENAME eq explorer.exe",
+                "/FO",
+                "CSV",
+                "/NH",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            creationflags=creation_flags,
+        )
+        if completed.returncode != 0:
+            raise RuntimeError("无法读取交互桌面会话。")
+        sessions: set[int] = set()
+        for row in csv.reader(completed.stdout.splitlines()):
+            if len(row) < 4 or row[0].casefold() != "explorer.exe":
+                continue
+            try:
+                sessions.add(int(row[3].replace(",", "")))
+            except ValueError:
+                continue
+        return sorted(sessions)
+
     def launch(self, executable: Path, working_directory: Path, macro_path: Path) -> int:
         if not self.supported:
             raise RuntimeError("CHI 启动器只支持 Windows。")
@@ -209,6 +254,36 @@ def build_stage_c_preflight(
             "adapter_supported",
             "当前系统支持 Windows CHI 进程探测。",
             bool(getattr(adapter, "supported", False)),
+        )
+    )
+
+    launcher_session_id: int | None = None
+    interactive_session_ids: list[int] = []
+    session_error = ""
+    if getattr(adapter, "supported", False):
+        try:
+            launcher_session_id = int(adapter.current_session_id())
+            interactive_session_ids = [
+                int(value) for value in adapter.interactive_session_ids()
+            ]
+        except Exception as exc:
+            session_error = str(exc)
+    session_ready = (
+        not session_error
+        and launcher_session_id is not None
+        and launcher_session_id > 0
+        and launcher_session_id in interactive_session_ids
+    )
+    session_detail = session_error or (
+        f"平台会话：{launcher_session_id}；"
+        f"交互桌面会话：{interactive_session_ids or '未发现'}"
+    )
+    checks.append(
+        _check(
+            "interactive_desktop_session",
+            "平台运行在当前已登录的 Windows 交互桌面会话中。",
+            session_ready,
+            session_detail,
         )
     )
 
@@ -1045,6 +1120,7 @@ class StageCManager:
                         "status": "needs_review"
                         if observation.exit_code is None
                         else "failed",
+                        "chi_exit_code": observation.exit_code,
                         "completed_utc": _iso(self.now()),
                         "failure_reason": failure_reason,
                     },

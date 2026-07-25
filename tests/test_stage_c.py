@@ -58,6 +58,12 @@ class FakeAdapter:
     def list_chi_processes(self) -> list[ProcessInfo]:
         return list(self.processes)
 
+    def current_session_id(self) -> int:
+        return 1
+
+    def interactive_session_ids(self) -> list[int]:
+        return [1]
+
     def launch(self, executable: Path, working_directory: Path, macro_path: Path) -> int:
         self.launch_calls.append((executable, working_directory, macro_path))
         self.processes = [ProcessInfo(self.next_pid, "chi760e.exe")]
@@ -147,6 +153,32 @@ class StageCProtocolTests(unittest.TestCase):
 
 
 class StageCPreflightTests(unittest.TestCase):
+    def test_preflight_blocks_noninteractive_session_zero(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            harness = StageCHarness(Path(temporary))
+            harness.adapter.current_session_id = lambda: 0
+
+            report = build_stage_c_preflight(
+                harness.config,
+                adapter=harness.adapter,
+                active_run_count=0,
+                run_root_path=harness.run_root,
+            )
+
+            self.assertFalse(report["ready"])
+            self.assertIn(
+                "interactive_desktop_session",
+                report["blocked_checks"],
+            )
+            session_check = next(
+                item
+                for item in report["checks"]
+                if item["id"] == "interactive_desktop_session"
+            )
+            self.assertIn("平台会话：0", session_check["detail"])
+            self.assertIn("交互桌面会话：[1]", session_check["detail"])
+            self.assertFalse(report["instrument_started"])
+
     def test_preflight_is_read_only_and_blocks_existing_chi_instances(self):
         with tempfile.TemporaryDirectory() as temporary:
             harness = StageCHarness(Path(temporary))
@@ -313,6 +345,28 @@ class StageCRunLifecycleTests(unittest.TestCase):
             self.assertTrue(step["binary_sha256"])
             self.assertTrue(step["text_sha256"])
             self.assertIsNone(harness.database.automation_control_lock())
+
+    def test_zero_exit_without_outputs_records_exit_code_and_fails(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            harness = StageCHarness(Path(temporary))
+            harness.config["completion_grace_seconds"] = 0
+            manager = harness.manager()
+            run = manager.create_run(harness.protocol)
+            armed = manager.arm(run["run_id"], confirmations(), run["run_id"])
+            manager.start(run["run_id"], armed["arm_token"])
+            harness.adapter.processes = []
+            harness.adapter.observations[4242] = ProcessObservation(False, 0)
+
+            manager.poll_all()
+
+            failed = harness.database.get_automation_run(run["run_id"])
+            self.assertEqual(failed["status"], "failed")
+            self.assertEqual(failed["chi_exit_code"], 0)
+            self.assertEqual(
+                failed["failure_reason"],
+                "output_files_missing_or_unstable",
+            )
+            self.assertFalse(failed["completion_confirmed"])
 
     def test_platform_restart_invalidates_arm_token(self):
         with tempfile.TemporaryDirectory() as temporary:

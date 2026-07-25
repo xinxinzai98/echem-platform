@@ -114,6 +114,24 @@ Python 模块编译与前端 JavaScript 语法检查均通过。
   另一个非零交互会话；历史已成功的 OCP 启动器也明确采用交互启动路径
 - 该失败直接转化为新的硬门槛与回归测试；修复后没有自动执行第二次实验
 
+## V0.3 阶段 C 固定旁路目录与桌面启动器锁定验收
+
+- 源码提交：`2e7885707369154a0bdd1252b3b2e1459a0dd67b`
+- 固定旁路目录：`D:\EchemPlatform-next`
+- Windows 70 项测试全部通过，Python 模块编译通过
+- 两个 PowerShell 启动脚本由 Windows PowerShell 解析，错误数均为 0
+- 从 OpenSSH Session 0 调用桌面启动器时，在创建平台监听器前正确拒绝
+- 锁定服务返回 `0.3.0-dev.5`、`instrument_control=false`、
+  `launch_available=false`、`serial_access=false`
+- 控制关闭时运行列表接口返回 HTTP 404，预检返回
+  `writes_performed=false`、`instrument_started=false`
+- 8788 验收服务已停止，正式版 8787 的版本、监听进程和控制状态未改变
+- 既有仪器进程集合在部署前后保持不变；部署没有启动或停止 CHI / CorrTest
+- 上一版旁路目录已移入 `D:\EchemPlatform-archive\20260725`，D 盘根目录只保留一个
+  固定旁路目录
+- 已在当前 Windows 用户桌面创建只指向固定旁路目录的锁定启动入口
+- 首次失败运行的五个快照文件保持不变，没有执行第二次 OCP
+
 ## 私有样例验证器冒烟测试
 
 - 使用 1 个 CHI CV 和 1 个 CorrTest EIS 公开演示文件模拟私有目录

@@ -48,6 +48,20 @@ class MacroValidationError(ValueError):
         }
 
 
+class ControlSafetyError(ValueError):
+    def __init__(self, code: str, message: str, *, status: int = 409):
+        self.code = code
+        self.status = status
+        super().__init__(message)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "error": "control_safety_blocked",
+            "code": self.code,
+            "message": str(self),
+        }
+
+
 @dataclass(frozen=True)
 class NormalizedStep:
     id: str

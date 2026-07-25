@@ -373,9 +373,13 @@ class OfflineControlSafetyTests(unittest.TestCase):
                 include_macro_preview=True,
             )
 
-    def test_control_package_contains_no_launch_or_hardware_imports(self):
+    def test_launcher_is_isolated_and_never_controls_serial_or_kills_chi(self):
         control_root = ROOT / "echem_platform" / "control"
-        self.assertFalse((control_root / "launcher.py").exists())
+        offline_files = (
+            control_root / "dry_run.py",
+            control_root / "macro_compiler.py",
+            control_root / "validation.py",
+        )
         forbidden = (
             "import subprocess",
             "from subprocess",
@@ -388,12 +392,26 @@ class OfflineControlSafetyTests(unittest.TestCase):
             "/runmacro",
         )
         combined = "\n".join(
-            path.read_text(encoding="utf-8").lower()
-            for path in sorted(control_root.glob("*.py"))
+            path.read_text(encoding="utf-8").lower() for path in offline_files
         )
         for token in forbidden:
             with self.subTest(token=token):
                 self.assertNotIn(token, combined)
+        stage_c = (control_root / "stage_c.py").read_text(encoding="utf-8").lower()
+        self.assertIn("shell=false", stage_c)
+        self.assertIn("/runmacro:", stage_c)
+        for token in (
+            "import serial",
+            "from serial",
+            "import socket",
+            "from socket",
+            ".kill(",
+            ".terminate(",
+            "stop-process",
+            "shell=true",
+        ):
+            with self.subTest(stage_c_forbidden=token):
+                self.assertNotIn(token, stage_c)
 
     def test_cli_writes_once_and_refuses_overwrite(self):
         with tempfile.TemporaryDirectory() as temporary:

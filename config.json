@@ -6,6 +6,7 @@
   "max_file_bytes": 52428800,
   "max_points_per_curve": 2000,
   "instrument_control_enabled": false,
+  "control_stage": "off",
   "watch_roots": [
     "demo_data"
   ],

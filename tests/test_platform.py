@@ -220,7 +220,7 @@ class ProtocolApiTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def test_capabilities_are_offline_and_start_route_does_not_exist(self):
+    def test_dry_run_remains_offline_and_control_routes_are_config_gated(self):
         capabilities = APP.dry_run_capabilities()
         self.assertEqual(capabilities["stage"], "web_dry_run")
         self.assertFalse(capabilities["instrument_control_enabled"])
@@ -228,7 +228,8 @@ class ProtocolApiTests(unittest.TestCase):
         self.assertFalse(capabilities["serial_access"])
         handler_source = inspect.getsource(APP.create_handler)
         self.assertIn('path == "/api/control/capabilities"', handler_source)
-        self.assertNotIn("/api/control/runs", handler_source)
+        self.assertIn('path == "/api/control/runs"', handler_source)
+        self.assertIn('runtime.config["instrument_control_enabled"]', handler_source)
         self.assertNotIn("/start", handler_source)
 
     def test_draft_save_list_and_restore(self):
@@ -298,6 +299,30 @@ class ProtocolApiTests(unittest.TestCase):
         self.assertIn('path in {"/protocol", "/protocol.html"}', handler_source)
         self.assertIn("Content-Security-Policy", handler_source)
         self.assertIn("X-Content-Type-Options", handler_source)
+
+    def test_stage_c_capability_does_not_unlock_dry_run_page(self):
+        runtime = APP.RuntimeState(
+            self.database,
+            APP.Scanner(
+                database=self.database,
+                roots=[],
+                extensions=[".txt"],
+                max_file_bytes=1024 * 1024,
+                max_points=2000,
+                stable_age_seconds=0,
+            ),
+            APP.load_config(ROOT / "config.json"),
+        )
+        runtime.config["instrument_control_enabled"] = True
+
+        capabilities = runtime.control_capabilities()
+
+        self.assertTrue(capabilities["instrument_control_enabled"])
+        self.assertFalse(
+            capabilities["dry_run"]["instrument_control_enabled"]
+        )
+        self.assertFalse(capabilities["dry_run"]["launch_available"])
+        self.assertIn("default_draft", capabilities["dry_run"])
 
 
 class FixtureValidationTests(unittest.TestCase):

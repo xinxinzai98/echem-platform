@@ -1,0 +1,12 @@
+{
+  "instrument_control_enabled": false,
+  "control_stage": "ocp_60s",
+  "chi_executable": "C:\\Path\\To\\CHI760E\\chi760e.exe",
+  "chi_executable_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "chi_working_directory": "C:\\Path\\To\\CHI760E",
+  "control_root": "D:\\Path\\To\\Control_Programs\\CHI760E",
+  "run_root": "D:\\Path\\To\\Runs",
+  "stage_c_ocp_profile_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "arm_token_ttl_seconds": 300,
+  "completion_grace_seconds": 20
+}

@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>60 秒 OCP 联调 · 电化学测试平台</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%2317212b'/%3E%3Cpath d='M10 38c8-24 16 20 24-8s14 16 20-10' fill='none' stroke='%237ee2d7' stroke-width='5' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/monitor.css">
+</head>
+<body class="monitor-page">
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 48 48" role="img">
+          <path d="M8 28c5-15 10 14 16-4s11 10 16-6"/>
+          <circle cx="8" cy="28" r="3"/>
+          <circle cx="40" cy="18" r="3"/>
+        </svg>
+      </div>
+      <div>
+        <h1>60 秒 OCP 联调</h1>
+        <p>V0.3 阶段 C · 本机单任务安全门</p>
+      </div>
+    </div>
+    <nav class="top-actions" aria-label="页面导航">
+      <a class="top-link" href="/">数据工作台</a>
+      <a class="top-link" href="/protocol">协议编辑</a>
+      <div id="controlPill" class="safety-pill"><span></span>正在读取控制状态</div>
+    </nav>
+  </header>
+
+  <main class="monitor-main">
+    <section class="monitor-hero">
+      <div>
+        <span class="eyebrow">Stage C safety gate</span>
+        <h2>先证明环境安全，再允许一次 60 秒 OCP</h2>
+        <p>这里只接受一个 OCP 工步和锁定的参数指纹。平台不会直接打开 COM3/COM4，也不会强制结束 CHI 进程。</p>
+      </div>
+      <div class="hero-status">
+        <span id="readinessDot"></span>
+        <div>
+          <strong id="readinessTitle">正在预检</strong>
+          <small id="readinessNote">读取设备电脑当前状态…</small>
+        </div>
+      </div>
+    </section>
+
+    <section class="monitor-grid">
+      <div class="monitor-column">
+        <article class="panel">
+          <div class="panel-heading">
+            <div>
+              <span class="eyebrow">Read-only preflight</span>
+              <h2>启动前预检</h2>
+            </div>
+            <button id="refreshButton" class="mini-button" type="button">重新检查</button>
+          </div>
+          <div id="preflightList" class="preflight-list">
+            <div class="empty-state">正在读取…</div>
+          </div>
+          <p class="boundary-note">预检只读取进程、路径和哈希，不创建运行目录，不启动软件。</p>
+        </article>
+
+        <article class="panel">
+          <div class="panel-heading">
+            <div>
+              <span class="eyebrow">Immutable snapshot</span>
+              <h2>准备运行快照</h2>
+            </div>
+            <span id="draftRevision" class="status-chip">草稿读取中</span>
+          </div>
+          <div id="draftSummary" class="draft-summary"></div>
+          <button id="prepareButton" class="primary-button wide-button" type="button" disabled>
+            创建 60 秒 OCP 快照
+          </button>
+          <p class="boundary-note">该操作只生成协议、宏和清单文件；不会启动 CHI。</p>
+        </article>
+      </div>
+
+      <aside class="monitor-column">
+        <article id="runPanel" class="panel run-panel" hidden>
+          <div class="panel-heading">
+            <div>
+              <span class="eyebrow">Current run</span>
+              <h2 id="runId">尚未创建</h2>
+            </div>
+            <span id="runStatus" class="status-chip">—</span>
+          </div>
+          <dl class="run-meta">
+            <div><dt>协议哈希</dt><dd id="protocolHash">—</dd></div>
+            <div><dt>宏哈希</dt><dd id="macroHash">—</dd></div>
+            <div><dt>CHI PID</dt><dd id="chiPid">—</dd></div>
+            <div><dt>完成确认</dt><dd id="completionState">—</dd></div>
+          </dl>
+
+          <div id="confirmationPanel" class="confirmation-panel">
+            <h3>现场人工确认</h3>
+            <label><input type="checkbox" data-confirmation="electrodes_connected"> 电极、参比和对电极连接正确</label>
+            <label><input type="checkbox" data-confirmation="electrolyte_ready"> 电解液、液位和浸没状态正常</label>
+            <label><input type="checkbox" data-confirmation="reference_confirmed"> 参比电极类型与协议一致</label>
+            <label><input type="checkbox" data-confirmation="gas_ventilation_ready"> 现场通风与排气条件正常</label>
+            <label><input type="checkbox" data-confirmation="no_other_chi_test"> 已确认没有其他 CHI 测试</label>
+            <label><input type="checkbox" data-confirmation="operator_present"> 现场有人全程观察</label>
+            <label><input type="checkbox" data-confirmation="chi_stop_available"> 可立即操作 CHI 停止按钮和物理电源</label>
+            <label class="typed-confirmation">手工输入上方运行编号
+              <input id="typedConfirmation" spellcheck="false" autocomplete="off">
+            </label>
+            <div class="run-actions">
+              <button id="armButton" class="outline-button" type="button">提交一次性确认</button>
+              <button id="startButton" class="danger-button" type="button" disabled>启动 60 秒 OCP</button>
+            </div>
+          </div>
+
+          <div id="runningPanel" class="running-panel" hidden>
+            <p>平台正在观察 CHI 进程和 `.bin/.txt` 文件。停止实验时请先在 CHI 软件中操作。</p>
+            <button id="stopRequestButton" class="outline-button" type="button">记录人工停止请求</button>
+          </div>
+
+          <div id="stepState" class="step-state"></div>
+        </article>
+
+        <article class="panel locked-panel">
+          <span class="eyebrow">Hard boundaries</span>
+          <h2>阶段 C 不会做什么</h2>
+          <ul>
+            <li>不访问 COM3 / COM4</li>
+            <li>不接受 CV、LSV、EIS 或多工步协议</li>
+            <li>不覆盖任何已有输出文件</li>
+            <li>不把强杀 CHI 当成停止方式</li>
+            <li>不在控制关闭时提供可调用的启动接口</li>
+          </ul>
+        </article>
+      </aside>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/static/monitor.js"></script>
+</body>
+</html>

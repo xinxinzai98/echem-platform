@@ -742,6 +742,10 @@ async function validateOrCompile(includeMacroPreview) {
 async function loadPage() {
   try {
     state.capabilities = await request("/api/control/capabilities");
+    const dryRunCapabilities = state.capabilities.dry_run;
+    if (!dryRunCapabilities || typeof dryRunCapabilities !== "object") {
+      throw new Error("Dry-run 能力声明缺失，页面拒绝加载。");
+    }
     const lockedFlags = [
       "instrument_control_enabled",
       "instrument_started",
@@ -749,7 +753,7 @@ async function loadPage() {
       "serial_access",
       "network_control",
     ];
-    if (lockedFlags.some((flag) => state.capabilities[flag] !== false)) {
+    if (lockedFlags.some((flag) => dryRunCapabilities[flag] !== false)) {
       throw new Error("安全能力状态异常，页面拒绝加载。");
     }
     let draft;
@@ -757,7 +761,7 @@ async function loadPage() {
       draft = await request(`/api/protocols/${state.draftId}`);
     } catch (error) {
       if (error.status !== 404) throw error;
-      draft = state.capabilities.default_draft;
+      draft = dryRunCapabilities.default_draft;
     }
     const normalized = normalizeDraftForUi(draft);
     state.draftId = normalized.id;

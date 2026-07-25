@@ -114,7 +114,7 @@ def _safety_checks(compiled: CompiledMacro) -> list[dict[str, str]]:
     checks = [
         {
             "id": "offline_only",
-            "label": "当前仅生成离线预览，不存在软件或仪器启动入口。",
+            "label": "当前请求仅生成离线预览，不会写宏或启动软件与仪器。",
             "status": "passed",
         },
         {

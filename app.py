@@ -22,9 +22,11 @@ from typing import Any, Iterable
 
 from echem_platform.configuration import load_config, resolve_watch_roots
 from echem_platform.control import (
-    DRY_RUN_STAGE,
+    STAGE_C_ID,
+    ControlSafetyError,
     MacroValidationError,
     ProtocolValidationError,
+    StageCManager,
     build_dry_run,
     default_dry_run_draft,
     dry_run_capabilities,
@@ -36,8 +38,8 @@ from echem_platform.parsers import (
 )
 
 
-APP_NAME = "电化学测试平台 V0.3 Dry-run"
-APP_VERSION = "0.3.0-dev.2"
+APP_NAME = "电化学测试平台 V0.3 Stage C"
+APP_VERSION = "0.3.0-dev.3"
 APP_ROOT = Path(__file__).resolve().parent
 STATIC_ROOT = APP_ROOT / "static"
 DEFAULT_CONFIG = APP_ROOT / "config.json"
@@ -144,6 +146,70 @@ class Database:
                     revision INTEGER NOT NULL,
                     created_utc TEXT NOT NULL,
                     updated_utc TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS automation_runs (
+                    id INTEGER PRIMARY KEY,
+                    run_id TEXT NOT NULL UNIQUE,
+                    protocol_sha256 TEXT NOT NULL,
+                    profile_sha256 TEXT NOT NULL,
+                    macro_sha256 TEXT NOT NULL,
+                    snapshot_manifest_sha256 TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    current_step_index INTEGER NOT NULL DEFAULT 0,
+                    created_utc TEXT NOT NULL,
+                    started_utc TEXT NOT NULL DEFAULT '',
+                    completed_utc TEXT NOT NULL DEFAULT '',
+                    chi_pid INTEGER,
+                    chi_exit_code INTEGER,
+                    output_root TEXT NOT NULL,
+                    run_directory TEXT NOT NULL,
+                    macro_path TEXT NOT NULL,
+                    completion_confirmed INTEGER NOT NULL DEFAULT 0,
+                    failure_reason TEXT NOT NULL DEFAULT '',
+                    arm_token_sha256 TEXT NOT NULL DEFAULT '',
+                    arm_expires_utc TEXT NOT NULL DEFAULT '',
+                    confirmations_json TEXT NOT NULL DEFAULT '{}'
+                );
+                CREATE INDEX IF NOT EXISTS idx_automation_runs_status
+                    ON automation_runs(status);
+                CREATE TABLE IF NOT EXISTS automation_steps (
+                    id INTEGER PRIMARY KEY,
+                    automation_run_id INTEGER NOT NULL
+                        REFERENCES automation_runs(id) ON DELETE CASCADE,
+                    step_index INTEGER NOT NULL,
+                    step_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    technique TEXT NOT NULL,
+                    params_json TEXT NOT NULL,
+                    save_basename TEXT NOT NULL,
+                    expected_seconds REAL,
+                    status TEXT NOT NULL,
+                    started_utc TEXT NOT NULL DEFAULT '',
+                    completed_utc TEXT NOT NULL DEFAULT '',
+                    binary_run_id INTEGER,
+                    text_run_id INTEGER,
+                    data_status TEXT NOT NULL DEFAULT '',
+                    binary_sha256 TEXT NOT NULL DEFAULT '',
+                    text_sha256 TEXT NOT NULL DEFAULT '',
+                    source_unchanged INTEGER NOT NULL DEFAULT 0,
+                    UNIQUE(automation_run_id, step_index)
+                );
+                CREATE TABLE IF NOT EXISTS automation_events (
+                    id INTEGER PRIMARY KEY,
+                    automation_run_id INTEGER NOT NULL
+                        REFERENCES automation_runs(id) ON DELETE CASCADE,
+                    created_utc TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    severity TEXT NOT NULL,
+                    detail_json TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_automation_events_run
+                    ON automation_events(automation_run_id, id);
+                CREATE TABLE IF NOT EXISTS automation_control_lock (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    run_id TEXT NOT NULL,
+                    owner_token TEXT NOT NULL,
+                    acquired_utc TEXT NOT NULL
                 );
                 """
             )
@@ -266,6 +332,373 @@ class Database:
                 """
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def create_automation_run(
+        self,
+        record: dict[str, Any],
+        steps: list[dict[str, Any]],
+    ) -> None:
+        with self._lock, self.session() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO automation_runs(
+                    run_id, protocol_sha256, profile_sha256, macro_sha256,
+                    snapshot_manifest_sha256, status, current_step_index,
+                    created_utc, output_root, run_directory, macro_path,
+                    completion_confirmed, failure_reason
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record["run_id"],
+                    record["protocol_sha256"],
+                    record["profile_sha256"],
+                    record["macro_sha256"],
+                    record["snapshot_manifest_sha256"],
+                    record["status"],
+                    int(record.get("current_step_index", 0)),
+                    record["created_utc"],
+                    record["output_root"],
+                    record["run_directory"],
+                    record["macro_path"],
+                    int(bool(record.get("completion_confirmed", False))),
+                    record.get("failure_reason", ""),
+                ),
+            )
+            automation_run_id = int(cursor.lastrowid)
+            for step in steps:
+                connection.execute(
+                    """
+                    INSERT INTO automation_steps(
+                        automation_run_id, step_index, step_id, name, technique,
+                        params_json, save_basename, expected_seconds, status
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        automation_run_id,
+                        int(step["step_index"]),
+                        step["step_id"],
+                        step["name"],
+                        step["technique"],
+                        json.dumps(
+                            step["params"],
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ),
+                        step["save_basename"],
+                        step.get("expected_seconds"),
+                        step["status"],
+                    ),
+                )
+
+    def _automation_run_from_row(
+        self,
+        row: sqlite3.Row,
+        *,
+        include_secret: bool,
+        connection: sqlite3.Connection,
+    ) -> dict[str, Any]:
+        payload = dict(row)
+        payload["completion_confirmed"] = bool(payload["completion_confirmed"])
+        try:
+            payload["confirmations"] = json.loads(
+                payload.pop("confirmations_json") or "{}"
+            )
+        except json.JSONDecodeError:
+            payload["confirmations"] = {}
+        if not include_secret:
+            payload.pop("arm_token_sha256", None)
+        step_rows = connection.execute(
+            """
+            SELECT step_index, step_id, name, technique, params_json,
+                   save_basename, expected_seconds, status, started_utc,
+                   completed_utc, binary_run_id, text_run_id, data_status,
+                   binary_sha256, text_sha256, source_unchanged
+            FROM automation_steps
+            WHERE automation_run_id = ?
+            ORDER BY step_index
+            """,
+            (row["id"],),
+        ).fetchall()
+        payload["steps"] = []
+        for step_row in step_rows:
+            step = dict(step_row)
+            step["params"] = json.loads(step.pop("params_json"))
+            step["source_unchanged"] = bool(step["source_unchanged"])
+            payload["steps"].append(step)
+        return payload
+
+    def get_automation_run(
+        self,
+        run_id: str,
+        *,
+        include_secret: bool = False,
+    ) -> dict[str, Any] | None:
+        with self.session() as connection:
+            row = connection.execute(
+                "SELECT * FROM automation_runs WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+            if not row:
+                return None
+            return self._automation_run_from_row(
+                row,
+                include_secret=include_secret,
+                connection=connection,
+            )
+
+    def list_automation_runs(self, limit: int = 50) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 200))
+        with self.session() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM automation_runs
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            return [
+                self._automation_run_from_row(
+                    row,
+                    include_secret=False,
+                    connection=connection,
+                )
+                for row in rows
+            ]
+
+    def list_active_automation_runs(self) -> list[dict[str, Any]]:
+        with self.session() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM automation_runs
+                WHERE status IN ('starting', 'running', 'stop_requested')
+                ORDER BY id
+                """
+            ).fetchall()
+            return [
+                self._automation_run_from_row(
+                    row,
+                    include_secret=False,
+                    connection=connection,
+                )
+                for row in rows
+            ]
+
+    def active_automation_run_count(self) -> int:
+        with self.session() as connection:
+            row = connection.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM automation_runs
+                WHERE status IN ('starting', 'running', 'stop_requested')
+                """
+            ).fetchone()
+        return int(row["count"])
+
+    def automation_control_lock(self) -> dict[str, Any] | None:
+        with self.session() as connection:
+            row = connection.execute(
+                """
+                SELECT run_id, acquired_utc
+                FROM automation_control_lock
+                WHERE id = 1
+                """
+            ).fetchone()
+        return dict(row) if row else None
+
+    def acquire_automation_control_lock(
+        self,
+        run_id: str,
+        owner_token: str,
+    ) -> bool:
+        connection = self.connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                """
+                SELECT run_id, owner_token
+                FROM automation_control_lock
+                WHERE id = 1
+                """
+            ).fetchone()
+            if existing is not None:
+                connection.rollback()
+                return False
+            connection.execute(
+                """
+                INSERT INTO automation_control_lock(id, run_id, owner_token, acquired_utc)
+                VALUES (1, ?, ?, ?)
+                """,
+                (run_id, owner_token, utc_now()),
+            )
+            connection.commit()
+            return True
+        finally:
+            connection.close()
+
+    def release_automation_control_lock(self, run_id: str) -> None:
+        with self._lock, self.session() as connection:
+            connection.execute(
+                """
+                DELETE FROM automation_control_lock
+                WHERE id = 1 AND run_id = ?
+                """,
+                (run_id,),
+            )
+
+    def update_automation_run(
+        self,
+        run_id: str,
+        changes: dict[str, Any],
+    ) -> None:
+        allowed = {
+            "status",
+            "current_step_index",
+            "started_utc",
+            "completed_utc",
+            "chi_pid",
+            "chi_exit_code",
+            "completion_confirmed",
+            "failure_reason",
+            "arm_token_sha256",
+            "arm_expires_utc",
+            "confirmations_json",
+        }
+        unknown = sorted(set(changes) - allowed)
+        if unknown:
+            raise ValueError(
+                "不允许更新自动化运行字段：" + ", ".join(unknown)
+            )
+        if not changes:
+            return
+        normalized = dict(changes)
+        if "completion_confirmed" in normalized:
+            normalized["completion_confirmed"] = int(
+                bool(normalized["completion_confirmed"])
+            )
+        assignments = ", ".join(f"{key} = ?" for key in normalized)
+        values = [normalized[key] for key in normalized]
+        with self._lock, self.session() as connection:
+            cursor = connection.execute(
+                f"UPDATE automation_runs SET {assignments} WHERE run_id = ?",
+                (*values, run_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("自动化运行不存在。")
+
+    def update_automation_step(
+        self,
+        run_id: str,
+        step_index: int,
+        changes: dict[str, Any],
+    ) -> None:
+        allowed = {
+            "status",
+            "started_utc",
+            "completed_utc",
+            "binary_run_id",
+            "text_run_id",
+            "data_status",
+            "binary_sha256",
+            "text_sha256",
+            "source_unchanged",
+        }
+        unknown = sorted(set(changes) - allowed)
+        if unknown:
+            raise ValueError(
+                "不允许更新自动化工步字段：" + ", ".join(unknown)
+            )
+        if not changes:
+            return
+        normalized = dict(changes)
+        if "source_unchanged" in normalized:
+            normalized["source_unchanged"] = int(
+                bool(normalized["source_unchanged"])
+            )
+        assignments = ", ".join(f"{key} = ?" for key in normalized)
+        values = [normalized[key] for key in normalized]
+        with self._lock, self.session() as connection:
+            cursor = connection.execute(
+                f"""
+                UPDATE automation_steps
+                SET {assignments}
+                WHERE automation_run_id = (
+                    SELECT id FROM automation_runs WHERE run_id = ?
+                ) AND step_index = ?
+                """,
+                (*values, run_id, int(step_index)),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("自动化工步不存在。")
+
+    def append_automation_event(
+        self,
+        run_id: str,
+        event_type: str,
+        severity: str,
+        detail: dict[str, Any],
+    ) -> dict[str, Any]:
+        created = utc_now()
+        serialized = json.dumps(
+            detail,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        with self._lock, self.session() as connection:
+            row = connection.execute(
+                "SELECT id FROM automation_runs WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+            if not row:
+                raise ValueError("自动化运行不存在。")
+            cursor = connection.execute(
+                """
+                INSERT INTO automation_events(
+                    automation_run_id, created_utc, event_type, severity, detail_json
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (row["id"], created, event_type, severity, serialized),
+            )
+        return {
+            "id": int(cursor.lastrowid),
+            "run_id": run_id,
+            "created_utc": created,
+            "event_type": event_type,
+            "severity": severity,
+            "detail": detail,
+        }
+
+    def automation_events(
+        self,
+        run_id: str,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 500))
+        with self.session() as connection:
+            rows = connection.execute(
+                """
+                SELECT e.id, e.created_utc, e.event_type, e.severity, e.detail_json
+                FROM automation_events AS e
+                JOIN automation_runs AS r ON r.id = e.automation_run_id
+                WHERE r.run_id = ?
+                ORDER BY e.id
+                LIMIT ?
+                """,
+                (run_id, limit),
+            ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "run_id": run_id,
+                "created_utc": row["created_utc"],
+                "event_type": row["event_type"],
+                "severity": row["severity"],
+                "detail": json.loads(row["detail_json"]),
+            }
+            for row in rows
+        ]
 
     def upsert_run(
         self,
@@ -390,6 +823,18 @@ class Database:
         result["points"] = json.loads(result.pop("points_json"))
         result["source_available"] = source_is_available(result["source_path"])
         return result
+
+    def get_run_by_source_path(self, source_path: Path) -> dict[str, Any] | None:
+        with self.session() as connection:
+            row = connection.execute(
+                """
+                SELECT id, source_path, parse_status, parser_id, sha256, point_count
+                FROM runs
+                WHERE source_path = ?
+                """,
+                (str(source_path),),
+            ).fetchone()
+        return dict(row) if row else None
 
     def update_metadata(self, run_id: int, values: dict[str, Any]) -> dict[str, Any] | None:
         allowed = ("sample_id", "material", "electrolyte", "area_cm2", "tags", "notes")
@@ -549,11 +994,43 @@ class RuntimeState:
         self.config = config
         self.started = time.monotonic()
         self.stop_event = threading.Event()
+        self.control = StageCManager(
+            database,
+            config,
+            output_importer=self._import_control_outputs,
+        )
+
+    def _import_control_outputs(
+        self,
+        binary_path: Path,
+        text_path: Path,
+    ) -> dict[str, Any]:
+        self.scanner.scan()
+        binary = self.database.get_run_by_source_path(binary_path)
+        text = self.database.get_run_by_source_path(text_path)
+        return {
+            "binary_run_id": binary["id"] if binary else None,
+            "text_run_id": text["id"] if text else None,
+            "parse_status": text["parse_status"] if text else "not_imported",
+        }
 
     def watcher(self) -> None:
         while not self.stop_event.is_set():
             self.scanner.scan()
             self.stop_event.wait(self.config["scan_interval_seconds"])
+
+    def control_watcher(self) -> None:
+        while not self.stop_event.is_set():
+            try:
+                self.control.poll_all()
+            except Exception:
+                traceback.print_exc()
+            self.stop_event.wait(1.0)
+
+    def control_capabilities(self) -> dict[str, Any]:
+        capabilities = self.control.capabilities()
+        capabilities["dry_run"] = dry_run_capabilities()
+        return capabilities
 
     def status(self) -> dict[str, Any]:
         counts = self.database.status_counts()
@@ -564,11 +1041,15 @@ class RuntimeState:
         return {
             "app": APP_NAME,
             "version": APP_VERSION,
-            "mode": "read_only_sources_and_offline_dry_run",
+            "mode": (
+                "read_only_sources_and_stage_c_ocp_control"
+                if self.config["instrument_control_enabled"]
+                else "read_only_sources_and_stage_c_locked"
+            ),
             "loopback_only": True,
             "instrument_control": self.config["instrument_control_enabled"],
-            "control_stage": DRY_RUN_STAGE,
-            "launch_available": False,
+            "control_stage": STAGE_C_ID,
+            "launch_available": self.config["instrument_control_enabled"],
             "serial_access": False,
             "local_override_active": self.config["local_override_active"],
             "config_sources": self.config["config_sources"],
@@ -650,7 +1131,37 @@ def create_handler(runtime: RuntimeState):
                 if path == "/api/status":
                     self.send_json(runtime.status())
                 elif path == "/api/control/capabilities":
-                    self.send_json(dry_run_capabilities())
+                    self.send_json(runtime.control_capabilities())
+                elif path == "/api/control/preflight":
+                    self.send_json(runtime.control.preflight())
+                elif path == "/api/control/runs":
+                    if not runtime.config["instrument_control_enabled"]:
+                        self.send_error_json(HTTPStatus.NOT_FOUND, "Not found")
+                    else:
+                        limit = int(query.get("limit", ["50"])[0])
+                        self.send_json(runtime.database.list_automation_runs(limit))
+                elif re.fullmatch(
+                    r"/api/control/runs/RUN-[A-Z0-9-]+/events",
+                    path,
+                ):
+                    if not runtime.config["instrument_control_enabled"]:
+                        self.send_error_json(HTTPStatus.NOT_FOUND, "Not found")
+                    else:
+                        run_id = path.split("/")[-2]
+                        self.send_json(runtime.database.automation_events(run_id))
+                elif re.fullmatch(r"/api/control/runs/RUN-[A-Z0-9-]+", path):
+                    if not runtime.config["instrument_control_enabled"]:
+                        self.send_error_json(HTTPStatus.NOT_FOUND, "Not found")
+                    else:
+                        run_id = path.rsplit("/", 1)[-1]
+                        run = runtime.database.get_automation_run(run_id)
+                        if run:
+                            self.send_json(run)
+                        else:
+                            self.send_error_json(
+                                HTTPStatus.NOT_FOUND,
+                                "自动化运行不存在。",
+                            )
                 elif path == "/api/protocols":
                     self.send_json(runtime.database.list_protocol_drafts())
                 elif re.fullmatch(r"/api/protocols/[a-z0-9][a-z0-9_-]{0,63}", path):
@@ -690,10 +1201,14 @@ def create_handler(runtime: RuntimeState):
                     self.send_static("index.html")
                 elif path in {"/protocol", "/protocol.html"}:
                     self.send_static("protocol.html")
+                elif path in {"/monitor", "/monitor.html"}:
+                    self.send_static("monitor.html")
                 elif path.startswith("/static/"):
                     self.send_static(path[len("/static/") :])
                 else:
                     self.send_error_json(HTTPStatus.NOT_FOUND, "Not found")
+            except ControlSafetyError as exc:
+                self.send_json(exc.to_dict(), exc.status)
             except Exception:
                 traceback.print_exc()
                 self.send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, "服务器内部错误。")
@@ -743,6 +1258,65 @@ def create_handler(runtime: RuntimeState):
                         )
                     )
                     return
+                if path == "/api/control/runs":
+                    payload = self.read_json()
+                    unknown = sorted(set(payload) - {"protocol"})
+                    if unknown:
+                        raise ValueError(
+                            "创建运行请求包含未知字段：" + ", ".join(unknown)
+                        )
+                    protocol = payload.get("protocol")
+                    if not isinstance(protocol, dict):
+                        raise ValueError("protocol 必须是 JSON 对象。")
+                    self.send_json(
+                        runtime.control.create_run(protocol),
+                        HTTPStatus.CREATED,
+                    )
+                    return
+                control_match = re.fullmatch(
+                    r"/api/control/runs/(RUN-[A-Z0-9-]+)/(arm|start|request-stop)",
+                    path,
+                )
+                if control_match:
+                    run_id, action = control_match.groups()
+                    payload = self.read_json()
+                    if action == "arm":
+                        unknown = sorted(
+                            set(payload) - {"confirmations", "typed_confirmation"}
+                        )
+                        if unknown:
+                            raise ValueError(
+                                "确认请求包含未知字段：" + ", ".join(unknown)
+                            )
+                        confirmations = payload.get("confirmations")
+                        if not isinstance(confirmations, dict):
+                            raise ValueError("confirmations 必须是 JSON 对象。")
+                        self.send_json(
+                            runtime.control.arm(
+                                run_id,
+                                confirmations,
+                                str(payload.get("typed_confirmation", "")),
+                            )
+                        )
+                        return
+                    if action == "start":
+                        unknown = sorted(set(payload) - {"arm_token"})
+                        if unknown:
+                            raise ValueError(
+                                "启动请求包含未知字段：" + ", ".join(unknown)
+                            )
+                        self.send_json(
+                            runtime.control.start(
+                                run_id,
+                                str(payload.get("arm_token", "")),
+                            ),
+                            HTTPStatus.ACCEPTED,
+                        )
+                        return
+                    if payload:
+                        raise ValueError("停止请求不接受参数。")
+                    self.send_json(runtime.control.request_stop(run_id))
+                    return
                 match = re.fullmatch(r"/api/runs/(\d+)/metadata", path)
                 if match:
                     payload = self.read_json()
@@ -757,6 +1331,8 @@ def create_handler(runtime: RuntimeState):
                 self.send_json(exc.to_dict(), HTTPStatus.BAD_REQUEST)
             except MacroValidationError as exc:
                 self.send_json(exc.to_dict(), HTTPStatus.BAD_REQUEST)
+            except ControlSafetyError as exc:
+                self.send_json(exc.to_dict(), exc.status)
             except (ValueError, json.JSONDecodeError) as exc:
                 self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
             except Exception:
@@ -769,6 +1345,10 @@ def create_handler(runtime: RuntimeState):
 def build_runtime(config_path: Path, database_path: Path) -> RuntimeState:
     config = load_config(config_path)
     roots = resolve_watch_roots(config, config_path.parent)
+    if config["instrument_control_enabled"]:
+        control_run_root = Path(config["run_root"]).resolve()
+        if control_run_root not in roots:
+            roots.append(control_run_root)
     database = Database(database_path)
     scanner = Scanner(
         database=database,
@@ -802,12 +1382,21 @@ def main() -> int:
     if not args.no_watch:
         watcher = threading.Thread(target=runtime.watcher, name="file-watcher", daemon=True)
         watcher.start()
+    control_watcher = threading.Thread(
+        target=runtime.control_watcher,
+        name="stage-c-supervisor",
+        daemon=True,
+    )
+    control_watcher.start()
 
     bind = runtime.config["bind"]
     port = args.port or runtime.config["port"]
     server = ThreadingHTTPServer((bind, port), create_handler(runtime))
     print(f"{APP_NAME} {APP_VERSION}")
-    print("只读源文件模式：开启；网页 Dry-run：开启；串口和仪器控制：关闭")
+    if runtime.config["instrument_control_enabled"]:
+        print("只读源文件模式：开启；阶段 C 60 s OCP：本机私有配置已启用；串口直连：关闭")
+    else:
+        print("只读源文件模式：开启；阶段 C 60 s OCP：锁定；串口和仪器控制：关闭")
     print(f"浏览器地址：http://{bind}:{port}")
     try:
         server.serve_forever(poll_interval=0.5)

@@ -100,9 +100,13 @@ class WorkbenchShellTests(unittest.TestCase):
     def test_data_analysis_is_a_separate_module(self) -> None:
         parser = self.parse_page("analysis.html")
         self.assertIn('curveChart', parser.ids)
-        self.assertIn('metadataForm', parser.ids)
         self.assertIn('fileTree', parser.ids)
         self.assertIn('treeCount', parser.ids)
+        self.assertNotIn('metadataForm', parser.ids)
+        self.assertNotIn('auditList', parser.ids)
+        self.assertNotIn('totalCount', parser.ids)
+        self.assertNotIn('parsedCount', parser.ids)
+        self.assertNotIn('integrityCount', parser.ids)
         self.assertNotIn('runList', parser.ids)
         self.assertNotIn('watchRoots', parser.ids)
         self.assertIn("/static/analysis.js", parser.scripts)
@@ -116,7 +120,10 @@ class WorkbenchShellTests(unittest.TestCase):
             "eisFields",
             "cvFields",
             "cvSolution",
+            "cvSolutionCustom",
             "cvPh",
+            "cvReference",
+            "cvReferenceCustom",
             "cvReferenceOffset",
             "cvCompensation",
             "cvResistance",
@@ -131,13 +138,42 @@ class WorkbenchShellTests(unittest.TestCase):
         self.assertIn("/api/runs/${runId}/analyses", script)
         self.assertIn("analysisRequestId", script)
         self.assertIn("analysisHistoryRequestId", script)
-        self.assertIn("metadataRequestId", script)
         self.assertIn("setAnalysisBusy(true)", script)
-        self.assertIn("setMetadataBusy(true)", script)
         self.assertIn("renderDetailLoading", script)
         self.assertIn("renderDetailFailure", script)
         self.assertIn("eis_resistance", script)
         self.assertIn("cv_overpotential", script)
+        self.assertIn('<select id="cvSolution"', page)
+        self.assertIn('data-ph="14.00"', page)
+        self.assertIn('data-ph="13.00"', page)
+        self.assertIn('data-offset="0.098"', page)
+        self.assertIn('data-offset="0.197"', page)
+        self.assertIn("25 ℃名义值", page)
+        self.assertIn("normalizeSolutionLabel", script)
+        self.assertIn("syncSolutionPreset", script)
+        self.assertIn("selectedSolutionValue", script)
+        self.assertIn("selectedReferenceValue", script)
+        self.assertIn("syncReferenceOffset", script)
+        self.assertIn("cvReferenceOffset.readOnly = !custom", script)
+        self.assertNotIn("metadataRequestId", script)
+        self.assertNotIn("/api/audit", script)
+        self.assertNotIn("/metadata", script)
+
+    def test_analysis_page_omits_deferred_summary_and_context_regions(self) -> None:
+        page = (STATIC / "analysis.html").read_text(encoding="utf-8")
+        script = (STATIC / "analysis.js").read_text(encoding="utf-8")
+        for text in (
+            'class="hero-grid"',
+            'id="metadataForm"',
+            'id="auditList"',
+            "样品信息",
+            "最近活动",
+            "搜索文件夹、文件或样品",
+        ):
+            self.assertNotIn(text, page)
+        self.assertNotIn("file-sample", script)
+        self.assertNotIn("loadStatus", script)
+        self.assertNotIn("loadAudit", script)
 
     def test_data_folders_are_managed_from_environment_settings(self) -> None:
         analysis = (STATIC / "analysis.html").read_text(encoding="utf-8")

@@ -4,26 +4,18 @@ const state = {
   runs: [],
   selectedId: null,
   selectedRun: null,
-  status: null,
-  refreshTimer: null,
   runsRequestId: 0,
   detailRequestId: 0,
   analysisRequestId: 0,
   analysisHistoryRequestId: 0,
-  metadataRequestId: 0,
   analysisPreview: null,
   analysisPreviewSaved: false,
   analysisDirty: false,
   analysisBusy: false,
-  metadataBusy: false,
   openFolders: new Set(),
 };
 
 const elements = {
-  totalCount: document.querySelector("#totalCount"),
-  parsedCount: document.querySelector("#parsedCount"),
-  integrityCount: document.querySelector("#integrityCount"),
-  sourceSummary: document.querySelector("#sourceSummary"),
   scanButton: document.querySelector("#scanButton"),
   searchInput: document.querySelector("#searchInput"),
   techniqueFilter: document.querySelector("#techniqueFilter"),
@@ -48,9 +40,13 @@ const elements = {
   eisFields: document.querySelector("#eisFields"),
   cvFields: document.querySelector("#cvFields"),
   cvSolution: document.querySelector("#cvSolution"),
+  cvSolutionCustomField: document.querySelector("#cvSolutionCustomField"),
+  cvSolutionCustom: document.querySelector("#cvSolutionCustom"),
   cvPh: document.querySelector("#cvPh"),
   cvReaction: document.querySelector("#cvReaction"),
   cvReference: document.querySelector("#cvReference"),
+  cvReferenceCustomField: document.querySelector("#cvReferenceCustomField"),
+  cvReferenceCustom: document.querySelector("#cvReferenceCustom"),
   cvReferenceOffset: document.querySelector("#cvReferenceOffset"),
   cvCompensation: document.querySelector("#cvCompensation"),
   cvResistance: document.querySelector("#cvResistance"),
@@ -64,17 +60,6 @@ const elements = {
   analysisResultFreshness: document.querySelector("#analysisResultFreshness"),
   analysisHistoryCount: document.querySelector("#analysisHistoryCount"),
   analysisHistoryList: document.querySelector("#analysisHistoryList"),
-  metadataForm: document.querySelector("#metadataForm"),
-  recordId: document.querySelector("#recordId"),
-  sampleId: document.querySelector("#sampleId"),
-  material: document.querySelector("#material"),
-  electrolyte: document.querySelector("#electrolyte"),
-  areaCm2: document.querySelector("#areaCm2"),
-  tags: document.querySelector("#tags"),
-  notes: document.querySelector("#notes"),
-  saveMetadata: document.querySelector("#saveMetadata"),
-  saveState: document.querySelector("#saveState"),
-  auditList: document.querySelector("#auditList"),
   toast: document.querySelector("#toast"),
 };
 
@@ -131,19 +116,6 @@ function showToast(message, isError = false) {
   showToast.timer = window.setTimeout(() => elements.toast.classList.remove("show"), 2600);
 }
 
-function renderStatus() {
-  const status = state.status;
-  if (!status) return;
-  elements.totalCount.textContent = status.total;
-  elements.parsedCount.textContent = status.parsed;
-  elements.integrityCount.textContent = status.total;
-  const available = status.watch_roots.filter((root) => root.available).length;
-  const unavailableSources = status.unavailable_sources || 0;
-  elements.sourceSummary.textContent = unavailableSources
-    ? `${available}/${status.watch_roots.length} 个目录可用 · ${unavailableSources} 条源文件不可用`
-    : `${available}/${status.watch_roots.length} 个目录可用`;
-}
-
 function makeFolderNode(name = "") {
   return { name, folders: new Map(), files: [] };
 }
@@ -183,9 +155,6 @@ function renderFileButton(run) {
   const sourceState = run.source_available
     ? ""
     : '<span class="source-state">源文件不可用</span>';
-  const sampleState = run.sample_id
-    ? `<span class="file-sample" title="${escapeHtml(run.sample_id)}">样品 · ${escapeHtml(run.sample_id)}</span>`
-    : "";
   const parsedState = run.parse_status === "metadata_only"
     ? "仅元数据"
     : `${run.point_count.toLocaleString("zh-CN")} 点`;
@@ -206,7 +175,6 @@ function renderFileButton(run) {
       </span>
       <span class="file-node-meta">
         <span>${escapeHtml(parsedState)}</span>
-        ${sampleState}
         <span class="file-time">${formatDate(run.modified_utc)}</span>
         ${sourceState}
       </span>
@@ -289,48 +257,6 @@ function renderFileTree() {
   elements.fileTree.querySelectorAll(".file-node").forEach((button) => {
     button.addEventListener("click", () => selectRun(Number(button.dataset.runId)));
   });
-}
-
-function fillMetadata(run) {
-  elements.recordId.value = run?.id ?? "";
-  elements.sampleId.value = run?.sample_id ?? "";
-  elements.material.value = run?.material ?? "";
-  elements.electrolyte.value = run?.electrolyte ?? "";
-  elements.areaCm2.value = run?.area_cm2 ?? "";
-  elements.tags.value = run?.tags ?? "";
-  elements.notes.value = run?.notes ?? "";
-  syncMetadataControls(run);
-}
-
-function syncMetadataControls(run = state.selectedRun) {
-  const disabled = !run || state.metadataBusy;
-  [
-    elements.sampleId,
-    elements.material,
-    elements.electrolyte,
-    elements.areaCm2,
-    elements.tags,
-    elements.notes,
-  ].forEach((control) => {
-    control.disabled = disabled;
-  });
-  elements.saveMetadata.disabled = disabled;
-}
-
-function setMetadataBusy(busy) {
-  state.metadataBusy = busy;
-  syncMetadataControls();
-}
-
-function clearMetadataSaveStateLater(requestId, detailRequestId) {
-  window.setTimeout(() => {
-    if (
-      requestId === state.metadataRequestId &&
-      detailRequestId === state.detailRequestId
-    ) {
-      elements.saveState.textContent = "";
-    }
-  }, 2000);
 }
 
 function sourceAvailabilityChip(run) {
@@ -548,6 +474,97 @@ function setAnalysisBusy(busy) {
   syncAnalysisControls();
 }
 
+function selectedOption(control) {
+  return control.options[control.selectedIndex] || null;
+}
+
+function selectedSolutionValue() {
+  return elements.cvSolution.value === "custom"
+    ? elements.cvSolutionCustom.value.trim()
+    : elements.cvSolution.value;
+}
+
+function selectedReferenceValue() {
+  return elements.cvReference.value === "custom"
+    ? elements.cvReferenceCustom.value.trim()
+    : elements.cvReference.value;
+}
+
+function normalizeSolutionLabel(value) {
+  return String(value)
+    .trim()
+    .toLowerCase()
+    .replaceAll(/\s+/g, "")
+    .replace(/^(\d+(?:\.\d+)?)m/, (_match, concentration) =>
+      `${Number(concentration)}m`,
+    );
+}
+
+function syncSolutionPreset(resetCustom = false) {
+  const option = selectedOption(elements.cvSolution);
+  const custom = elements.cvSolution.value === "custom";
+  elements.cvSolutionCustomField.hidden = !custom;
+  elements.cvSolutionCustom.disabled = !custom;
+  elements.cvSolutionCustom.required = custom;
+  if (custom) {
+    if (resetCustom) {
+      elements.cvSolutionCustom.value = "";
+      elements.cvPh.value = "";
+    }
+    elements.cvPh.placeholder = "输入实测 pH";
+    return;
+  }
+  elements.cvSolutionCustom.value = "";
+  elements.cvPh.value = option?.dataset.ph || "";
+  elements.cvPh.placeholder = option?.dataset.ph
+    ? "按所选溶液自动填写"
+    : "选择溶液后自动填写";
+}
+
+function selectSolutionForRun(electrolyte = "") {
+  const savedSolution = String(electrolyte).trim();
+  const normalizedSavedSolution = normalizeSolutionLabel(savedSolution);
+  const preset = [...elements.cvSolution.options].find(
+    (option) =>
+      option.value &&
+      option.value !== "custom" &&
+      normalizeSolutionLabel(option.value) === normalizedSavedSolution,
+  );
+  elements.cvSolutionCustom.value = "";
+  elements.cvPh.value = "";
+  if (preset) {
+    elements.cvSolution.value = preset.value;
+  } else if (savedSolution) {
+    elements.cvSolution.value = "custom";
+    elements.cvSolutionCustom.value = savedSolution;
+  } else {
+    elements.cvSolution.value = "";
+  }
+  syncSolutionPreset();
+}
+
+function syncReferenceOffset(resetCustom = false) {
+  const option = selectedOption(elements.cvReference);
+  const custom = elements.cvReference.value === "custom";
+  elements.cvReferenceCustomField.hidden = !custom;
+  elements.cvReferenceCustom.disabled = !custom;
+  elements.cvReferenceCustom.required = custom;
+  elements.cvReferenceOffset.readOnly = !custom;
+  if (custom) {
+    if (resetCustom) {
+      elements.cvReferenceCustom.value = "";
+      elements.cvReferenceOffset.value = "";
+    }
+    elements.cvReferenceOffset.placeholder = "输入实测标定值";
+    return;
+  }
+  elements.cvReferenceCustom.value = "";
+  elements.cvReferenceOffset.value = option?.dataset.offset || "";
+  elements.cvReferenceOffset.placeholder = option?.dataset.offset !== undefined
+    ? "按所选参比电极自动填写"
+    : "选择参比电极后自动填写";
+}
+
 function configureAnalysis(run, preserveResult = false) {
   const analysisType = analysisTypeForRun(run);
   elements.analysisSaveState.textContent = "";
@@ -564,13 +581,12 @@ function configureAnalysis(run, preserveResult = false) {
         ? "CV 过电位分析"
         : "仅原始曲线";
   if (analysisType === "cv_overpotential" && !preserveResult) {
-    elements.cvSolution.value = run.electrolyte || "";
-    elements.cvPh.value = "";
+    selectSolutionForRun(run.electrolyte);
     elements.cvReaction.value = "HER";
-    elements.cvReference.value = "Hg/HgO";
-    elements.cvReferenceOffset.disabled = false;
+    elements.cvReference.value = "";
+    elements.cvReferenceCustom.value = "";
     elements.cvReferenceOffset.value = "";
-    elements.cvReferenceOffset.placeholder = "按参比填充液/标定值确认";
+    syncReferenceOffset();
     elements.cvCompensation.value = "85";
     elements.cvCompensation.disabled = false;
     elements.cvResistance.value = "";
@@ -727,7 +743,7 @@ function renderAnalysisResult(analysis, saved = false) {
         ["pH", parameters.ph],
         ["反应", parameters.reaction],
         ["参比", parameters.reference_electrode],
-        ["参比偏移", parameters.reference_offset_v == null ? null : `${parameters.reference_offset_v} V vs SHE`],
+        ["参比电势", parameters.reference_offset_v == null ? null : `${parameters.reference_offset_v} V vs SHE`],
         ["补偿", parameters.compensation_percent == null ? null : `${parameters.compensation_percent}%`],
         ["Rs", parameters.solution_resistance_ohm == null ? null : `${parameters.solution_resistance_ohm} Ω`],
         ["扫描分支", parameters.scan_branch],
@@ -818,17 +834,15 @@ async function loadAnalysisHistory(runId) {
   }
 }
 
-function renderDetail(run, { preserveAnalysis = false } = {}) {
+function renderDetail(run) {
   state.selectedRun = run;
-  elements.saveState.textContent = "";
   elements.detailInstrument.textContent = run ? `${run.instrument} 文件` : "选择一个实验文件";
   elements.detailTitle.textContent = run ? run.source_name : "曲线预览";
   elements.detailTechnique.textContent = run ? run.technique : "—";
   elements.detailHash.textContent = run ? `SHA ${run.sha256.slice(0, 12)}…` : "SHA-256";
   elements.detailHash.title = run?.sha256 ?? "";
-  fillMetadata(run);
   drawChart(run);
-  configureAnalysis(run, preserveAnalysis);
+  configureAnalysis(run);
 }
 
 function renderDetailLoading(runId) {
@@ -851,39 +865,6 @@ function renderDetailFailure(runId, error) {
   elements.analysisModeBadge.textContent = "读取失败";
 }
 
-function renderAudit(items) {
-  if (!items.length) {
-    elements.auditList.innerHTML = `<div class="empty-list">尚无审计记录</div>`;
-    return;
-  }
-  const labels = {
-    imported: "导入记录",
-    updated: "源文件更新",
-    metadata_updated: "样品信息更新",
-    analysis_saved: "方法分析已保存",
-    deferred: "暂缓读取",
-    read_error: "读取异常",
-  };
-  elements.auditList.innerHTML = items
-    .map(
-      (item) => `
-        <div class="audit-item">
-          <span class="audit-dot"></span>
-          <div>
-            <div class="audit-main">${escapeHtml(labels[item.action] || item.action)} · ${escapeHtml(item.target)}</div>
-            <div class="audit-detail">${escapeHtml(item.detail)}</div>
-            <div class="audit-time">${formatDate(item.created_utc)}</div>
-          </div>
-        </div>`,
-    )
-    .join("");
-}
-
-async function loadStatus() {
-  state.status = await request("/api/status");
-  renderStatus();
-}
-
 async function loadFileTree(preserveSelection = true) {
   const requestId = ++state.runsRequestId;
   const parameters = new URLSearchParams();
@@ -903,17 +884,12 @@ async function loadFileTree(preserveSelection = true) {
   else renderDetail(null);
 }
 
-async function loadAudit() {
-  renderAudit(await request("/api/audit?limit=30"));
-}
-
 async function selectRun(runId, rerenderList = true) {
   const requestId = ++state.detailRequestId;
   ++state.analysisRequestId;
   ++state.analysisHistoryRequestId;
   const treeRequestId = state.runsRequestId;
   state.analysisBusy = false;
-  state.metadataBusy = false;
   state.selectedId = runId;
   if (rerenderList) renderFileTree();
   renderDetailLoading(runId);
@@ -944,7 +920,6 @@ async function selectRun(runId, rerenderList = true) {
 
 async function refreshAll(preserveSelection = true) {
   try {
-    await Promise.all([loadStatus(), loadAudit()]);
     await loadFileTree(preserveSelection);
   } catch (error) {
     showToast(error.message, true);
@@ -979,10 +954,10 @@ elements.techniqueFilter.addEventListener("change", () => loadFileTree(false));
 function collectAnalysisParameters() {
   if (analysisTypeForRun(state.selectedRun) !== "cv_overpotential") return {};
   return {
-    solution: elements.cvSolution.value.trim(),
+    solution: selectedSolutionValue(),
     ph: Number(elements.cvPh.value),
     reaction: elements.cvReaction.value,
-    reference_electrode: elements.cvReference.value,
+    reference_electrode: selectedReferenceValue(),
     reference_offset_v: Number(elements.cvReferenceOffset.value),
     compensation_percent: Number(elements.cvCompensation.value),
     solution_resistance_ohm: Number(elements.cvResistance.value),
@@ -1055,10 +1030,7 @@ async function calculateAnalysis(save) {
     elements.analysisSaveState.textContent = save ? "结果已保存" : "预览完成 · 尚未保存";
     if (save) {
       showToast("分析结果已保存到平台数据库");
-      await Promise.all([
-        loadAnalysisHistory(runId),
-        loadAudit(),
-      ]);
+      await loadAnalysisHistory(runId);
     }
   } catch (error) {
     if (requestId !== state.analysisRequestId || state.selectedId !== runId) return;
@@ -1091,17 +1063,13 @@ elements.saveAnalysis.addEventListener("click", () => calculateAnalysis(true));
 elements.analysisForm.addEventListener("input", markAnalysisDirty);
 elements.analysisForm.addEventListener("change", markAnalysisDirty);
 
-function syncReferenceOffset() {
-  const fixedZero = ["SHE", "RHE"].includes(elements.cvReference.value);
-  elements.cvReferenceOffset.disabled = fixedZero;
-  elements.cvReferenceOffset.value = fixedZero ? "0" : "";
-  elements.cvReferenceOffset.placeholder = fixedZero
-    ? "0"
-    : "按参比填充液/标定值确认";
-}
+elements.cvSolution.addEventListener("change", () => {
+  syncSolutionPreset(true);
+  markAnalysisDirty();
+});
 
 elements.cvReference.addEventListener("change", () => {
-  syncReferenceOffset();
+  syncReferenceOffset(true);
   markAnalysisDirty();
 });
 
@@ -1113,76 +1081,8 @@ elements.cvOnlineCompensation.addEventListener("change", () => {
   markAnalysisDirty();
 });
 
-elements.metadataForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  if (state.metadataBusy) return;
-  const runId = Number(elements.recordId.value);
-  if (!runId) return;
-  const requestId = ++state.metadataRequestId;
-  const detailRequestId = state.detailRequestId;
-  setMetadataBusy(true);
-  elements.saveState.textContent = "保存中…";
-  const payload = {
-    sample_id: elements.sampleId.value,
-    material: elements.material.value,
-    electrolyte: elements.electrolyte.value,
-    area_cm2: elements.areaCm2.value,
-    tags: elements.tags.value,
-    notes: elements.notes.value,
-  };
-  try {
-    const run = await request(`/api/runs/${runId}/metadata`, {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
-    if (
-      requestId === state.metadataRequestId &&
-      detailRequestId === state.detailRequestId &&
-      state.selectedId === runId &&
-      Number(elements.recordId.value) === runId
-    ) {
-      setMetadataBusy(false);
-      renderDetail(run, { preserveAnalysis: true });
-      await Promise.all([loadFileTree(), loadAudit()]);
-      if (
-        requestId === state.metadataRequestId &&
-        state.selectedId === runId &&
-        Number(elements.recordId.value) === runId
-      ) {
-        const refreshedDetailRequestId = state.detailRequestId;
-        elements.saveState.textContent = "已保存";
-        showToast("样品信息已保存到平台数据库");
-        clearMetadataSaveStateLater(requestId, refreshedDetailRequestId);
-      }
-    } else {
-      await loadAudit();
-    }
-  } catch (error) {
-    if (
-      requestId === state.metadataRequestId &&
-      detailRequestId === state.detailRequestId &&
-      Number(elements.recordId.value) === runId
-    ) {
-      elements.saveState.textContent = "保存失败";
-      showToast(error.message, true);
-      clearMetadataSaveStateLater(requestId, detailRequestId);
-    }
-  } finally {
-    if (
-      requestId === state.metadataRequestId &&
-      state.selectedId === runId &&
-      Number(elements.recordId.value) === runId
-    ) {
-      setMetadataBusy(false);
-    }
-  }
-});
-
 window.addEventListener("resize", () => {
   if (state.selectedRun) drawChart(state.selectedRun);
 });
 
 refreshAll(false);
-state.refreshTimer = window.setInterval(() => {
-  Promise.all([loadStatus(), loadAudit()]).catch(() => {});
-}, 10000);

@@ -53,7 +53,7 @@
           <span class="workbench-nav-number">03</span>
           <span class="workbench-nav-copy">
             <strong>数据分析</strong>
-            <small>曲线、样品与完整性</small>
+            <small>曲线与方法分析</small>
           </span>
         </a>
       </nav>
@@ -83,29 +83,6 @@
       </header>
 
       <main>
-    <section class="hero-grid" aria-label="数据分析指标">
-      <article class="status-card accent-card">
-        <div class="status-label">数据文件</div>
-        <div class="status-value" id="totalCount">—</div>
-        <div class="status-foot" id="sourceSummary">等待首次扫描</div>
-      </article>
-      <article class="status-card">
-        <div class="status-label">可绘制曲线</div>
-        <div class="status-value" id="parsedCount">—</div>
-        <div class="status-foot">已完成二维数值解析</div>
-      </article>
-      <article class="status-card">
-        <div class="status-label">完整性记录</div>
-        <div class="status-value" id="integrityCount">—</div>
-        <div class="status-foot">每个文件保存 SHA-256</div>
-      </article>
-      <article class="status-card safe-card">
-        <div class="status-label">安全模式</div>
-        <div class="status-value status-word">只读</div>
-        <div class="status-foot">COM3 / COM4 未访问</div>
-      </article>
-    </section>
-
     <section class="workspace">
       <aside class="sidebar panel">
         <div class="panel-heading">
@@ -118,7 +95,7 @@
         <label class="search-box">
           <span class="sr-only">搜索</span>
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
-          <input id="searchInput" type="search" placeholder="搜索文件夹、文件或样品">
+          <input id="searchInput" type="search" placeholder="搜索文件夹或文件">
         </label>
         <div class="filter-row single-filter">
           <select id="techniqueFilter" aria-label="测试类型筛选">
@@ -213,11 +190,22 @@
                 <div class="analysis-form-grid">
                   <label class="span-two">
                     溶液
-                    <input id="cvSolution" name="solution" autocomplete="off" placeholder="例如 1.0 M KOH" required>
+                    <select id="cvSolution" name="solution_preset" required>
+                      <option value="">请选择溶液</option>
+                      <option value="1.0 M KOH" data-ph="14.00">1.0 M KOH</option>
+                      <option value="0.1 M KOH" data-ph="13.00">0.1 M KOH</option>
+                      <option value="1.0 M NaOH" data-ph="14.00">1.0 M NaOH</option>
+                      <option value="0.1 M NaOH" data-ph="13.00">0.1 M NaOH</option>
+                      <option value="custom">自定义 / 实测值</option>
+                    </select>
+                  </label>
+                  <label id="cvSolutionCustomField" class="span-two" hidden>
+                    自定义溶液
+                    <input id="cvSolutionCustom" name="solution" autocomplete="off" placeholder="输入溶液与浓度" disabled>
                   </label>
                   <label>
-                    pH
-                    <input id="cvPh" name="ph" type="number" min="0" max="16" step="0.01" inputmode="decimal" placeholder="14.00" required>
+                    pH（自动预填，可修改）
+                    <input id="cvPh" name="ph" type="number" min="0" max="16" step="0.01" inputmode="decimal" placeholder="选择溶液后自动填写" required>
                   </label>
                   <label>
                     反应
@@ -229,16 +217,21 @@
                   <label>
                     参比电极
                     <select id="cvReference" name="reference_electrode" required>
-                      <option value="Hg/HgO">Hg/HgO（按填充液确认偏移）</option>
-                      <option value="Ag/AgCl">Ag/AgCl（按填充液确认偏移）</option>
-                      <option value="SHE">SHE</option>
-                      <option value="RHE">RHE（原始电位已换算）</option>
-                      <option value="custom">自定义</option>
+                      <option value="">请选择参比电极</option>
+                      <option value="Hg/HgO (1 M KOH)" data-offset="0.098">Hg/HgO（1 M KOH）</option>
+                      <option value="Ag/AgCl (saturated KCl)" data-offset="0.197">Ag/AgCl（饱和 KCl）</option>
+                      <option value="SHE" data-offset="0">SHE</option>
+                      <option value="RHE" data-offset="0">RHE（原始电位已换算）</option>
+                      <option value="custom">其他填充液 / 实测标定值</option>
                     </select>
                   </label>
                   <label>
-                    参比偏移 / V vs SHE
-                    <input id="cvReferenceOffset" name="reference_offset_v" type="number" step="0.0001" inputmode="decimal" placeholder="按参比填充液/标定值确认" required>
+                    参比电势 / V vs SHE
+                    <input id="cvReferenceOffset" name="reference_offset_v" type="number" step="0.0001" inputmode="decimal" placeholder="选择参比电极后自动填写" readonly required>
+                  </label>
+                  <label id="cvReferenceCustomField" class="span-two" hidden>
+                    自定义参比电极与内部填充液
+                    <input id="cvReferenceCustom" name="reference_electrode_custom" autocomplete="off" placeholder="例如 Ag/AgCl（3 M KCl）" disabled>
                   </label>
                   <label>
                     iR 补偿 / %
@@ -273,9 +266,12 @@
                     </select>
                   </label>
                 </div>
+                <p class="preset-note">
+                  预设 pH 为 25 ℃名义值，可直接改成实测值。参比电势按电极及填充液自动填写；温度、填充液或标定条件不同时，请选择自定义项。
+                </p>
                 <p class="formula-note">
                   25 ℃：E<sub>RHE</sub> = E<sub>meas</sub> + E<sub>ref vs SHE</sub> + 0.05916 × pH；
-                  E<sub>comp</sub> = E<sub>RHE</sub> − f × I × Rs。若原始电位已是 RHE，不重复加入参比偏移或 pH 项。
+                  E<sub>comp</sub> = E<sub>RHE</sub> − f × I × Rs。若原始电位已是 RHE，不重复加入参比电势或 pH 项。
                 </p>
               </fieldset>
 
@@ -309,39 +305,6 @@
           </div>
         </article>
 
-        <div class="lower-grid">
-          <article class="panel metadata-panel">
-            <div class="panel-heading">
-              <div>
-                <span class="eyebrow">实验上下文</span>
-                <h2>样品信息</h2>
-              </div>
-              <span class="save-state" id="saveState"></span>
-            </div>
-            <form id="metadataForm">
-              <input id="recordId" type="hidden">
-              <div class="form-grid">
-                <label>样品编号<input id="sampleId" name="sample_id" placeholder="例如 NiMo-0724-01"></label>
-                <label>材料<input id="material" name="material" placeholder="例如 NiMo / Ni foam"></label>
-                <label>电解液<input id="electrolyte" name="electrolyte" placeholder="例如 1.0 M KOH"></label>
-                <label>电极面积 / cm²<input id="areaCm2" name="area_cm2" inputmode="decimal" placeholder="1.00"></label>
-                <label class="span-two">标签<input id="tags" name="tags" placeholder="HER, 稳定性, 平行样"></label>
-                <label class="span-two">备注<textarea id="notes" name="notes" rows="3" placeholder="仅保存到平台数据库，不写回原始文件"></textarea></label>
-              </div>
-              <button id="saveMetadata" class="secondary-button" type="submit" disabled>保存样品信息</button>
-            </form>
-          </article>
-
-          <article class="panel audit-panel">
-            <div class="panel-heading">
-              <div>
-              <span class="eyebrow">Analysis trace</span>
-                <h2>最近活动</h2>
-              </div>
-            </div>
-            <div id="auditList" class="audit-list"></div>
-          </article>
-        </div>
       </section>
     </section>
       </main>

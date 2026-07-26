@@ -991,7 +991,7 @@ def calculate_cv_overpotential(
         )
     warnings.append(
         (
-            "原始电位已声明为 RHE，本次未重复叠加参比偏移或 pH 项。"
+            "原始电位已声明为 RHE，本次未重复叠加参比电势或 pH 项。"
             if reference_is_rhe
             else "RHE 换算按 25 °C 的 0.05916 V/pH 执行；参考电极偏移量由本次参数显式提供。"
         )

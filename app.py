@@ -44,7 +44,7 @@ from echem_platform.parsers import (
 
 
 APP_NAME = "电化学测试平台 V0.3 Stage C"
-APP_VERSION = "0.3.0-dev.9"
+APP_VERSION = "0.3.0-dev.10"
 APP_ROOT = Path(__file__).resolve().parent
 STATIC_ROOT = APP_ROOT / "static"
 DEFAULT_CONFIG = APP_ROOT / "config.json"

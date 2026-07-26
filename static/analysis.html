@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>数据分析 · 电化学测试平台</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%2317212b'/%3E%3Cpath d='M10 38c8-24 16 20 24-8s14 16 20-10' fill='none' stroke='%237ee2d7' stroke-width='5' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/workbench.css">
+</head>
+<body>
+  <div class="workbench-shell">
+    <aside class="workbench-sidebar">
+      <a class="workbench-brand" href="/" aria-label="返回工作台">
+        <div class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 48 48" role="img">
+            <path d="M8 28c5-15 10 14 16-4s11 10 16-6"/>
+            <circle cx="8" cy="28" r="3"/>
+            <circle cx="40" cy="18" r="3"/>
+          </svg>
+        </div>
+        <div>
+          <strong>EchemPlatform</strong>
+          <span>电化学测试工作台</span>
+        </div>
+      </a>
+
+      <div class="workbench-environment">
+        <div>
+          <strong>Windows 本机</strong>
+          <small>测试环境 · 只读优先</small>
+        </div>
+      </div>
+
+      <nav class="workbench-navigation" aria-label="工作台功能">
+        <span class="workbench-nav-label">Workspace</span>
+        <a class="workbench-nav-item" href="/">
+          <span class="workbench-nav-number">01</span>
+          <span class="workbench-nav-copy">
+            <strong>工作台</strong>
+            <small>当前活动与系统概况</small>
+          </span>
+        </a>
+        <a class="workbench-nav-item" href="/steps">
+          <span class="workbench-nav-number">02</span>
+          <span class="workbench-nav-copy">
+            <strong>工步设置</strong>
+            <small>测试顺序、参数与 Dry-run</small>
+          </span>
+        </a>
+        <a class="workbench-nav-item" href="/analysis" aria-current="page">
+          <span class="workbench-nav-number">03</span>
+          <span class="workbench-nav-copy">
+            <strong>数据分析</strong>
+            <small>曲线、样品与完整性</small>
+          </span>
+        </a>
+      </nav>
+
+      <div class="workbench-utility-dock">
+        <a class="workbench-settings-button" href="/environment" aria-label="环境检测与设置" title="环境检测与设置">
+          <img src="/static/icons/gear.svg" alt="">
+        </a>
+        <div class="workbench-mini-status">
+          <strong>控制默认锁定</strong>
+          <small>环境检测与设置</small>
+        </div>
+      </div>
+    </aside>
+
+    <div class="workbench-content">
+      <header class="topbar workbench-topbar">
+        <div class="workbench-page-heading">
+          <span class="eyebrow">Workspace / Analysis</span>
+          <h1>数据分析</h1>
+          <p>实验曲线、样品元数据与文件完整性</p>
+        </div>
+        <div class="top-actions">
+          <div class="safety-pill"><span></span>控制默认锁定</div>
+          <button id="scanButton" class="primary-button" type="button">立即扫描</button>
+        </div>
+      </header>
+
+      <main>
+    <section class="hero-grid" aria-label="数据分析指标">
+      <article class="status-card accent-card">
+        <div class="status-label">数据文件</div>
+        <div class="status-value" id="totalCount">—</div>
+        <div class="status-foot" id="sourceSummary">等待首次扫描</div>
+      </article>
+      <article class="status-card">
+        <div class="status-label">可绘制曲线</div>
+        <div class="status-value" id="parsedCount">—</div>
+        <div class="status-foot">已完成二维数值解析</div>
+      </article>
+      <article class="status-card">
+        <div class="status-label">完整性记录</div>
+        <div class="status-value" id="integrityCount">—</div>
+        <div class="status-foot">每个文件保存 SHA-256</div>
+      </article>
+      <article class="status-card safe-card">
+        <div class="status-label">安全模式</div>
+        <div class="status-value status-word">只读</div>
+        <div class="status-foot">COM3 / COM4 未访问</div>
+      </article>
+    </section>
+
+    <section class="workspace">
+      <aside class="sidebar panel">
+        <div class="panel-heading">
+          <div>
+              <span class="eyebrow">Analysis data</span>
+              <h2>测试记录</h2>
+          </div>
+        </div>
+        <label class="search-box">
+          <span class="sr-only">搜索</span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+          <input id="searchInput" type="search" placeholder="样品、材料或文件名">
+        </label>
+        <div class="filter-row">
+          <select id="instrumentFilter" aria-label="仪器筛选">
+            <option value="">全部仪器</option>
+            <option value="CHI">CHI</option>
+            <option value="CorrTest">CorrTest</option>
+            <option value="未知">未识别</option>
+          </select>
+          <select id="techniqueFilter" aria-label="测试类型筛选">
+            <option value="">全部方法</option>
+            <option>CV</option>
+            <option>LSV</option>
+            <option>EIS</option>
+            <option>OCP</option>
+            <option>CA</option>
+            <option>CP/GCD</option>
+            <option>Tafel</option>
+            <option>未识别</option>
+          </select>
+        </div>
+        <div id="runList" class="run-list" aria-live="polite"></div>
+      </aside>
+
+      <section class="detail-column">
+        <article class="panel chart-panel">
+          <div class="panel-heading detail-heading">
+            <div>
+              <span class="eyebrow" id="detailInstrument">选择一条记录</span>
+              <h2 id="detailTitle">曲线预览</h2>
+            </div>
+            <div class="detail-badges">
+              <span class="method-badge" id="detailTechnique">—</span>
+              <span class="hash-badge" id="detailHash">SHA-256</span>
+            </div>
+          </div>
+          <div class="chart-shell">
+            <canvas id="curveChart" aria-label="电化学测试曲线"></canvas>
+            <div id="chartEmpty" class="chart-empty">
+              <div class="empty-icon">⌁</div>
+              <p>从左侧选择一条已解析的数据记录</p>
+            </div>
+          </div>
+          <div id="chartStats" class="chart-stats"></div>
+        </article>
+
+        <div class="lower-grid">
+          <article class="panel metadata-panel">
+            <div class="panel-heading">
+              <div>
+                <span class="eyebrow">实验上下文</span>
+                <h2>样品信息</h2>
+              </div>
+              <span class="save-state" id="saveState"></span>
+            </div>
+            <form id="metadataForm">
+              <input id="recordId" type="hidden">
+              <div class="form-grid">
+                <label>样品编号<input id="sampleId" name="sample_id" placeholder="例如 NiMo-0724-01"></label>
+                <label>材料<input id="material" name="material" placeholder="例如 NiMo / Ni foam"></label>
+                <label>电解液<input id="electrolyte" name="electrolyte" placeholder="例如 1.0 M KOH"></label>
+                <label>电极面积 / cm²<input id="areaCm2" name="area_cm2" inputmode="decimal" placeholder="1.00"></label>
+                <label class="span-two">标签<input id="tags" name="tags" placeholder="HER, 稳定性, 平行样"></label>
+                <label class="span-two">备注<textarea id="notes" name="notes" rows="3" placeholder="仅保存到平台数据库，不写回原始文件"></textarea></label>
+              </div>
+              <button id="saveMetadata" class="secondary-button" type="submit" disabled>保存样品信息</button>
+            </form>
+          </article>
+
+          <article class="panel audit-panel">
+            <div class="panel-heading">
+              <div>
+              <span class="eyebrow">Analysis trace</span>
+                <h2>最近活动</h2>
+              </div>
+            </div>
+            <div id="auditList" class="audit-list"></div>
+          </article>
+        </div>
+      </section>
+    </section>
+
+    <section class="source-panel panel">
+      <div>
+        <span class="eyebrow">受控数据源</span>
+        <h2>监控目录</h2>
+      </div>
+      <div id="watchRoots" class="root-list"></div>
+      <div class="source-note">平台不会在这些目录中创建、重命名或删除文件。</div>
+    </section>
+      </main>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/static/analysis.js"></script>
+</body>
+</html>

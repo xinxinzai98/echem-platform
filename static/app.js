@@ -1,41 +1,30 @@
-const state = {
-  runs: [],
-  selectedId: null,
-  selectedRun: null,
+const dashboardState = {
   status: null,
+  instrumentRuns: {
+    CHI: [],
+    CorrTest: [],
+  },
+  activity: [],
   refreshTimer: null,
-  runsRequestId: 0,
 };
 
-const elements = {
-  totalCount: document.querySelector("#totalCount"),
-  parsedCount: document.querySelector("#parsedCount"),
-  integrityCount: document.querySelector("#integrityCount"),
-  sourceSummary: document.querySelector("#sourceSummary"),
+const dashboardElements = {
   scanButton: document.querySelector("#scanButton"),
-  searchInput: document.querySelector("#searchInput"),
-  instrumentFilter: document.querySelector("#instrumentFilter"),
-  techniqueFilter: document.querySelector("#techniqueFilter"),
-  runList: document.querySelector("#runList"),
-  detailInstrument: document.querySelector("#detailInstrument"),
-  detailTitle: document.querySelector("#detailTitle"),
-  detailTechnique: document.querySelector("#detailTechnique"),
-  detailHash: document.querySelector("#detailHash"),
-  curveChart: document.querySelector("#curveChart"),
-  chartEmpty: document.querySelector("#chartEmpty"),
-  chartStats: document.querySelector("#chartStats"),
-  metadataForm: document.querySelector("#metadataForm"),
-  recordId: document.querySelector("#recordId"),
-  sampleId: document.querySelector("#sampleId"),
-  material: document.querySelector("#material"),
-  electrolyte: document.querySelector("#electrolyte"),
-  areaCm2: document.querySelector("#areaCm2"),
-  tags: document.querySelector("#tags"),
-  notes: document.querySelector("#notes"),
-  saveMetadata: document.querySelector("#saveMetadata"),
-  saveState: document.querySelector("#saveState"),
-  auditList: document.querySelector("#auditList"),
-  watchRoots: document.querySelector("#watchRoots"),
+  lastUpdated: document.querySelector("#lastUpdated"),
+  controlPill: document.querySelector("#controlPill"),
+  sidebarControlState: document.querySelector("#sidebarControlState"),
+  instrumentActivity: document.querySelector("#instrumentActivity"),
+  systemHealth: document.querySelector("#systemHealth"),
+  serviceMetric: document.querySelector("#serviceMetric"),
+  uptimeMetric: document.querySelector("#uptimeMetric"),
+  parsedMetric: document.querySelector("#parsedMetric"),
+  parsedMetricNote: document.querySelector("#parsedMetricNote"),
+  sourceMetric: document.querySelector("#sourceMetric"),
+  sourceMetricNote: document.querySelector("#sourceMetricNote"),
+  controlMetric: document.querySelector("#controlMetric"),
+  controlMetricNote: document.querySelector("#controlMetricNote"),
+  activityCount: document.querySelector("#activityCount"),
+  recentActivity: document.querySelector("#recentActivity"),
   toast: document.querySelector("#toast"),
 };
 
@@ -60,9 +49,9 @@ function escapeHtml(value) {
 }
 
 function formatDate(value) {
-  if (!value) return "—";
+  if (!value) return "暂无记录";
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
+  if (Number.isNaN(date.getTime())) return String(value);
   return new Intl.DateTimeFormat("zh-CN", {
     month: "2-digit",
     day: "2-digit",
@@ -71,222 +60,108 @@ function formatDate(value) {
   }).format(date);
 }
 
-function formatNumber(value) {
-  if (!Number.isFinite(value)) return "—";
-  const magnitude = Math.abs(value);
-  if (magnitude !== 0 && (magnitude >= 1e4 || magnitude < 1e-3)) {
-    return value.toExponential(3);
-  }
-  return new Intl.NumberFormat("zh-CN", { maximumSignificantDigits: 5 }).format(value);
+function formatUptime(seconds) {
+  if (!Number.isFinite(seconds)) return "等待心跳";
+  if (seconds < 60) return `${seconds} 秒运行时间`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟运行时间`;
+  return `${Math.floor(seconds / 3600)} 小时 ${Math.floor((seconds % 3600) / 60)} 分钟`;
 }
 
 function showToast(message, isError = false) {
-  elements.toast.textContent = message;
-  elements.toast.style.background = isError ? "#9d3b2c" : "#17212b";
-  elements.toast.classList.add("show");
+  dashboardElements.toast.textContent = message;
+  dashboardElements.toast.style.background = isError ? "#9d3b2c" : "#17212b";
+  dashboardElements.toast.classList.add("show");
   window.clearTimeout(showToast.timer);
-  showToast.timer = window.setTimeout(() => elements.toast.classList.remove("show"), 2600);
+  showToast.timer = window.setTimeout(
+    () => dashboardElements.toast.classList.remove("show"),
+    2600,
+  );
 }
 
-function renderStatus() {
-  const status = state.status;
-  if (!status) return;
-  elements.totalCount.textContent = status.total;
-  elements.parsedCount.textContent = status.parsed;
-  elements.integrityCount.textContent = status.total;
-  const available = status.watch_roots.filter((root) => root.available).length;
-  const unavailableSources = status.unavailable_sources || 0;
-  elements.sourceSummary.textContent = unavailableSources
-    ? `${available}/${status.watch_roots.length} 个目录可用 · ${unavailableSources} 条源文件不可用`
-    : `${available}/${status.watch_roots.length} 个目录可用`;
-  elements.watchRoots.innerHTML = status.watch_roots
-    .map(
-      (root) =>
-        `<span class="root-chip ${root.available ? "" : "missing"}" title="${escapeHtml(root.path)}">` +
-        `${escapeHtml(root.path)}${root.available ? "" : " · 不可用"}</span>`,
-    )
-    .join("");
-}
-
-function renderRunList() {
-  if (!state.runs.length) {
-    elements.runList.innerHTML = `<div class="empty-list">当前筛选条件下没有数据记录</div>`;
-    return;
+function activityState(run) {
+  if (!run?.modified_utc) {
+    return { label: "无数据活动", className: "quiet" };
   }
-  elements.runList.innerHTML = state.runs
-    .map((run) => {
-      const label = run.sample_id || run.source_name;
-      const secondary = run.sample_id ? run.source_name : run.instrument;
+  const ageSeconds = (Date.now() - new Date(run.modified_utc).getTime()) / 1000;
+  if (Number.isFinite(ageSeconds) && ageSeconds <= 120) {
+    return { label: "正在产生数据", className: "live" };
+  }
+  if (Number.isFinite(ageSeconds) && ageSeconds <= 3600) {
+    return { label: "最近有活动", className: "recent" };
+  }
+  return { label: "待机", className: "idle" };
+}
+
+function renderInstrumentActivity() {
+  const definitions = [
+    { key: "CHI", name: "CHI760E", code: "CHI" },
+    { key: "CorrTest", name: "CorrTest CS Studio", code: "CS" },
+  ];
+  dashboardElements.instrumentActivity.innerHTML = definitions
+    .map((instrument) => {
+      const latest = dashboardState.instrumentRuns[instrument.key][0];
+      const current = activityState(latest);
+      const detail = latest
+        ? `${escapeHtml(latest.technique)} · ${escapeHtml(latest.source_name)}`
+        : "尚未发现可用数据文件";
+      const sourceState = latest && !latest.source_available
+        ? '<span class="instrument-warning">源文件不可用</span>'
+        : "";
       return `
-        <button class="run-item ${run.id === state.selectedId ? "active" : ""} ${run.source_available ? "" : "source-missing"}" data-run-id="${run.id}" type="button">
-          <span class="run-item-top">
-            <span class="run-item-name" title="${escapeHtml(label)}">${escapeHtml(label)}</span>
-            <span class="run-item-tags">
-              <span class="run-item-method">${escapeHtml(run.technique)}</span>
-              ${run.source_available ? "" : '<span class="source-state">源文件不可用</span>'}
-            </span>
-          </span>
-          <span class="run-item-meta">
-            <span>${escapeHtml(secondary)}</span>
-            <span>${run.point_count.toLocaleString("zh-CN")} 点 · ${formatDate(run.modified_utc)}</span>
-          </span>
-        </button>`;
+        <article class="instrument-activity-row">
+          <div class="instrument-code">${instrument.code}</div>
+          <div class="instrument-activity-copy">
+            <div class="instrument-name-line">
+              <strong>${instrument.name}</strong>
+              <span class="instrument-state ${current.className}">${current.label}</span>
+            </div>
+            <p>${detail}</p>
+            <small>${latest ? `最近记录 ${formatDate(latest.modified_utc)}` : "等待首次数据扫描"} ${sourceState}</small>
+          </div>
+          <div class="instrument-control-note">
+            <span>${dashboardState.status?.instrument_control ? "控制已启用" : "控制未接管"}</span>
+            <small>${latest?.point_count ? `${latest.point_count.toLocaleString("zh-CN")} 点` : "只读观察"}</small>
+          </div>
+        </article>`;
     })
     .join("");
-  elements.runList.querySelectorAll(".run-item").forEach((button) => {
-    button.addEventListener("click", () => selectRun(Number(button.dataset.runId)));
-  });
 }
 
-function fillMetadata(run) {
-  elements.recordId.value = run?.id ?? "";
-  elements.sampleId.value = run?.sample_id ?? "";
-  elements.material.value = run?.material ?? "";
-  elements.electrolyte.value = run?.electrolyte ?? "";
-  elements.areaCm2.value = run?.area_cm2 ?? "";
-  elements.tags.value = run?.tags ?? "";
-  elements.notes.value = run?.notes ?? "";
-  elements.saveMetadata.disabled = !run;
+function renderSystemMetrics() {
+  const status = dashboardState.status;
+  if (!status) return;
+  const availableRoots = status.watch_roots.filter((root) => root.available).length;
+  const parsedPercent = status.total
+    ? Math.round((status.parsed / status.total) * 100)
+    : 0;
+  const healthy = availableRoots === status.watch_roots.length
+    && (status.unavailable_sources || 0) === 0;
+
+  dashboardElements.systemHealth.textContent = healthy ? "运行正常" : "需要检查";
+  dashboardElements.systemHealth.classList.toggle("warning", !healthy);
+  dashboardElements.serviceMetric.textContent = "在线";
+  dashboardElements.uptimeMetric.textContent = formatUptime(status.uptime_seconds);
+  dashboardElements.parsedMetric.textContent = `${parsedPercent}%`;
+  dashboardElements.parsedMetricNote.textContent = `${status.parsed}/${status.total} 条可绘制`;
+  dashboardElements.sourceMetric.textContent = `${availableRoots}/${status.watch_roots.length}`;
+  dashboardElements.sourceMetricNote.textContent = status.unavailable_sources
+    ? `${status.unavailable_sources} 条源文件不可用`
+    : "监控目录与源文件可用";
+  dashboardElements.controlMetric.textContent = status.instrument_control ? "已启用" : "锁定";
+  dashboardElements.controlMetric.classList.toggle("metric-warning", status.instrument_control);
+  dashboardElements.controlMetricNote.textContent = status.instrument_control
+    ? "进入环境设置复核授权"
+    : "COM3 / COM4 未访问";
+
+  dashboardElements.controlPill.lastChild.textContent = status.instrument_control
+    ? "仪器控制已启用"
+    : "仪器控制锁定";
+  dashboardElements.sidebarControlState.textContent = status.instrument_control
+    ? "控制已启用"
+    : "控制默认锁定";
 }
 
-function sourceAvailabilityChip(run) {
-  if (!run) return "";
-  const className = run.source_available ? "source-ok" : "source-warning";
-  const label = run.source_available ? "源文件可用" : "源文件已移动或删除";
-  return `<span class="stat-chip ${className}">${label}</span>`;
-}
-
-function drawChart(run) {
-  const canvas = elements.curveChart;
-  const points = run?.points || [];
-  if (!points.length) {
-    elements.chartEmpty.style.display = "grid";
-    elements.chartStats.innerHTML = run
-      ? `<span class="stat-chip">${escapeHtml(run.parse_error || "该文件当前仅登记元数据")}</span>${sourceAvailabilityChip(run)}`
-      : "";
-    const context = canvas.getContext("2d");
-    context.clearRect(0, 0, canvas.width, canvas.height);
-    return;
-  }
-  elements.chartEmpty.style.display = "none";
-
-  const rect = canvas.getBoundingClientRect();
-  const ratio = Math.max(1, window.devicePixelRatio || 1);
-  canvas.width = Math.round(rect.width * ratio);
-  canvas.height = Math.round(rect.height * ratio);
-  const context = canvas.getContext("2d");
-  context.scale(ratio, ratio);
-
-  const width = rect.width;
-  const height = rect.height;
-  const margin = { left: 72, right: 22, top: 20, bottom: 52 };
-  const plotWidth = width - margin.left - margin.right;
-  const plotHeight = height - margin.top - margin.bottom;
-  let xMin = Math.min(...points.map((point) => point[0]));
-  let xMax = Math.max(...points.map((point) => point[0]));
-  let yMin = Math.min(...points.map((point) => point[1]));
-  let yMax = Math.max(...points.map((point) => point[1]));
-  if (xMin === xMax) [xMin, xMax] = [xMin - 1, xMax + 1];
-  if (yMin === yMax) [yMin, yMax] = [yMin - 1, yMax + 1];
-  const xPadding = (xMax - xMin) * 0.03;
-  const yPadding = (yMax - yMin) * 0.08;
-  xMin -= xPadding;
-  xMax += xPadding;
-  yMin -= yPadding;
-  yMax += yPadding;
-
-  const xScale = (value) => margin.left + ((value - xMin) / (xMax - xMin)) * plotWidth;
-  const yScale = (value) => margin.top + (1 - (value - yMin) / (yMax - yMin)) * plotHeight;
-
-  context.clearRect(0, 0, width, height);
-  context.lineWidth = 1;
-  context.font = '10px Inter, "PingFang SC", sans-serif';
-  context.fillStyle = "#667480";
-  context.strokeStyle = "#dce3e6";
-
-  for (let index = 0; index <= 5; index += 1) {
-    const x = margin.left + (index / 5) * plotWidth;
-    const y = margin.top + (index / 5) * plotHeight;
-    context.beginPath();
-    context.moveTo(x, margin.top);
-    context.lineTo(x, margin.top + plotHeight);
-    context.stroke();
-    context.beginPath();
-    context.moveTo(margin.left, y);
-    context.lineTo(margin.left + plotWidth, y);
-    context.stroke();
-
-    const xValue = xMin + (index / 5) * (xMax - xMin);
-    const yValue = yMax - (index / 5) * (yMax - yMin);
-    context.textAlign = "center";
-    context.fillText(formatNumber(xValue), x, margin.top + plotHeight + 19);
-    context.textAlign = "right";
-    context.fillText(formatNumber(yValue), margin.left - 9, y + 3);
-  }
-
-  if (yMin < 0 && yMax > 0) {
-    context.strokeStyle = "rgba(23, 33, 43, 0.28)";
-    context.beginPath();
-    context.moveTo(margin.left, yScale(0));
-    context.lineTo(margin.left + plotWidth, yScale(0));
-    context.stroke();
-  }
-
-  const gradient = context.createLinearGradient(margin.left, 0, margin.left + plotWidth, 0);
-  gradient.addColorStop(0, "#e9862b");
-  gradient.addColorStop(0.45, "#087f75");
-  gradient.addColorStop(1, "#075e58");
-  context.strokeStyle = gradient;
-  context.lineWidth = 2.1;
-  context.lineJoin = "round";
-  context.lineCap = "round";
-  context.beginPath();
-  points.forEach((point, index) => {
-    const x = xScale(point[0]);
-    const y = yScale(point[1]);
-    if (index === 0) context.moveTo(x, y);
-    else context.lineTo(x, y);
-  });
-  context.stroke();
-
-  context.fillStyle = "#3c4a52";
-  context.textAlign = "center";
-  context.font = '11px Inter, "PingFang SC", sans-serif';
-  context.fillText(run.x_name || "X", margin.left + plotWidth / 2, height - 13);
-  context.save();
-  context.translate(17, margin.top + plotHeight / 2);
-  context.rotate(-Math.PI / 2);
-  context.fillText(run.y_name || "Y", 0, 0);
-  context.restore();
-
-  elements.chartStats.innerHTML = [
-    `${run.point_count.toLocaleString("zh-CN")} 个原始点`,
-    `X: ${formatNumber(Math.min(...points.map((p) => p[0])))} → ${formatNumber(Math.max(...points.map((p) => p[0])))}`,
-    `Y: ${formatNumber(Math.min(...points.map((p) => p[1])))} → ${formatNumber(Math.max(...points.map((p) => p[1])))}`,
-    run.encoding,
-    run.parser_id,
-  ]
-    .filter(Boolean)
-    .map((value) => `<span class="stat-chip">${escapeHtml(value)}</span>`)
-    .join("") + sourceAvailabilityChip(run);
-}
-
-function renderDetail(run) {
-  state.selectedRun = run;
-  elements.detailInstrument.textContent = run ? run.instrument : "选择一条记录";
-  elements.detailTitle.textContent = run ? run.source_name : "曲线预览";
-  elements.detailTechnique.textContent = run ? run.technique : "—";
-  elements.detailHash.textContent = run ? `SHA ${run.sha256.slice(0, 12)}…` : "SHA-256";
-  elements.detailHash.title = run?.sha256 ?? "";
-  fillMetadata(run);
-  drawChart(run);
-}
-
-function renderAudit(items) {
-  if (!items.length) {
-    elements.auditList.innerHTML = `<div class="empty-list">尚无审计记录</div>`;
-    return;
-  }
+function renderRecentActivity() {
   const labels = {
     imported: "导入记录",
     updated: "源文件更新",
@@ -294,126 +169,71 @@ function renderAudit(items) {
     deferred: "暂缓读取",
     read_error: "读取异常",
   };
-  elements.auditList.innerHTML = items
-    .map(
-      (item) => `
-        <div class="audit-item">
-          <span class="audit-dot"></span>
-          <div>
-            <div class="audit-main">${escapeHtml(labels[item.action] || item.action)} · ${escapeHtml(item.target)}</div>
-            <div class="audit-detail">${escapeHtml(item.detail)}</div>
-            <div class="audit-time">${formatDate(item.created_utc)}</div>
-          </div>
-        </div>`,
-    )
+  dashboardElements.activityCount.textContent = `${dashboardState.activity.length} 条`;
+  if (!dashboardState.activity.length) {
+    dashboardElements.recentActivity.innerHTML =
+      '<div class="dashboard-empty">尚无平台活动记录</div>';
+    return;
+  }
+  dashboardElements.recentActivity.innerHTML = dashboardState.activity
+    .map((item) => `
+      <article class="dashboard-activity-item">
+        <span class="dashboard-activity-dot"></span>
+        <div>
+          <strong>${escapeHtml(labels[item.action] || item.action)}</strong>
+          <p>${escapeHtml(item.target)} · ${escapeHtml(item.detail)}</p>
+        </div>
+        <time>${formatDate(item.created_utc)}</time>
+      </article>`)
     .join("");
 }
 
-async function loadStatus() {
-  state.status = await request("/api/status");
-  renderStatus();
-}
-
-async function loadRuns(preserveSelection = true) {
-  const requestId = ++state.runsRequestId;
-  const parameters = new URLSearchParams();
-  if (elements.instrumentFilter.value) parameters.set("instrument", elements.instrumentFilter.value);
-  if (elements.techniqueFilter.value) parameters.set("technique", elements.techniqueFilter.value);
-  if (elements.searchInput.value.trim()) parameters.set("q", elements.searchInput.value.trim());
-  const runs = await request(`/api/runs?${parameters.toString()}`);
-  if (requestId !== state.runsRequestId) return;
-  state.runs = runs;
-  if (!preserveSelection || !state.runs.some((run) => run.id === state.selectedId)) {
-    state.selectedId = state.runs[0]?.id ?? null;
-  }
-  renderRunList();
-  if (state.selectedId) await selectRun(state.selectedId, false);
-  else renderDetail(null);
-}
-
-async function loadAudit() {
-  renderAudit(await request("/api/audit?limit=30"));
-}
-
-async function selectRun(runId, rerenderList = true) {
-  state.selectedId = runId;
-  if (rerenderList) renderRunList();
-  const run = await request(`/api/runs/${runId}`);
-  renderDetail(run);
-}
-
-async function refreshAll(preserveSelection = true) {
+async function refreshDashboard() {
   try {
-    await Promise.all([loadStatus(), loadAudit()]);
-    await loadRuns(preserveSelection);
+    const [status, chiRuns, corrTestRuns, activity] = await Promise.all([
+      request("/api/status"),
+      request("/api/runs?instrument=CHI"),
+      request("/api/runs?instrument=CorrTest"),
+      request("/api/audit?limit=8"),
+    ]);
+    dashboardState.status = status;
+    dashboardState.instrumentRuns.CHI = chiRuns;
+    dashboardState.instrumentRuns.CorrTest = corrTestRuns;
+    dashboardState.activity = activity;
+    renderInstrumentActivity();
+    renderSystemMetrics();
+    renderRecentActivity();
+    dashboardElements.lastUpdated.textContent =
+      `更新于 ${new Intl.DateTimeFormat("zh-CN", {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      }).format(new Date())}`;
   } catch (error) {
+    dashboardElements.systemHealth.textContent = "连接异常";
+    dashboardElements.systemHealth.classList.add("warning");
     showToast(error.message, true);
   }
 }
 
-elements.scanButton.addEventListener("click", async () => {
-  elements.scanButton.disabled = true;
-  elements.scanButton.textContent = "扫描中…";
+dashboardElements.scanButton.addEventListener("click", async () => {
+  dashboardElements.scanButton.disabled = true;
+  dashboardElements.scanButton.textContent = "刷新中…";
   try {
     const result = await request("/api/scan", { method: "POST", body: "{}" });
-    if (result.status === "busy") showToast("后台扫描正在进行");
-    else {
-      showToast(`扫描完成：新增 ${result.imported}，更新 ${result.updated}`);
-      await refreshAll();
+    if (result.status === "busy") {
+      showToast("后台扫描正在进行");
+    } else {
+      showToast(`数据刷新完成：新增 ${result.imported}，更新 ${result.updated}`);
     }
+    await refreshDashboard();
   } catch (error) {
     showToast(error.message, true);
   } finally {
-    elements.scanButton.disabled = false;
-    elements.scanButton.textContent = "立即扫描";
+    dashboardElements.scanButton.disabled = false;
+    dashboardElements.scanButton.textContent = "刷新数据";
   }
 });
 
-let searchDelay;
-elements.searchInput.addEventListener("input", () => {
-  window.clearTimeout(searchDelay);
-  searchDelay = window.setTimeout(() => loadRuns(false), 220);
-});
-elements.instrumentFilter.addEventListener("change", () => loadRuns(false));
-elements.techniqueFilter.addEventListener("change", () => loadRuns(false));
-
-elements.metadataForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const runId = Number(elements.recordId.value);
-  if (!runId) return;
-  elements.saveMetadata.disabled = true;
-  elements.saveState.textContent = "保存中…";
-  const payload = {
-    sample_id: elements.sampleId.value,
-    material: elements.material.value,
-    electrolyte: elements.electrolyte.value,
-    area_cm2: elements.areaCm2.value,
-    tags: elements.tags.value,
-    notes: elements.notes.value,
-  };
-  try {
-    const run = await request(`/api/runs/${runId}/metadata`, {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
-    renderDetail(run);
-    await Promise.all([loadRuns(), loadAudit()]);
-    elements.saveState.textContent = "已保存";
-    showToast("样品信息已保存到平台数据库");
-  } catch (error) {
-    elements.saveState.textContent = "保存失败";
-    showToast(error.message, true);
-  } finally {
-    elements.saveMetadata.disabled = false;
-    window.setTimeout(() => (elements.saveState.textContent = ""), 2000);
-  }
-});
-
-window.addEventListener("resize", () => {
-  if (state.selectedRun) drawChart(state.selectedRun);
-});
-
-refreshAll(false);
-state.refreshTimer = window.setInterval(() => {
-  Promise.all([loadStatus(), loadAudit()]).catch(() => {});
-}, 10000);
+refreshDashboard();
+dashboardState.refreshTimer = window.setInterval(refreshDashboard, 10000);

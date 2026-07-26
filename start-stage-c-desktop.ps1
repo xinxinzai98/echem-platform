@@ -139,7 +139,7 @@ if ($status.instrument_control -and -not $AllowInstrumentControl) {
     Stop-CreatedPlatform -Process $platformProcess -Created $created
     throw (
         "Instrument control is enabled. The normal desktop launcher only opens " +
-        "the locked monitor. A fresh authorized run requires the explicit " +
+        "the locked workbench. A fresh authorized run requires the explicit " +
         "-AllowInstrumentControl switch."
     )
 }
@@ -190,12 +190,12 @@ if ($AcceptanceOnly) {
 }
 
 if (-not $NoBrowser) {
-    Start-Process "$uri/monitor"
+    Start-Process "$uri/"
 }
 [Console]::Out.WriteLine(
     ([ordered]@{
         status = 'running'
-        url = "$uri/monitor"
+        url = "$uri/"
         process_id = $platformProcess.Id
         port = $Port
         launcher_session_id = $launcherSession

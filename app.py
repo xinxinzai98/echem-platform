@@ -39,7 +39,7 @@ from echem_platform.parsers import (
 
 
 APP_NAME = "电化学测试平台 V0.3 Stage C"
-APP_VERSION = "0.3.0-dev.6"
+APP_VERSION = "0.3.0-dev.7"
 APP_ROOT = Path(__file__).resolve().parent
 STATIC_ROOT = APP_ROOT / "static"
 DEFAULT_CONFIG = APP_ROOT / "config.json"
@@ -1199,9 +1199,16 @@ def create_handler(runtime: RuntimeState):
                     self.send_json(runtime.database.recent_audit(limit))
                 elif path == "/":
                     self.send_static("index.html")
-                elif path in {"/protocol", "/protocol.html"}:
+                elif path in {"/steps", "/steps.html", "/protocol", "/protocol.html"}:
                     self.send_static("protocol.html")
-                elif path in {"/monitor", "/monitor.html"}:
+                elif path in {"/analysis", "/analysis.html"}:
+                    self.send_static("analysis.html")
+                elif path in {
+                    "/environment",
+                    "/environment.html",
+                    "/monitor",
+                    "/monitor.html",
+                }:
                     self.send_static("monitor.html")
                 elif path.startswith("/static/"):
                     self.send_static(path[len("/static/") :])

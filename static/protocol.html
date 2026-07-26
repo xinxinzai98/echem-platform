@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
-  <title>协议 Dry-run · 电化学测试平台</title>
+  <title>工步设置 · 电化学测试平台</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%2317212b'/%3E%3Cpath d='M10 38c8-24 16 20 24-8s14 16 20-10' fill='none' stroke='%237ee2d7' stroke-width='5' stroke-linecap='round'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/static/styles.css">
   <link rel="stylesheet" href="/static/protocol.css">
@@ -13,7 +13,7 @@
 <body class="protocol-page">
   <div class="workbench-shell">
     <aside class="workbench-sidebar">
-      <a class="workbench-brand" href="/" aria-label="返回数据工作台">
+      <a class="workbench-brand" href="/" aria-label="返回工作台">
         <div class="brand-mark" aria-hidden="true">
           <svg viewBox="0 0 48 48" role="img">
             <path d="M8 28c5-15 10 14 16-4s11 10 16-6"/>
@@ -39,39 +39,43 @@
         <a class="workbench-nav-item" href="/">
           <span class="workbench-nav-number">01</span>
           <span class="workbench-nav-copy">
-            <strong>数据工作台</strong>
-            <small>曲线、样品与数据源</small>
+            <strong>工作台</strong>
+            <small>当前活动与系统概况</small>
           </span>
         </a>
-        <a class="workbench-nav-item" href="/protocol" aria-current="page">
+        <a class="workbench-nav-item" href="/steps" aria-current="page">
           <span class="workbench-nav-number">02</span>
           <span class="workbench-nav-copy">
-            <strong>协议编辑</strong>
-            <small>连续工步与 Dry-run</small>
+            <strong>工步设置</strong>
+            <small>测试顺序、参数与 Dry-run</small>
           </span>
         </a>
-        <a class="workbench-nav-item" href="/monitor">
+        <a class="workbench-nav-item" href="/analysis">
           <span class="workbench-nav-number">03</span>
           <span class="workbench-nav-copy">
-            <strong>阶段 C 安全门</strong>
-            <small>预检、确认与运行监控</small>
+            <strong>数据分析</strong>
+            <small>曲线、样品与完整性</small>
           </span>
         </a>
       </nav>
 
-      <div class="workbench-sidebar-footer">
-        <span>Safety status</span>
-        <strong>控制默认锁定</strong>
-        <small>仅本机 · 127.0.0.1</small>
+      <div class="workbench-utility-dock">
+        <a class="workbench-settings-button" href="/environment" aria-label="环境检测与设置" title="环境检测与设置">
+          <img src="/static/icons/gear.svg" alt="">
+        </a>
+        <div class="workbench-mini-status">
+          <strong>控制默认锁定</strong>
+          <small>环境检测与设置</small>
+        </div>
       </div>
     </aside>
 
     <div class="workbench-content">
       <header class="topbar workbench-topbar">
         <div class="workbench-page-heading">
-          <span class="eyebrow">Workspace / Protocol</span>
-          <h1>协议编辑</h1>
-          <p>连续工步、离线校验与宏预览</p>
+          <span class="eyebrow">Workspace / Steps</span>
+          <h1>工步设置</h1>
+          <p>测试顺序、参数、离线校验与宏预览</p>
         </div>
         <div class="top-actions">
           <div class="safety-pill"><span></span>本页仅 Dry-run</div>
@@ -81,9 +85,9 @@
       <main class="protocol-main">
     <section class="protocol-intro">
       <div>
-        <span class="eyebrow">Offline protocol studio</span>
-        <h2>先把连续工步变成可审查的运行快照</h2>
-        <p>在浏览器中编辑、保存、校验并预览 CHI 宏。所有计算都在本机完成；本页不启动软件，也不访问串口。</p>
+        <span class="eyebrow">Offline step builder</span>
+        <h2>把测试顺序整理成可审查的工步方案</h2>
+        <p>在浏览器中设置、排序、保存并校验 CHI 工步。所有计算都在本机完成；本页不启动软件，也不访问串口。</p>
       </div>
       <div class="dry-run-seal">
         <span class="seal-dot"></span>
@@ -94,7 +98,7 @@
       </div>
     </section>
 
-    <section class="protocol-metrics" aria-label="协议状态">
+    <section class="protocol-metrics" aria-label="工步方案状态">
       <article class="metric-card">
         <span>工步总数</span>
         <strong id="stepCount">0</strong>
@@ -122,14 +126,14 @@
         <article class="panel protocol-panel">
           <div class="panel-heading">
             <div>
-              <span class="eyebrow">Protocol metadata</span>
-              <h2>协议与输出目录</h2>
+              <span class="eyebrow">Step plan metadata</span>
+              <h2>工步方案与输出目录</h2>
             </div>
             <span class="draft-state" id="draftState">正在读取草稿…</span>
           </div>
           <div class="protocol-form-grid">
-            <label class="span-two">协议名称
-              <input id="protocolName" maxlength="160" placeholder="例如：演示协议">
+            <label class="span-two">工步方案名称
+              <input id="protocolName" maxlength="160" placeholder="例如：HER 基础测试工步">
             </label>
             <label>样品编号
               <input id="protocolSampleId" maxlength="120" placeholder="匿名编号">
@@ -217,7 +221,7 @@
             <span id="resultBadge" class="result-badge neutral">等待</span>
           </div>
           <div id="issueList" class="issue-list">
-            <div class="result-empty">编辑协议后点击“仅校验”或“生成 Dry-run 预览”。</div>
+            <div class="result-empty">设置工步后点击“仅校验”或“生成 Dry-run 预览”。</div>
           </div>
           <div id="warningSection" class="result-section" hidden>
             <h3>警告与人工复核</h3>
@@ -244,7 +248,7 @@
           <div id="macroMeta" class="macro-meta"></div>
           <pre id="macroPreview" tabindex="0"></pre>
           <details class="normalized-details">
-            <summary>查看规范化协议 JSON</summary>
+            <summary>查看规范化工步方案 JSON</summary>
             <pre id="normalizedPreview"></pre>
           </details>
         </article>

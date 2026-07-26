@@ -189,51 +189,87 @@
   color: #a8c9c4;
 }
 
-.workbench-sidebar-footer {
+.workbench-utility-dock {
+  display: flex;
+  align-items: center;
+  gap: 11px;
   margin-top: auto;
-  padding: 15px 13px;
+  padding: 10px 8px;
+  border-top: 1px solid var(--workbench-sidebar-line);
+}
+
+.workbench-settings-button {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 auto;
+  color: #9babb4;
   border: 1px solid var(--workbench-sidebar-line);
-  border-radius: 13px;
+  border-radius: 11px;
   background: rgba(255, 255, 255, 0.045);
+  transition:
+    color 0.16s ease,
+    background 0.16s ease,
+    border-color 0.16s ease,
+    transform 0.16s ease;
 }
 
-.workbench-sidebar-footer > span,
-.workbench-sidebar-footer > strong,
-.workbench-sidebar-footer > small {
+.workbench-settings-button:hover,
+.workbench-settings-button[aria-current="page"] {
+  color: #0f3f3b;
+  background: #7ee2d7;
+  border-color: #7ee2d7;
+  transform: translateY(-1px);
+}
+
+.workbench-settings-button img {
+  width: 17px;
+  height: 17px;
+  filter: invert(70%) sepia(10%) saturate(316%) hue-rotate(154deg);
+}
+
+.workbench-settings-button:hover img,
+.workbench-settings-button[aria-current="page"] img {
+  filter: invert(18%) sepia(20%) saturate(1565%) hue-rotate(127deg);
+}
+
+.workbench-mini-status {
+  min-width: 0;
+}
+
+.workbench-mini-status strong,
+.workbench-mini-status small {
   display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.workbench-sidebar-footer > span {
-  color: #70818d;
-  font-size: 9px;
-  font-weight: 800;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
-.workbench-sidebar-footer > strong {
+.workbench-mini-status strong {
   position: relative;
-  margin: 9px 0 5px;
-  padding-left: 15px;
-  font-size: 11px;
+  padding-left: 14px;
+  color: #d7dfe3;
+  font-size: 10px;
 }
 
-.workbench-sidebar-footer > strong::before {
+.workbench-mini-status strong::before {
   position: absolute;
   top: 50%;
-  left: 0;
-  width: 7px;
-  height: 7px;
+  left: 1px;
+  width: 6px;
+  height: 6px;
   content: "";
   border-radius: 50%;
   background: #55c7b8;
   transform: translateY(-50%);
-  box-shadow: 0 0 0 4px rgba(85, 199, 184, 0.1);
+  box-shadow: 0 0 0 3px rgba(85, 199, 184, 0.1);
 }
 
-.workbench-sidebar-footer > small {
+.workbench-mini-status small {
+  margin-top: 4px;
   color: var(--workbench-sidebar-muted);
-  font-size: 9px;
+  font-size: 8px;
 }
 
 .workbench-topbar {

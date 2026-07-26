@@ -42,6 +42,12 @@ class WindowsDesktopLauncherTests(unittest.TestCase):
         self.assertNotIn("com3", lowered)
         self.assertNotIn("com4", lowered)
 
+    def test_launcher_opens_the_workbench_overview(self):
+        script = self.read("start-stage-c-desktop.ps1")
+        self.assertIn('Start-Process "$uri/"', script)
+        self.assertIn('url = "$uri/"', script)
+        self.assertNotIn('Start-Process "$uri/monitor"', script)
+
     def test_stop_script_targets_only_verified_platform_and_blocks_active_runs(self):
         script = self.read("stop-stage-c-desktop.ps1")
         self.assertIn("$owner.ExecutablePath -ine $python", script)

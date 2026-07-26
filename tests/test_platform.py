@@ -292,11 +292,13 @@ class ProtocolApiTests(unittest.TestCase):
             any(issue["code"] == "unknown_field" for issue in payload["issues"])
         )
 
-    def test_protocol_page_is_served_with_restrictive_headers(self):
+    def test_workspace_modules_are_served_with_restrictive_headers(self):
         body = (ROOT / "static" / "protocol.html").read_text(encoding="utf-8")
         handler_source = inspect.getsource(APP.create_handler)
-        self.assertIn("协议 Dry-run", body)
-        self.assertIn('path in {"/protocol", "/protocol.html"}', handler_source)
+        self.assertIn("工步设置", body)
+        self.assertIn('"/steps"', handler_source)
+        self.assertIn('"/analysis"', handler_source)
+        self.assertIn('"/environment"', handler_source)
         self.assertIn("Content-Security-Policy", handler_source)
         self.assertIn("X-Content-Type-Options", handler_source)
 

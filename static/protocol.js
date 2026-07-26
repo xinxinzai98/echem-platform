@@ -520,7 +520,7 @@ function uniqueBasename(base) {
 
 function addStep(technique) {
   if (state.protocol.steps.length >= 100) {
-    showToast("单个协议最多允许 100 个工步。", true);
+    showToast("单个工步方案最多允许 100 个工步。", true);
     return;
   }
   const index = state.protocol.steps.length + 1;
@@ -545,7 +545,7 @@ function moveStep(index, direction) {
 
 function copyStep(index) {
   if (state.protocol.steps.length >= 100) {
-    showToast("单个协议最多允许 100 个工步。", true);
+    showToast("单个工步方案最多允许 100 个工步。", true);
     return;
   }
   const copy = deepClone(state.protocol.steps[index]);
@@ -597,7 +597,7 @@ function saveDraft({ silent = false } = {}) {
       state.revision = saved.revision;
       state.dirty = false;
       setDraftState(`草稿已保存 · 修订 ${saved.revision}`);
-      if (!silent) showToast("协议草稿已保存到本机数据库");
+      if (!silent) showToast("工步方案已保存到本机数据库");
       return saved;
     })
     .catch((error) => {
@@ -627,7 +627,7 @@ function renderReport(report) {
   elements.issueList.innerHTML = `
     <div class="safety-row">
       <span>✓</span>
-      <p>协议、路径和生成宏均通过静态复核。没有执行或写入仪器宏。</p>
+      <p>工步方案、路径和生成宏均通过静态复核。没有执行或写入仪器宏。</p>
     </div>`;
   renderSafety(report.safety_checks);
 
@@ -710,7 +710,7 @@ function renderValidationError(error) {
   elements.outputSection.hidden = true;
   elements.macroPanel.hidden = true;
   elements.safetyList.innerHTML = `
-    <div class="safety-row manual"><span>○</span><p>协议未通过校验，未生成可用宏预览。</p></div>`;
+    <div class="safety-row manual"><span>○</span><p>工步方案未通过校验，未生成可用宏预览。</p></div>`;
   renderMetrics();
 }
 
@@ -729,7 +729,7 @@ async function validateOrCompile(includeMacroPreview) {
       },
     );
     renderReport(report);
-    showToast(includeMacroPreview ? "Dry-run 宏预览已生成" : "协议校验通过");
+    showToast(includeMacroPreview ? "Dry-run 宏预览已生成" : "工步方案校验通过");
   } catch (error) {
     renderValidationError(error);
     showToast(error.message, true);

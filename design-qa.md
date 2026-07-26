@@ -1,65 +1,65 @@
-# EchemPlatform 侧边栏工作台设计 QA
+# EchemPlatform 工作台信息架构设计 QA
 
 ## Comparison setup
 
-- Source visual truth: `/Users/hive/Documents/Codex/2026-07-24/wo/outputs/Windows_StageB_协议页面_20260724.png`
-- Normalized source: `/Users/hive/Documents/Codex/2026-07-24/wo/outputs/EchemPlatform-sidebar-v0.3.0-dev.6/protocol-reference-normalized-1425x1188.png`
-- Browser-rendered implementation: `/Users/hive/Documents/Codex/2026-07-24/wo/outputs/EchemPlatform-sidebar-v0.3.0-dev.6/protocol-sidebar-1440x1200.png`
-- Same-input comparison: `/Users/hive/Documents/Codex/2026-07-24/wo/outputs/EchemPlatform-sidebar-v0.3.0-dev.6/protocol-before-after-normalized.jpg`
-- Route and state: `/protocol`, public example draft, initial unvalidated state.
-- Source pixels: `1440 × 1200`; normalized by top-left crop to `1425 × 1188`.
+- Source visual truth: `/Users/hive/Documents/Codex/2026-07-24/wo/outputs/EchemPlatform-sidebar-v0.3.0-dev.6/protocol-sidebar-1440x1200.png`
+- Browser-rendered implementation: `/Users/hive/Documents/Codex/2026-07-24/wo/outputs/EchemPlatform-workspace-v0.3.0-dev.7/workspace-overview-viewport-1440x1200.png`
+- Same-input comparison: `/Users/hive/Documents/Codex/2026-07-24/wo/outputs/EchemPlatform-workspace-v0.3.0-dev.7/workspace-style-comparison-2880x1200.png`
+- Source state: previous shared-shell protocol page at `/protocol`.
+- Implementation state: new overview page at `/`, with two instrument records, healthy local data sources, locked instrument control, and four recent activities.
+- Source pixels: `1425 × 1188`; normalized to `1440 × 1200`.
 - Implementation browser viewport: `1440 × 1200` CSS px at device pixel ratio `1`.
-- Implementation capture: `1425 × 1188` pixels. The in-app browser capture omits its scrollbar/chrome edge; comparison therefore uses the equally cropped source.
+- Implementation capture: `1440 × 1200` pixels.
 
 ## Full-view comparison evidence
 
-The implementation preserves the source page’s light canvas, teal/orange safety palette, four-metric row, two-column editor/review structure, card radii, shadow weight, copy hierarchy, form density, and initial Dry-run state. The intentional structural change is a persistent dark sidebar that gives the three existing routes one stable workbench frame. The former top navigation is removed to avoid duplicated navigation.
+The new overview intentionally changes the page responsibility while preserving the selected product shell. The dark `232 px` sidebar, light canvas, teal safety palette, white cards, border radii, shadow weight, eyebrow labels, compact top bar, and desktop density remain consistent with the source. The primary content is now limited to the three requested regions: instrument activity, system indicators, and recent activity.
 
-The sidebar occupies `232 px`; the content grid remains readable at both the `1440 px` Windows acceptance width and the in-app browser’s normal `1280 px` desktop width. At `1280 px`, measured document scroll width was `1265 px`, so persistent controls are not hidden by horizontal overflow.
+The comparison also confirms the requested navigation hierarchy. “工作台”, “工步设置”, and “数据分析” remain in the main navigation. “环境检测与设置” is removed from that list and appears as a compact gear utility in the bottom-left corner.
 
 ## Focused region comparison evidence
 
-No separate crop was required. The normalized full-view comparison keeps the complete sidebar, page heading, metric cards, protocol metadata form, review actions, safety card, validation card, and first continuous-step controls legible in one image. Browser checks separately confirmed all three sidebar destinations and their active states.
+A separate crop was not required because the `2880 × 1200` same-input comparison keeps both sidebars, complete top bars, main card boundaries, status chips, typography, and the bottom-left utility dock legible at equal scale. Browser DOM checks separately confirmed the three main routes, active states, gear route, and core page headings.
 
 ## Required fidelity surfaces
 
-- Fonts and typography: Existing Inter/PingFang/Microsoft YaHei stack, weights, headings, eyebrow labels, form sizes, and line heights are preserved. Sidebar type uses the same family and a compact but readable three-level hierarchy.
-- Spacing and layout rhythm: Existing 14–24 px card rhythm and 17–18 px radii remain intact. Sidebar padding, 62 px navigation rows, and sticky full-height frame create a stable desktop shell without crowding the editor.
-- Colors and visual tokens: Existing `--ink`, teal, paper, canvas, line, orange, and shadow tokens remain the source of truth. The dark sidebar derives from the existing ink family; selected navigation uses the existing teal accent.
-- Image quality and asset fidelity: The interface contains no new raster imagery. The existing product mark is reused without replacing or approximating product imagery.
-- Copy and content: Existing experiment, protocol, safety, and validation copy is preserved. New copy is limited to functional navigation labels, Windows test-environment context, and the persistent safety-state summary.
+- Fonts and typography: The Inter/PingFang/Microsoft YaHei stack and the existing heading, eyebrow, body, and compact UI weights are preserved. The new metric figures use the same bold optical hierarchy as the earlier status row.
+- Spacing and layout rhythm: The shell width, `18 px` grid gap, `14–17 px` radii, and card padding remain aligned with the previous interface. The overview uses a two-column top region and one full-width activity region without horizontal overflow at `1440 px`.
+- Colors and visual tokens: Existing ink, teal, paper, canvas, line, orange, and shadow tokens remain the source of truth. No new competing palette was introduced.
+- Image quality and asset fidelity: The product mark is preserved. The new settings control uses the official Bootstrap Icons gear asset rather than a text glyph or a handcrafted icon.
+- Copy and content: Page labels now match the requested mental model. Instrument activity is explicitly described as file-side observation, preventing the UI from implying that the platform has taken control of CHI or CorrTest.
 
 ## Findings
 
 - No actionable P0, P1, or P2 findings remain.
-- [P3] English eyebrow labels coexist with Chinese navigation labels. This matches the existing interface convention and is acceptable for this iteration.
+- [P3] The overview leaves intentional whitespace below the recent-activity panel at a `1200 px`-high viewport. This keeps the operational content compact and avoids inventing extra dashboard modules.
 
 ## Comparison history
 
 ### Iteration 1
 
-- Earlier finding: [P2] The first sidebar width and `1360 px` minimum shell caused horizontal overflow in the in-app browser’s normal `1280 px` desktop viewport, clipping the top-right scan action.
-- Fix made: Reduced the sidebar from `248 px` to `232 px`, reduced the desktop minimum shell width to `1180 px`, and tightened the protocol editor grid minimums.
-- Post-fix evidence: At a `1280 px` browser width, `scrollWidth=1265`, the complete scan action is visible, and all three pages render without horizontal overflow.
-
-### Iteration 2
-
-- Post-fix visual comparison: The normalized `1425 × 1188` before/after image shows the sidebar addition without loss of the source page’s primary hierarchy, form readability, safety cards, or first-step controls.
-- Browser interaction evidence: Navigated `/` → `/protocol` → `/monitor`; each route displayed exactly one active sidebar item. Protocol “仅校验” completed with the visible result `通过`.
-- Console evidence: No browser errors or warnings were reported on the checked protocol and monitor states.
+- Source and implementation were normalized to `1440 × 1200` and placed in one comparison image.
+- No actionable P0, P1, or P2 visual mismatch was found after the intentional information-architecture change.
+- Browser interaction evidence:
+  - `/` displays only “仪器当前活动”, “系统指标”, and “最近活动”.
+  - Sidebar navigation opened `/steps` and `/analysis`.
+  - The bottom-left gear opened `/environment`.
+  - “仅校验” on `/steps` returned the visible state `校验通过` / `通过`.
+- Console evidence: no browser errors or warnings were reported across the checked routes.
 
 ## Implementation checklist
 
-- [x] Shared sidebar shell on data, protocol, and safety-gate pages.
-- [x] Real route navigation with one active state per page.
-- [x] Persistent local-only and control-lock context.
-- [x] Stage C sidebar state follows actual control capabilities.
-- [x] Desktop widths checked at 1280 and 1440.
-- [x] Complete automated regression suite passed.
-- [x] Primary navigation and protocol validation tested in the browser.
+- [x] Main workspace limited to current instrument activity, system indicators, and recent activity.
+- [x] “协议编辑” renamed and repositioned as “工步设置”.
+- [x] Data curve and metadata tooling moved into the independent `/analysis` module.
+- [x] Stage C safety content reframed as `/environment`.
+- [x] Environment entry reduced to a bottom-left settings gear.
+- [x] Legacy `/protocol` and `/monitor` routes retained for compatibility.
+- [x] Desktop launcher now opens the overview.
+- [x] Automated suite and browser interaction checks passed.
 
 ## Follow-up polish
 
-- A future iteration may replace `Workspace` and `Safety status` with Chinese labels if the product language is standardized as fully Chinese.
+- A later iteration can add instrument-specific live-state adapters when a verified, read-only process or file heartbeat is available.
 
 final result: passed

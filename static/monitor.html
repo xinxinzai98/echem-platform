@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
-  <title>60 秒 OCP 联调 · 电化学测试平台</title>
+  <title>环境检测与设置 · 电化学测试平台</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%2317212b'/%3E%3Cpath d='M10 38c8-24 16 20 24-8s14 16 20-10' fill='none' stroke='%237ee2d7' stroke-width='5' stroke-linecap='round'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/static/styles.css">
   <link rel="stylesheet" href="/static/monitor.css">
@@ -13,7 +13,7 @@
 <body class="monitor-page">
   <div class="workbench-shell">
     <aside class="workbench-sidebar">
-      <a class="workbench-brand" href="/" aria-label="返回数据工作台">
+      <a class="workbench-brand" href="/" aria-label="返回工作台">
         <div class="brand-mark" aria-hidden="true">
           <svg viewBox="0 0 48 48" role="img">
             <path d="M8 28c5-15 10 14 16-4s11 10 16-6"/>
@@ -39,39 +39,43 @@
         <a class="workbench-nav-item" href="/">
           <span class="workbench-nav-number">01</span>
           <span class="workbench-nav-copy">
-            <strong>数据工作台</strong>
-            <small>曲线、样品与数据源</small>
+            <strong>工作台</strong>
+            <small>当前活动与系统概况</small>
           </span>
         </a>
-        <a class="workbench-nav-item" href="/protocol">
+        <a class="workbench-nav-item" href="/steps">
           <span class="workbench-nav-number">02</span>
           <span class="workbench-nav-copy">
-            <strong>协议编辑</strong>
-            <small>连续工步与 Dry-run</small>
+            <strong>工步设置</strong>
+            <small>测试顺序、参数与 Dry-run</small>
           </span>
         </a>
-        <a class="workbench-nav-item" href="/monitor" aria-current="page">
+        <a class="workbench-nav-item" href="/analysis">
           <span class="workbench-nav-number">03</span>
           <span class="workbench-nav-copy">
-            <strong>阶段 C 安全门</strong>
-            <small>预检、确认与运行监控</small>
+            <strong>数据分析</strong>
+            <small>曲线、样品与完整性</small>
           </span>
         </a>
       </nav>
 
-      <div class="workbench-sidebar-footer">
-        <span>Safety status</span>
-        <strong id="sidebarControlState">正在读取状态</strong>
-        <small>仅本机 · 127.0.0.1</small>
+      <div class="workbench-utility-dock">
+        <a class="workbench-settings-button" href="/environment" aria-current="page" aria-label="环境检测与设置" title="环境检测与设置">
+          <img src="/static/icons/gear.svg" alt="">
+        </a>
+        <div class="workbench-mini-status">
+          <strong id="sidebarControlState">正在读取状态</strong>
+          <small>环境检测与设置</small>
+        </div>
       </div>
     </aside>
 
     <div class="workbench-content">
       <header class="topbar workbench-topbar">
         <div class="workbench-page-heading">
-          <span class="eyebrow">Workspace / Safety gate</span>
-          <h1>阶段 C 安全门</h1>
-          <p>60 秒 OCP 的本机预检与运行监控</p>
+          <span class="eyebrow">Workspace / Environment</span>
+          <h1>环境检测与设置</h1>
+          <p>设备电脑环境、本机安全边界与运行前设置</p>
         </div>
         <div class="top-actions">
           <div id="controlPill" class="safety-pill"><span></span>正在读取控制状态</div>
@@ -81,9 +85,9 @@
       <main class="monitor-main">
     <section class="monitor-hero">
       <div>
-        <span class="eyebrow">Stage C safety gate</span>
-        <h2>先证明环境安全，再允许一次 60 秒 OCP</h2>
-        <p>这里只接受一个 OCP 工步和锁定的参数指纹。平台不会直接打开 COM3/COM4，也不会强制结束 CHI 进程。</p>
+        <span class="eyebrow">Environment and safety</span>
+        <h2>先检查设备环境，再进入受控运行设置</h2>
+        <p>这里集中检查程序、路径、进程与安全边界。当前阶段仍只接受一个 60 秒 OCP 工步；平台不会直接打开 COM3/COM4，也不会强制结束 CHI 进程。</p>
       </div>
       <div class="hero-status">
         <span id="readinessDot"></span>
@@ -99,8 +103,8 @@
         <article class="panel">
           <div class="panel-heading">
             <div>
-              <span class="eyebrow">Read-only preflight</span>
-              <h2>启动前预检</h2>
+              <span class="eyebrow">Read-only environment check</span>
+              <h2>环境检测</h2>
             </div>
             <button id="refreshButton" class="mini-button" type="button">重新检查</button>
           </div>
@@ -113,8 +117,8 @@
         <article class="panel">
           <div class="panel-heading">
             <div>
-              <span class="eyebrow">Immutable snapshot</span>
-              <h2>准备运行快照</h2>
+              <span class="eyebrow">Locked run settings</span>
+              <h2>安全设置与运行快照</h2>
             </div>
             <span id="draftRevision" class="status-chip">草稿读取中</span>
           </div>
@@ -170,7 +174,7 @@
 
         <article class="panel locked-panel">
           <span class="eyebrow">Hard boundaries</span>
-          <h2>阶段 C 不会做什么</h2>
+          <h2>当前安全边界</h2>
           <ul>
             <li>不访问 COM3 / COM4</li>
             <li>不接受 CV、LSV、EIS 或多工步协议</li>

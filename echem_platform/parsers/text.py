@@ -83,6 +83,15 @@ def find_axis_indices(headers: list[str], technique: str = "") -> tuple[int, int
                 return index
         return None
 
+    potential_index = first_matching(("potential", "voltage", "e(v", "e/v"))
+    current_index = first_matching(("current", "i(a", "i/ma", "i/ua", "i/a"))
+    if (
+        technique in {"CV", "LSV", "Tafel"}
+        and potential_index is not None
+        and current_index is not None
+    ):
+        return potential_index, current_index
+
     real_index = first_matching(("zreal", "z'", "z’", "z′", "zprime", "rez", "zre"))
     imag_index = first_matching(
         ("zimag", 'z"', "z''", "z”", "z″", "zdoubleprime", "imz", "zim")
@@ -100,8 +109,6 @@ def find_axis_indices(headers: list[str], technique: str = "") -> tuple[int, int
             return frequency_index, y_index
 
     time_index = first_matching(("time", "t(s", "t/sec", "t/second"))
-    potential_index = first_matching(("potential", "voltage", "e(v", "e/v"))
-    current_index = first_matching(("current", "i(a", "i/ma", "i/ua", "i/a"))
 
     if time_index is not None:
         if technique in {"CP/GCD", "OCP"}:
@@ -122,24 +129,118 @@ def infer_instrument(path: Path, text: str) -> str:
     return select_parser(path, text).instrument
 
 
-def infer_technique(path: Path, headers: list[str], text: str) -> str:
-    probe = " ".join([path.stem, *headers, text[:1000]]).lower()
-    if path.suffix.lower() == ".z60" or any(
-        token in probe
-        for token in ("zreal", "zimag", "frequency", "freq(hz", "eis", "impedance")
-    ):
-        return "EIS"
+def _technique_from_method_value(
+    value: str,
+    *,
+    allow_descriptive_suffix: bool = False,
+) -> str | None:
+    normalized = re.sub(r"[\s._-]+", " ", value.strip().lower())
     ordered = (
-        ("OCP", ("ocp", "open circuit")),
-        ("LSV", ("lsv", "linear sweep")),
-        ("CV", ("cyclic volt", "cv_", "_cv", "cv1", "cv2")),
-        ("CA", ("chronoamper", "ca_", "_ca", "it_", "_it")),
-        ("CP/GCD", ("chronopot", "galstatic", "galvano", "gcd", "cp_", "_cp", "cc_")),
+        ("EIS", ("a c impedance", "ac impedance", "impedance", "eisvsfrq", "eis")),
+        ("OCP", ("open circuit potential", "open circuit", "ocp")),
+        ("LSV", ("linear sweep voltammetry", "linear sweep", "lsv")),
+        ("CV", ("cyclic voltammetry", "cyclic volt", "cv")),
+        ("CA", ("chronoamperometry", "chronoamper", "it", "ca")),
+        (
+            "CP/GCD",
+            (
+                "chronopotentiometry",
+                "chronopot",
+                "galvanostatic",
+                "galstatic",
+                "gcd",
+                "cp",
+            ),
+        ),
         ("Tafel", ("tafel",)),
     )
     for technique, tokens in ordered:
-        if any(token in probe for token in tokens):
+        if any(
+            normalized == token
+            or (
+                allow_descriptive_suffix
+                and normalized.startswith(f"{token} ")
+            )
+            for token in tokens
+        ):
             return technique
+    return None
+
+
+def infer_technique(path: Path, headers: list[str], text: str) -> str:
+    if path.suffix.lower() == ".z60":
+        return "EIS"
+
+    first_line = text.splitlines()[0].strip() if text.splitlines() else ""
+    corrtest_match = re.match(
+        r"^CSStudioFile\s*,\s*(ID_[A-Za-z0-9]+)\s*(?:,|$)",
+        first_line,
+        flags=re.IGNORECASE,
+    )
+    if corrtest_match:
+        corrtest_methods = {
+            "ID_CV": "CV",
+            "ID_EISVSFRQ": "EIS",
+            "ID_OCP": "OCP",
+        }
+        technique = corrtest_methods.get(corrtest_match.group(1).upper())
+        if technique:
+            return technique
+
+    metadata_lines = []
+    for raw_line in text.splitlines()[:30]:
+        line = raw_line.replace("\x00", "").strip()
+        if not line or len(line) > 200 or line.lower().startswith("csstudiofile,"):
+            continue
+        metadata_lines.append(line)
+
+    for line in metadata_lines:
+        labeled = re.match(
+            r"^(?:technique|method)\s*[:,=\t]\s*(.+)$",
+            line,
+            re.IGNORECASE,
+        )
+        method_value = labeled.group(1) if labeled else line
+        technique = _technique_from_method_value(
+            method_value,
+            allow_descriptive_suffix=labeled is not None,
+        )
+        if technique:
+            return technique
+
+    normalized_headers = [normalized_header(header) for header in headers]
+    has_frequency = any(
+        any(token in header for token in ("frequency", "freq", "f(hz", "f/"))
+        for header in normalized_headers
+    )
+    has_real = any(
+        any(token in header for token in ("zreal", "z'", "z’", "z′", "zprime", "rez", "zre"))
+        for header in normalized_headers
+    )
+    has_imaginary = any(
+        any(
+            token in header
+            for token in ("zimag", 'z"', "z''", "z”", "z″", "zdoubleprime", "imz", "zim")
+        )
+        for header in normalized_headers
+    )
+    if has_frequency and has_real and has_imaginary:
+        return "EIS"
+
+    stem = path.stem.lower()
+    filename_patterns = (
+        ("EIS", r"(?:^|[_\-\s]|\d)eis(?:\d+)?(?:$|[_\-\s])"),
+        ("OCP", r"(?:^|[_\-\s]|\d)ocp(?:\d+)?(?:$|[_\-\s])"),
+        ("LSV", r"(?:^|[_\-\s]|\d)lsv(?:\d+)?(?:$|[_\-\s])"),
+        ("CV", r"(?:^|[_\-\s]|\d)cv(?:\d+)?(?:$|[_\-\s])"),
+        ("CA", r"(?:^|[_\-\s]|\d)(?:ca|it)(?:\d+)?(?:$|[_\-\s])"),
+        ("CP/GCD", r"(?:^|[_\-\s]|\d)(?:cp|gcd|cc)(?:\d+)?(?:$|[_\-\s])"),
+        ("Tafel", r"(?:^|[_\-\s]|\d)tafel(?:\d+)?(?:$|[_\-\s])"),
+    )
+    for technique, pattern in filename_patterns:
+        if re.search(pattern, stem):
+            return technique
+
     return "未识别"
 
 

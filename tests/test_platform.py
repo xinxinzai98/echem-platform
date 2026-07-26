@@ -97,6 +97,122 @@ class ParserTests(unittest.TestCase):
             ("Z'(Ohm.cm²)", "Z''(Ohm.cm²)"),
         )
 
+    def test_chi_cv_method_line_overrides_mixed_cv_eis_note(self):
+        payload = "\n".join(
+            [
+                "July 25, 2026   11:09:39",
+                "Cyclic Voltammetry",
+                "Instrument Model: CHI760E",
+                "Header: NiMo HER formal CV and EIS retest",
+                "Potential/V, Current/A",
+                "-0.850, -1.138e-3",
+                "-0.851, -1.150e-3",
+            ]
+        ).encode("utf-8")
+
+        curve = APP.parse_curve(Path("S2CV_RETEST.txt"), payload, 2000)
+
+        self.assertEqual((curve.instrument, curve.technique), ("CHI", "CV"))
+        self.assertEqual((curve.x_name, curve.y_name), ("Potential/V", "Current/A"))
+
+    def test_corrtest_cv_id_ignores_compressed_metadata_and_uses_potential_axis(self):
+        payload = "\n".join(
+            [
+                "CSStudioFile,ID_CV,H4sIA_random_eis_impedance_payload",
+                "E(V)\ti(A/cm²)\tT(s)",
+                "-8.50336E-01\t1.06414E-02\t0.00000",
+                "-8.50944E-01\t9.92807E-03\t0.16667",
+            ]
+        ).encode("utf-8")
+
+        curve = APP.parse_curve(Path("her-8mv.txt"), payload, 2000)
+
+        self.assertEqual((curve.instrument, curve.technique), ("CorrTest", "CV"))
+        self.assertEqual((curve.x_name, curve.y_name), ("E(V)", "i(A/cm²)"))
+
+    def test_corrtest_explicit_ocp_id_uses_time_potential_axes(self):
+        payload = "\n".join(
+            [
+                "CSStudioFile,ID_OCP,H4sIA_random_cv_eis_payload",
+                "E(V)\ti(A/cm²)\tT(s)",
+                "2.69526E+00\t1.00000E-10\t0.00000",
+                "2.69419E+00\t1.00000E-10\t0.10000",
+            ]
+        ).encode("utf-8")
+
+        curve = APP.parse_curve(Path("1_ReStart.txt"), payload, 2000)
+
+        self.assertEqual((curve.instrument, curve.technique), ("CorrTest", "OCP"))
+        self.assertEqual((curve.x_name, curve.y_name), ("T(s)", "E(V)"))
+
+    def test_comma_delimited_method_label_is_recognized(self):
+        payload = "\n".join(
+            [
+                "CSStudioFile,DemoHeader",
+                "Method,GalStatic",
+                "T(s),E(V),i(A/cm²)",
+                "0,-0.112,-0.050",
+                "60,-0.116,-0.050",
+            ]
+        ).encode("utf-8")
+
+        curve = APP.parse_curve(Path("generic.txt"), payload, 2000)
+
+        self.assertEqual(curve.technique, "CP/GCD")
+        self.assertEqual((curve.x_name, curve.y_name), ("T(s)", "E(V)"))
+
+    def test_bare_mixed_note_does_not_override_official_method_line(self):
+        payload = "\n".join(
+            [
+                "EIS and CV retest",
+                "Cyclic Voltammetry",
+                "Instrument Model: CHI760E",
+                "Potential/V,Current/A",
+                "-0.85,-0.001",
+                "-0.86,-0.002",
+            ]
+        ).encode("utf-8")
+
+        curve = APP.parse_curve(Path("retest.txt"), payload, 2000)
+
+        self.assertEqual(curve.technique, "CV")
+
+    def test_explicit_cv_prefers_potential_current_when_impedance_columns_exist(self):
+        payload = "\n".join(
+            [
+                "Technique: Cyclic Voltammetry",
+                "Potential/V,Current/A,T(s),Zreal/ohm,Zimag/ohm",
+                "-0.85,-0.001,0,1.2,-0.2",
+                "-0.86,-0.002,1,1.3,-0.3",
+            ]
+        ).encode("utf-8")
+
+        curve = APP.parse_curve(Path("mixed-columns.txt"), payload, 2000)
+
+        self.assertEqual((curve.x_name, curve.y_name), ("Potential/V", "Current/A"))
+
+    def test_filename_digit_suffix_requires_a_real_token_boundary(self):
+        payload = "X,Y\n1,2\n2,3\n".encode("utf-8")
+
+        curve = APP.parse_curve(Path("cv2foo.txt"), payload, 2000)
+
+        self.assertEqual(curve.technique, "未识别")
+
+    def test_numbered_chi_step_filename_is_a_last_resort_cv_hint(self):
+        payload = "\n".join(
+            [
+                "Instrument Model: CHI760E",
+                "Potential/V,Current/A",
+                "-0.85,-0.001",
+                "-0.86,-0.002",
+            ]
+        ).encode("utf-8")
+
+        curve = APP.parse_curve(Path("S2CV_RETEST.txt"), payload, 2000)
+
+        self.assertEqual(curve.technique, "CV")
+        self.assertEqual((curve.x_name, curve.y_name), ("Potential/V", "Current/A"))
+
     def test_binary_is_metadata_only(self):
         path = ROOT / "demo_data" / "chi_ocpt_demo.bin"
         curve = APP.parse_curve(path, path.read_bytes(), 2000)

@@ -204,6 +204,22 @@ Python 模块编译与前端 JavaScript 语法检查均通过。
 - 同输入设计对照见 `design-qa.md`，`final result: passed`
 - 本地验收未访问 COM3 / COM4、未启动仪器、未执行 OCP
 
+## 解析器 2026.07.26.5 真实四样本验收
+
+四个只读样本均完成全分辨率解析；真实数据文件未加入仓库：
+
+| 样本类型 | SHA-256 | 数据行数 | 原始曲线坐标（横轴 × 纵轴） |
+| --- | --- | ---: | --- |
+| CHI CV | `50c9f6517257752cd192a0808e56890e69faf7683ae5d769c62c8dd560c80d67` | 1500 | `Potential/V` × `Current/A` |
+| CHI EIS | `58f04f15ccafdeb9c801f89e80b32b939f5f94652370ed781bc72933d2899fce` | 72 | `Z'/ohm` × `Z"/ohm` |
+| CorrTest CV | `f65ea21a32d1729948fcb051b3ae811bc51ee6317fa552573acb4a61287064c0` | 3799 | `E(V)` × `i(A/cm²)` |
+| CorrTest EIS | `deaddf3b7be94f1ffdf04993a49fedf4dae102d6a7ac567818b6fcbb4ee42ace` | 60 | `Z'(Ohm.cm²)` × `Z''(Ohm.cm²)` |
+
+- 本机私有样例的 17 个文本导出逐份复核为 17/17 可解析；其中包含 1 份已知复制件，不把文件数等同于独立实验数
+- Mac 完整回归共 110 项，全部通过；Python 模块编译、前端 JavaScript 语法和补丁空白检查均通过
+- EIS 零交点和截距结果仅用于筛查，不等同于正式 Rct 或等效电路拟合结果
+- 本轮未自动计算 CV 过电位；溶液、pH、参比偏移、补偿因子、溶液电阻、在线补偿状态、电极面积、目标电流密度和扫描分支须按实验逐项确认
+
 ## V0.3.0-dev.9 Windows 固定旁路验收
 
 - 源码提交：`2b7d271`

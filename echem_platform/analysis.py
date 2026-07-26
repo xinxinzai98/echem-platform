@@ -899,11 +899,15 @@ def calculate_cv_overpotential(
             field="online_compensation_status",
             code="invalid_parameter",
         )
-    solution_resistance_ohm = _optional_number(
-        raw_parameters,
-        "solution_resistance_ohm",
-        minimum=0.0,
-        exclusive_minimum=compensation_percent > 0.0,
+    solution_resistance_ohm = (
+        _optional_number(
+            raw_parameters,
+            "solution_resistance_ohm",
+            minimum=0.0,
+            exclusive_minimum=True,
+        )
+        if compensation_percent > 0.0
+        else None
     )
     if compensation_percent > 0:
         if online_compensation_status == "already_compensated":
@@ -1067,6 +1071,10 @@ def calculate_cv_overpotential(
     elif online_compensation_status == "already_compensated":
         screening_reasons.append(
             "源数据已在线补偿，但当前记录没有在线补偿比例和对应 Rs，结果仅可用于筛查。"
+        )
+    elif compensation_percent == 0.0:
+        screening_reasons.append(
+            "源数据确认未在线补偿，但本次未应用 iR 修正，表观过电位仅可用于筛查。"
         )
 
     if not_calculable_reasons:

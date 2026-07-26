@@ -1596,13 +1596,21 @@ class RuntimeState:
             if isinstance(quality, dict)
             else ""
         )
-        if persist and quality_level == "not_calculable":
-            raise AnalysisValidationError(
-                "当前分析结果不可计算，不能保存；请根据质量原因调整数据或参数后重新预览。",
-                field="quality",
-                code="analysis_not_calculable",
-                details={"quality": quality},
-            )
+        if persist:
+            if quality_level == "not_calculable":
+                raise AnalysisValidationError(
+                    "当前分析结果不可计算，不能保存；请根据质量原因调整数据或参数后重新预览。",
+                    field="quality",
+                    code="analysis_not_calculable",
+                    details={"quality": quality},
+                )
+            if quality_level not in {"quantitative", "screening"}:
+                raise AnalysisValidationError(
+                    "分析算法没有返回受信任的质量等级，不能保存当前结果。",
+                    field="quality",
+                    code="analysis_quality_untrusted",
+                    details={"quality": quality},
+                )
 
         common = {
             "run_id": int(run_id),

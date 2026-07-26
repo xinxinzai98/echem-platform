@@ -461,7 +461,7 @@ class CVOverpotentialTests(unittest.TestCase):
     def test_cv_quality_distinguishes_quantitative_and_screening_results(self):
         quantitative_parameters = cv_parameters(
             "HER",
-            compensation_percent=0.0,
+            compensation_percent=85.0,
         )
         quantitative_parameters.update(
             {
@@ -583,8 +583,22 @@ class CVOverpotentialTests(unittest.TestCase):
         )
         self.assertEqual(
             not_compensated["result"]["quality"]["level"],
-            "quantitative",
+            "screening",
         )
+        self.assertTrue(
+            any(
+                "未应用 iR 修正" in reason
+                for reason in not_compensated["result"]["quality"]["reasons"]
+            )
+        )
+
+        supplied_but_unused = dict(base)
+        supplied_but_unused["solution_resistance_ohm"] = 12.3
+        normalized = calculate_cv_overpotential(
+            cv_table([(-1.0, -0.02), (-0.9, 0.0)]),
+            supplied_but_unused,
+        )
+        self.assertIsNone(normalized["parameters"]["solution_resistance_ohm"])
 
         for status in ("unknown", "already_compensated"):
             with self.subTest(status=status):
@@ -857,6 +871,57 @@ class AnalysisPersistenceTests(unittest.TestCase):
         assert records is not None
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0]["result"]["quality"]["level"], "screening")
+
+    def test_runtime_refuses_to_persist_missing_or_unknown_quality(self):
+        source = self.source_root / "quality_gate_eis.txt"
+        source.write_text(
+            "\n".join(
+                [
+                    "Method: EIS",
+                    "Freq/Hz,Z'/ohm,Z\"/ohm",
+                    "100000,1,1",
+                    "10000,3,-1",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        runtime, run = self.make_runtime(source)
+
+        def untrusted_result(_table, _parameters, quality):
+            result = {"point_count": 2}
+            if quality is not None:
+                result["quality"] = quality
+            return {
+                "analysis_type": "eis_resistance",
+                "schema_version": "1",
+                "algorithm": {"id": "test.untrusted", "version": "1"},
+                "parameters": {},
+                "result": result,
+                "warnings": [],
+            }
+
+        from unittest.mock import patch
+
+        for quality in (None, {"level": "unexpected"}):
+            with self.subTest(quality=quality):
+                with patch(
+                    "echem_platform.analysis.calculate_eis_resistance",
+                    side_effect=lambda table, parameters, quality=quality: (
+                        untrusted_result(table, parameters, quality)
+                    ),
+                ):
+                    with self.assertRaises(AnalysisValidationError) as caught:
+                        runtime.calculate_analysis(
+                            run["id"],
+                            "eis_resistance",
+                            {},
+                            persist=True,
+                        )
+                self.assertEqual(
+                    caught.exception.code,
+                    "analysis_quality_untrusted",
+                )
+                self.assertEqual(self.database.list_analyses(run["id"]), [])
 
 
 if __name__ == "__main__":

@@ -151,13 +151,162 @@
             </div>
           </div>
           <div class="chart-shell">
-            <canvas id="curveChart" aria-label="电化学测试曲线" aria-describedby="chartStats"></canvas>
+            <canvas id="curveChart" role="img" aria-label="电化学测试原始曲线" aria-describedby="chartStats"></canvas>
             <div id="chartEmpty" class="chart-empty">
               <span class="eyebrow" aria-hidden="true">Curve preview</span>
               <p>从左侧数据文件夹中选择一个实验文件</p>
             </div>
           </div>
           <div id="chartStats" class="chart-stats"></div>
+        </article>
+
+        <article id="methodAnalysisPanel" class="panel method-analysis-panel" aria-labelledby="methodAnalysisTitle">
+          <div class="panel-heading method-analysis-heading">
+            <div>
+              <span class="eyebrow">Method analysis</span>
+              <h2 id="methodAnalysisTitle">方法分析</h2>
+            </div>
+            <div class="analysis-heading-status">
+              <span id="analysisModeBadge" class="method-badge">等待选择</span>
+              <span id="analysisSaveState" class="save-state" role="status"></span>
+            </div>
+          </div>
+
+          <div id="analysisWelcome" class="analysis-placeholder">
+            <strong>先选择一条实验数据</strong>
+            <p>平台会保留上方原始曲线，并按文件类型提供专用分析。</p>
+          </div>
+
+          <div id="analysisUnsupported" class="analysis-placeholder" hidden>
+            <strong>该方法暂无专用分析</strong>
+            <p>原始曲线仍可在上方检视；当前版本优先支持 EIS 电阻与 CV 过电位分析。</p>
+          </div>
+
+          <div id="analysisWorkspace" class="method-analysis-layout" hidden>
+            <form id="analysisForm" class="analysis-parameter-form">
+              <div id="analysisError" class="analysis-error" role="alert" hidden></div>
+
+              <fieldset id="eisFields" class="analysis-fieldset" hidden>
+                <legend>EIS 电阻分析</legend>
+                <p class="fieldset-note">
+                  使用完整源数据按频率由高到低寻找实轴交点。无可靠交点时不会外推，也不会把不完整弧线标为正式 Rct。
+                </p>
+                <dl class="analysis-assumptions">
+                  <div>
+                    <dt>原始图</dt>
+                    <dd>Nyquist · 纵轴 −Z″</dd>
+                  </div>
+                  <div>
+                    <dt>溶液电阻</dt>
+                    <dd>高频实轴交点 Rs</dd>
+                  </div>
+                  <div>
+                    <dt>弧直径</dt>
+                    <dd>仅作筛查估计</dd>
+                  </div>
+                </dl>
+              </fieldset>
+
+              <fieldset id="cvFields" class="analysis-fieldset" hidden>
+                <legend>CV 过电位条件</legend>
+                <p class="fieldset-note">所有条件会随结果保存为参数快照，不会写回原始文件。</p>
+                <div class="analysis-form-grid">
+                  <label class="span-two">
+                    溶液
+                    <input id="cvSolution" name="solution" autocomplete="off" placeholder="例如 1.0 M KOH" required>
+                  </label>
+                  <label>
+                    pH
+                    <input id="cvPh" name="ph" type="number" min="0" max="16" step="0.01" inputmode="decimal" placeholder="14.00" required>
+                  </label>
+                  <label>
+                    反应
+                    <select id="cvReaction" name="reaction" required>
+                      <option value="HER">HER 析氢</option>
+                      <option value="OER">OER 析氧</option>
+                    </select>
+                  </label>
+                  <label>
+                    参比电极
+                    <select id="cvReference" name="reference_electrode" required>
+                      <option value="Hg/HgO">Hg/HgO（按填充液确认偏移）</option>
+                      <option value="Ag/AgCl">Ag/AgCl（按填充液确认偏移）</option>
+                      <option value="SHE">SHE</option>
+                      <option value="RHE">RHE（原始电位已换算）</option>
+                      <option value="custom">自定义</option>
+                    </select>
+                  </label>
+                  <label>
+                    参比偏移 / V vs SHE
+                    <input id="cvReferenceOffset" name="reference_offset_v" type="number" step="0.0001" inputmode="decimal" placeholder="按参比填充液/标定值确认" required>
+                  </label>
+                  <label>
+                    iR 补偿 / %
+                    <input id="cvCompensation" name="compensation_percent" type="number" min="0" max="100" step="0.1" inputmode="decimal" value="85" required>
+                  </label>
+                  <label>
+                    溶液电阻 Rs / Ω
+                    <input id="cvResistance" name="solution_resistance_ohm" type="number" min="0" step="0.0001" inputmode="decimal" placeholder="例如 2.50" required>
+                  </label>
+                  <label>
+                    电极面积 / cm²
+                    <input id="cvArea" name="area_cm2" type="number" min="0.0001" step="0.0001" inputmode="decimal" placeholder="1.00" required>
+                  </label>
+                  <label>
+                    目标电流密度 / mA·cm⁻²
+                    <input id="cvTargetCurrent" name="target_current_density_ma_cm2" type="number" min="0.01" step="0.01" inputmode="decimal" value="10" required>
+                  </label>
+                  <label>
+                    扫描分支
+                    <select id="cvScanBranch" name="scan_branch" required>
+                      <option value="auto">自动（仅单分支）</option>
+                      <option value="forward">正扫</option>
+                      <option value="reverse">回扫</option>
+                    </select>
+                  </label>
+                  <label>
+                    在线补偿状态
+                    <select id="cvOnlineCompensation" name="online_compensation_status" required>
+                      <option value="not_compensated">确认未在线补偿</option>
+                      <option value="already_compensated">已在线补偿</option>
+                      <option value="unknown">不确定（不允许离线补偿）</option>
+                    </select>
+                  </label>
+                </div>
+                <p class="formula-note">
+                  25 ℃：E<sub>RHE</sub> = E<sub>meas</sub> + E<sub>ref vs SHE</sub> + 0.05916 × pH；
+                  E<sub>comp</sub> = E<sub>RHE</sub> − f × I × Rs。若原始电位已是 RHE，不重复加入参比偏移或 pH 项。
+                </p>
+              </fieldset>
+
+              <div class="analysis-actions">
+                <button id="previewAnalysis" class="secondary-button analysis-preview-button" type="submit">
+                  预览计算
+                </button>
+                <button id="saveAnalysis" class="primary-button" type="button" disabled>
+                  计算并保存
+                </button>
+              </div>
+              <p class="analysis-action-note">“预览计算”不会保存；只有点击“计算并保存”才会新增一条分析记录。</p>
+            </form>
+
+            <section class="analysis-result-column" aria-labelledby="analysisResultTitle">
+              <div class="analysis-result-heading">
+                <div>
+                  <span class="eyebrow">Result preview</span>
+                  <h3 id="analysisResultTitle">分析结果</h3>
+                </div>
+                <span id="analysisResultFreshness" class="result-freshness">尚未计算</span>
+              </div>
+              <div id="analysisResults" class="analysis-results" aria-live="polite" aria-busy="false">
+                <div class="analysis-result-empty">设置参数后预览；平台会显示公式、单位与质量提示。</div>
+              </div>
+              <details class="analysis-history">
+                <summary>已保存的分析记录 <span id="analysisHistoryCount">0</span></summary>
+                <div id="analysisHistoryList" class="analysis-history-list"></div>
+              </details>
+            </section>
+          </div>
         </article>
 
         <div class="lower-grid">

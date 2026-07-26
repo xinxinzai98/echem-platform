@@ -107,6 +107,38 @@ class WorkbenchShellTests(unittest.TestCase):
         self.assertNotIn('watchRoots', parser.ids)
         self.assertIn("/static/analysis.js", parser.scripts)
 
+    def test_analysis_exposes_method_specific_eis_and_cv_workflows(self) -> None:
+        parser = self.parse_page("analysis.html")
+        page = (STATIC / "analysis.html").read_text(encoding="utf-8")
+        script = (STATIC / "analysis.js").read_text(encoding="utf-8")
+        for element_id in (
+            "methodAnalysisPanel",
+            "eisFields",
+            "cvFields",
+            "cvSolution",
+            "cvPh",
+            "cvReferenceOffset",
+            "cvCompensation",
+            "cvResistance",
+            "cvScanBranch",
+            "previewAnalysis",
+            "saveAnalysis",
+        ):
+            self.assertIn(element_id, parser.ids)
+        self.assertIn("所有条件会随结果保存为参数快照", page)
+        self.assertIn("不确定（不允许离线补偿）", page)
+        self.assertIn("/analyses/preview", script)
+        self.assertIn("/api/runs/${runId}/analyses", script)
+        self.assertIn("analysisRequestId", script)
+        self.assertIn("analysisHistoryRequestId", script)
+        self.assertIn("metadataRequestId", script)
+        self.assertIn("setAnalysisBusy(true)", script)
+        self.assertIn("setMetadataBusy(true)", script)
+        self.assertIn("renderDetailLoading", script)
+        self.assertIn("renderDetailFailure", script)
+        self.assertIn("eis_resistance", script)
+        self.assertIn("cv_overpotential", script)
+
     def test_data_folders_are_managed_from_environment_settings(self) -> None:
         analysis = (STATIC / "analysis.html").read_text(encoding="utf-8")
         monitor = (STATIC / "monitor.html").read_text(encoding="utf-8")

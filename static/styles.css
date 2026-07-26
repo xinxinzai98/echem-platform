@@ -19,6 +19,10 @@
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   color: var(--ink);
@@ -641,6 +645,439 @@ textarea {
   background: var(--red-soft);
 }
 
+.method-analysis-panel {
+  padding: 20px;
+}
+
+.method-analysis-heading {
+  align-items: flex-start;
+  margin-bottom: 16px;
+}
+
+.analysis-heading-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.analysis-placeholder {
+  display: grid;
+  place-items: center;
+  min-height: 128px;
+  padding: 24px;
+  text-align: center;
+  border: 1px dashed #cfdadc;
+  border-radius: 13px;
+  background: #fbfcfc;
+}
+
+.analysis-placeholder strong {
+  font-size: 13px;
+}
+
+.analysis-placeholder p {
+  max-width: 560px;
+  margin: 7px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.method-analysis-layout {
+  display: grid;
+  grid-template-columns: minmax(350px, 0.82fr) minmax(420px, 1.18fr);
+  gap: 18px;
+}
+
+.analysis-parameter-form,
+.analysis-result-column {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: #fbfcfc;
+}
+
+.analysis-parameter-form {
+  padding: 16px;
+}
+
+.analysis-fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.analysis-fieldset legend {
+  padding: 0;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.fieldset-note,
+.formula-note,
+.analysis-action-note {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+.fieldset-note {
+  margin: 7px 0 13px;
+}
+
+.analysis-assumptions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.analysis-assumptions > div {
+  padding: 11px;
+  border: 1px solid #dce7e7;
+  border-radius: 10px;
+  background: white;
+}
+
+.analysis-assumptions dt {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 750;
+}
+
+.analysis-assumptions dd {
+  margin: 5px 0 0;
+  font-size: 11px;
+  font-weight: 750;
+  line-height: 1.45;
+}
+
+.analysis-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.analysis-form-grid label {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  min-width: 0;
+  color: #52626b;
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.analysis-form-grid input,
+.analysis-form-grid select {
+  width: 100%;
+  min-width: 0;
+  height: 36px;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  outline: 0;
+  background: white;
+  font-size: 11px;
+}
+
+.analysis-form-grid input:disabled {
+  color: #7f8b91;
+  background: #eef2f3;
+}
+
+.formula-note {
+  margin: 12px 0 0;
+  padding: 10px 11px;
+  border-left: 3px solid var(--orange);
+  border-radius: 0 8px 8px 0;
+  background: var(--orange-soft);
+  color: #654926;
+}
+
+.analysis-error {
+  margin-bottom: 12px;
+  padding: 10px 11px;
+  border: 1px solid #efc4b7;
+  border-radius: 9px;
+  color: #8d3326;
+  background: var(--red-soft);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.analysis-actions {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-top: 15px;
+}
+
+.analysis-actions .secondary-button,
+.analysis-actions .primary-button {
+  margin: 0;
+  padding: 9px 13px;
+  font-size: 11px;
+}
+
+.analysis-preview-button {
+  background: #44545d;
+}
+
+.analysis-action-note {
+  margin: 8px 0 0;
+}
+
+.analysis-result-column {
+  padding: 16px;
+  background: white;
+}
+
+.analysis-result-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.analysis-result-heading h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.result-freshness {
+  flex: 0 0 auto;
+  padding: 5px 8px;
+  border-radius: 7px;
+  color: var(--muted);
+  background: var(--soft);
+  font-size: 9px;
+  font-weight: 800;
+}
+
+.result-freshness.preview {
+  color: #775026;
+  background: var(--orange-soft);
+}
+
+.result-freshness.saved {
+  color: var(--teal-dark);
+  background: var(--teal-soft);
+}
+
+.result-freshness.stale {
+  color: #9d3b2c;
+  background: var(--red-soft);
+}
+
+.result-freshness.busy {
+  color: #3e5965;
+  background: #e6eef1;
+}
+
+.analysis-results {
+  min-height: 182px;
+}
+
+.analysis-result-empty,
+.analysis-history-empty {
+  display: grid;
+  place-items: center;
+  min-height: 112px;
+  padding: 18px;
+  text-align: center;
+  color: var(--muted);
+  border: 1px dashed #d6dfe1;
+  border-radius: 10px;
+  background: #fbfcfc;
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.analysis-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.analysis-metric {
+  display: grid;
+  gap: 7px;
+  min-height: 70px;
+  padding: 11px 12px;
+  border-radius: 10px;
+  background: var(--soft);
+}
+
+.analysis-metric:first-child {
+  background: linear-gradient(135deg, var(--teal-soft), #f1f8f7);
+}
+
+.analysis-metric span {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 750;
+}
+
+.analysis-metric strong {
+  align-self: end;
+  font-size: 17px;
+  line-height: 1.2;
+}
+
+.analysis-result-message {
+  margin: 11px 0 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.analysis-warning-list {
+  margin-top: 11px;
+  padding: 10px 12px;
+  border: 1px solid #f0cfac;
+  border-radius: 9px;
+  color: #70512b;
+  background: var(--orange-soft);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.analysis-warning-list ul {
+  margin: 5px 0 0;
+  padding-left: 17px;
+}
+
+.analysis-trace {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--soft);
+  font-size: 10px;
+}
+
+.analysis-trace > strong {
+  font-size: 10px;
+}
+
+.analysis-trace code {
+  display: block;
+  overflow: auto;
+  padding: 8px 9px;
+  border-radius: 7px;
+  color: #35525a;
+  background: #eef4f4;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.analysis-trace dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px 12px;
+  margin: 0;
+}
+
+.analysis-trace dl > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.analysis-trace dt {
+  color: var(--muted);
+}
+
+.analysis-trace dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 700;
+}
+
+.analysis-history {
+  margin-top: 14px;
+  border-top: 1px solid var(--soft);
+}
+
+.analysis-history summary {
+  padding: 12px 2px 7px;
+  color: #43545d;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.analysis-history summary span {
+  display: inline-grid;
+  min-width: 19px;
+  height: 19px;
+  margin-left: 4px;
+  place-items: center;
+  border-radius: 999px;
+  color: var(--teal-dark);
+  background: var(--teal-soft);
+  font-size: 8px;
+}
+
+.analysis-history-list {
+  display: grid;
+  gap: 7px;
+  max-height: 180px;
+  overflow: auto;
+}
+
+.analysis-history-list .analysis-history-empty {
+  min-height: 72px;
+}
+
+.analysis-history-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 10px;
+  border: 1px solid var(--soft);
+  border-radius: 8px;
+  background: #fbfcfc;
+}
+
+.analysis-history-item > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.analysis-history-item strong {
+  font-size: 10px;
+}
+
+.analysis-history-item span {
+  color: var(--muted);
+  font-size: 8px;
+}
+
+.history-hash {
+  flex: 0 0 auto;
+  padding: 4px 6px;
+  border-radius: 6px;
+  background: var(--orange-soft);
+}
+
+.history-hash.stale {
+  color: #9d3b2c;
+  background: var(--red-soft);
+}
+
 .lower-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.4fr) minmax(280px, 0.8fr);
@@ -681,6 +1118,8 @@ textarea {
 
 .form-grid input:focus,
 .form-grid textarea:focus,
+.analysis-form-grid input:focus,
+.analysis-form-grid select:focus,
 .filter-row select:focus,
 .search-box:focus-within {
   border-color: rgba(8, 127, 117, 0.55);
@@ -760,6 +1199,15 @@ textarea {
   transform: translateY(0);
 }
 
+.analysis-form-grid input:focus-visible,
+.analysis-form-grid select:focus-visible,
+.analysis-actions button:focus-visible,
+.analysis-history summary:focus-visible,
+.secondary-button:focus-visible {
+  outline: 3px solid rgba(8, 127, 117, 0.24);
+  outline-offset: 2px;
+}
+
 .sr-only {
   position: absolute;
   width: 1px;
@@ -770,6 +1218,12 @@ textarea {
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
   border: 0;
+}
+
+@media (max-width: 1320px) {
+  .method-analysis-layout {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 1050px) {

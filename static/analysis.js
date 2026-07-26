@@ -8,6 +8,14 @@ const state = {
   refreshTimer: null,
   runsRequestId: 0,
   detailRequestId: 0,
+  analysisRequestId: 0,
+  analysisHistoryRequestId: 0,
+  metadataRequestId: 0,
+  analysisPreview: null,
+  analysisPreviewSaved: false,
+  analysisDirty: false,
+  analysisBusy: false,
+  metadataBusy: false,
   openFolders: new Set(),
 };
 
@@ -27,7 +35,35 @@ const elements = {
   detailHash: document.querySelector("#detailHash"),
   curveChart: document.querySelector("#curveChart"),
   chartEmpty: document.querySelector("#chartEmpty"),
+  chartEmptyMessage: document.querySelector("#chartEmpty p"),
   chartStats: document.querySelector("#chartStats"),
+  methodAnalysisPanel: document.querySelector("#methodAnalysisPanel"),
+  analysisModeBadge: document.querySelector("#analysisModeBadge"),
+  analysisSaveState: document.querySelector("#analysisSaveState"),
+  analysisWelcome: document.querySelector("#analysisWelcome"),
+  analysisUnsupported: document.querySelector("#analysisUnsupported"),
+  analysisWorkspace: document.querySelector("#analysisWorkspace"),
+  analysisForm: document.querySelector("#analysisForm"),
+  analysisError: document.querySelector("#analysisError"),
+  eisFields: document.querySelector("#eisFields"),
+  cvFields: document.querySelector("#cvFields"),
+  cvSolution: document.querySelector("#cvSolution"),
+  cvPh: document.querySelector("#cvPh"),
+  cvReaction: document.querySelector("#cvReaction"),
+  cvReference: document.querySelector("#cvReference"),
+  cvReferenceOffset: document.querySelector("#cvReferenceOffset"),
+  cvCompensation: document.querySelector("#cvCompensation"),
+  cvResistance: document.querySelector("#cvResistance"),
+  cvArea: document.querySelector("#cvArea"),
+  cvTargetCurrent: document.querySelector("#cvTargetCurrent"),
+  cvScanBranch: document.querySelector("#cvScanBranch"),
+  cvOnlineCompensation: document.querySelector("#cvOnlineCompensation"),
+  previewAnalysis: document.querySelector("#previewAnalysis"),
+  saveAnalysis: document.querySelector("#saveAnalysis"),
+  analysisResults: document.querySelector("#analysisResults"),
+  analysisResultFreshness: document.querySelector("#analysisResultFreshness"),
+  analysisHistoryCount: document.querySelector("#analysisHistoryCount"),
+  analysisHistoryList: document.querySelector("#analysisHistoryList"),
   metadataForm: document.querySelector("#metadataForm"),
   recordId: document.querySelector("#recordId"),
   sampleId: document.querySelector("#sampleId"),
@@ -49,7 +85,11 @@ async function request(url, options = {}) {
     ...options,
   });
   const payload = await response.json();
-  if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+  if (!response.ok) {
+    const error = new Error(payload.error || `HTTP ${response.status}`);
+    error.payload = payload;
+    throw error;
+  }
   return payload;
 }
 
@@ -259,7 +299,38 @@ function fillMetadata(run) {
   elements.areaCm2.value = run?.area_cm2 ?? "";
   elements.tags.value = run?.tags ?? "";
   elements.notes.value = run?.notes ?? "";
-  elements.saveMetadata.disabled = !run;
+  syncMetadataControls(run);
+}
+
+function syncMetadataControls(run = state.selectedRun) {
+  const disabled = !run || state.metadataBusy;
+  [
+    elements.sampleId,
+    elements.material,
+    elements.electrolyte,
+    elements.areaCm2,
+    elements.tags,
+    elements.notes,
+  ].forEach((control) => {
+    control.disabled = disabled;
+  });
+  elements.saveMetadata.disabled = disabled;
+}
+
+function setMetadataBusy(busy) {
+  state.metadataBusy = busy;
+  syncMetadataControls();
+}
+
+function clearMetadataSaveStateLater(requestId, detailRequestId) {
+  window.setTimeout(() => {
+    if (
+      requestId === state.metadataRequestId &&
+      detailRequestId === state.detailRequestId
+    ) {
+      elements.saveState.textContent = "";
+    }
+  }, 2000);
 }
 
 function sourceAvailabilityChip(run) {
@@ -269,11 +340,21 @@ function sourceAvailabilityChip(run) {
   return `<span class="stat-chip ${className}">${label}</span>`;
 }
 
+function analysisTypeForRun(run) {
+  const technique = String(run?.technique || "").trim().toUpperCase();
+  if (technique === "EIS") return "eis_resistance";
+  if (technique === "CV") return "cv_overpotential";
+  return null;
+}
+
 function drawChart(run) {
   const canvas = elements.curveChart;
   const points = run?.points || [];
   if (!points.length) {
     elements.chartEmpty.style.display = "grid";
+    elements.chartEmptyMessage.textContent = run
+      ? "该文件当前没有可绘制的二维曲线"
+      : "从左侧数据文件夹中选择一个实验文件";
     elements.chartStats.innerHTML = run
       ? `<span class="stat-chip">${escapeHtml(run.parse_error || "该文件当前仅登记元数据")}</span>${sourceAvailabilityChip(run)}`
       : "";
@@ -282,6 +363,11 @@ function drawChart(run) {
     return;
   }
   elements.chartEmpty.style.display = "none";
+  const isEis = analysisTypeForRun(run) === "eis_resistance";
+  const eisYAlreadyNegated = /^\s*[-−]\s*z/i.test(String(run?.y_name || ""));
+  const displayPoints = isEis
+    ? points.map((point) => [point[0], (eisYAlreadyNegated ? 1 : -1) * point[1]])
+    : points;
 
   const rect = canvas.getBoundingClientRect();
   const ratio = Math.max(1, window.devicePixelRatio || 1);
@@ -295,10 +381,10 @@ function drawChart(run) {
   const margin = { left: 72, right: 22, top: 20, bottom: 52 };
   const plotWidth = width - margin.left - margin.right;
   const plotHeight = height - margin.top - margin.bottom;
-  let xMin = Math.min(...points.map((point) => point[0]));
-  let xMax = Math.max(...points.map((point) => point[0]));
-  let yMin = Math.min(...points.map((point) => point[1]));
-  let yMax = Math.max(...points.map((point) => point[1]));
+  let xMin = Math.min(...displayPoints.map((point) => point[0]));
+  let xMax = Math.max(...displayPoints.map((point) => point[0]));
+  let yMin = Math.min(...displayPoints.map((point) => point[1]));
+  let yMax = Math.max(...displayPoints.map((point) => point[1]));
   if (xMin === xMax) [xMin, xMax] = [xMin - 1, xMax + 1];
   if (yMin === yMax) [yMin, yMax] = [yMin - 1, yMax + 1];
   const xPadding = (xMax - xMin) * 0.03;
@@ -307,6 +393,20 @@ function drawChart(run) {
   xMax += xPadding;
   yMin -= yPadding;
   yMax += yPadding;
+  if (isEis) {
+    const xCenter = (xMin + xMax) / 2;
+    const yCenter = (yMin + yMax) / 2;
+    const unitsPerPixel = Math.max(
+      (xMax - xMin) / plotWidth,
+      (yMax - yMin) / plotHeight,
+    );
+    const equalXSpan = unitsPerPixel * plotWidth;
+    const equalYSpan = unitsPerPixel * plotHeight;
+    xMin = xCenter - equalXSpan / 2;
+    xMax = xCenter + equalXSpan / 2;
+    yMin = yCenter - equalYSpan / 2;
+    yMax = yCenter + equalYSpan / 2;
+  }
 
   const xScale = (value) => margin.left + ((value - xMin) / (xMax - xMin)) * plotWidth;
   const yScale = (value) => margin.top + (1 - (value - yMin) / (yMax - yMin)) * plotHeight;
@@ -345,16 +445,20 @@ function drawChart(run) {
     context.stroke();
   }
 
-  const gradient = context.createLinearGradient(margin.left, 0, margin.left + plotWidth, 0);
-  gradient.addColorStop(0, "#e9862b");
-  gradient.addColorStop(0.45, "#087f75");
-  gradient.addColorStop(1, "#075e58");
-  context.strokeStyle = gradient;
+  if (isEis) {
+    context.strokeStyle = "#087f75";
+  } else {
+    const gradient = context.createLinearGradient(margin.left, 0, margin.left + plotWidth, 0);
+    gradient.addColorStop(0, "#e9862b");
+    gradient.addColorStop(0.45, "#087f75");
+    gradient.addColorStop(1, "#075e58");
+    context.strokeStyle = gradient;
+  }
   context.lineWidth = 2.1;
   context.lineJoin = "round";
   context.lineCap = "round";
   context.beginPath();
-  points.forEach((point, index) => {
+  displayPoints.forEach((point, index) => {
     const x = xScale(point[0]);
     const y = yScale(point[1]);
     if (index === 0) context.moveTo(x, y);
@@ -365,17 +469,28 @@ function drawChart(run) {
   context.fillStyle = "#3c4a52";
   context.textAlign = "center";
   context.font = '11px Inter, "PingFang SC", sans-serif';
-  context.fillText(run.x_name || "X", margin.left + plotWidth / 2, height - 13);
+  const xAxisName = run.x_name || "X";
+  const yAxisName = isEis
+    ? (eisYAlreadyNegated ? "−Z″" : "−Z″（由原始 Z″ 取负显示）")
+    : (run.y_name || "Y");
+  context.fillText(xAxisName, margin.left + plotWidth / 2, height - 13);
   context.save();
   context.translate(17, margin.top + plotHeight / 2);
   context.rotate(-Math.PI / 2);
-  context.fillText(run.y_name || "Y", 0, 0);
+  context.fillText(yAxisName, 0, 0);
   context.restore();
+  canvas.setAttribute(
+    "aria-label",
+    isEis
+      ? `EIS Nyquist 原始曲线，横轴 ${xAxisName}，纵轴负虚部，共 ${run.point_count} 个原始点`
+      : `${run.technique || "电化学"}原始曲线，横轴 ${xAxisName}，纵轴 ${run.y_name || "Y"}，共 ${run.point_count} 个原始点`,
+  );
 
   elements.chartStats.innerHTML = [
     `${run.point_count.toLocaleString("zh-CN")} 个原始点`,
-    `X: ${formatNumber(Math.min(...points.map((p) => p[0])))} → ${formatNumber(Math.max(...points.map((p) => p[0])))}`,
-    `Y: ${formatNumber(Math.min(...points.map((p) => p[1])))} → ${formatNumber(Math.max(...points.map((p) => p[1])))}`,
+    `X: ${formatNumber(Math.min(...displayPoints.map((p) => p[0])))} → ${formatNumber(Math.max(...displayPoints.map((p) => p[0])))}`,
+    `${isEis ? "−Z″" : "Y"}: ${formatNumber(Math.min(...displayPoints.map((p) => p[1])))} → ${formatNumber(Math.max(...displayPoints.map((p) => p[1])))}`,
+    isEis ? "Nyquist 等比例坐标 · 纵轴显示 −Z″" : null,
     run.encoding,
     run.parser_id,
   ]
@@ -384,8 +499,328 @@ function drawChart(run) {
     .join("") + sourceAvailabilityChip(run);
 }
 
-function renderDetail(run) {
+function setAnalysisError(message = "") {
+  elements.analysisError.textContent = message;
+  elements.analysisError.hidden = !message;
+}
+
+function resetAnalysisResult() {
+  state.analysisPreview = null;
+  state.analysisPreviewSaved = false;
+  state.analysisDirty = false;
+  state.analysisBusy = false;
+  elements.saveAnalysis.disabled = true;
+  elements.analysisResults.setAttribute("aria-busy", "false");
+  elements.analysisResultFreshness.textContent = "尚未计算";
+  elements.analysisResultFreshness.className = "result-freshness";
+  elements.analysisResults.innerHTML =
+    '<div class="analysis-result-empty">设置参数后预览；平台会显示公式、单位与质量提示。</div>';
+  setAnalysisError();
+}
+
+function analysisSourceReady(run = state.selectedRun) {
+  return Boolean(
+    analysisTypeForRun(run) &&
+    run?.source_available &&
+    Array.isArray(run?.points) &&
+    run.points.length,
+  );
+}
+
+function syncAnalysisControls(run = state.selectedRun) {
+  const analysisType = analysisTypeForRun(run);
+  elements.eisFields.disabled =
+    state.analysisBusy || analysisType !== "eis_resistance";
+  elements.cvFields.disabled =
+    state.analysisBusy || analysisType !== "cv_overpotential";
+  elements.previewAnalysis.disabled =
+    state.analysisBusy || !analysisSourceReady(run);
+  elements.saveAnalysis.disabled =
+    state.analysisBusy ||
+    !state.analysisPreview ||
+    state.analysisPreviewSaved ||
+    state.analysisDirty;
+}
+
+function setAnalysisBusy(busy) {
+  state.analysisBusy = busy;
+  elements.analysisResults.setAttribute("aria-busy", String(busy));
+  syncAnalysisControls();
+}
+
+function configureAnalysis(run, preserveResult = false) {
+  const analysisType = analysisTypeForRun(run);
+  elements.analysisSaveState.textContent = "";
+  elements.analysisWelcome.hidden = Boolean(run);
+  elements.analysisUnsupported.hidden = !run || Boolean(analysisType);
+  elements.analysisWorkspace.hidden = !analysisType;
+  elements.eisFields.hidden = analysisType !== "eis_resistance";
+  elements.cvFields.hidden = analysisType !== "cv_overpotential";
+  elements.analysisModeBadge.textContent = !run
+    ? "等待选择"
+    : analysisType === "eis_resistance"
+      ? "EIS 电阻分析"
+      : analysisType === "cv_overpotential"
+        ? "CV 过电位分析"
+        : "仅原始曲线";
+  if (analysisType === "cv_overpotential" && !preserveResult) {
+    elements.cvSolution.value = run.electrolyte || "";
+    elements.cvPh.value = "";
+    elements.cvReaction.value = "HER";
+    elements.cvReference.value = "Hg/HgO";
+    elements.cvReferenceOffset.disabled = false;
+    elements.cvReferenceOffset.value = "";
+    elements.cvReferenceOffset.placeholder = "按参比填充液/标定值确认";
+    elements.cvCompensation.value = "85";
+    elements.cvCompensation.disabled = false;
+    elements.cvResistance.value = "";
+    elements.cvArea.value = run.area_cm2 || "";
+    elements.cvTargetCurrent.value = "10";
+    elements.cvScanBranch.innerHTML = `
+      <option value="auto">自动（仅单分支）</option>
+      <option value="forward">正扫</option>
+      <option value="reverse">回扫</option>`;
+    elements.cvScanBranch.value = "auto";
+    elements.cvOnlineCompensation.value = "not_compensated";
+  }
+  if (!preserveResult) resetAnalysisResult();
+  const sourceReady = analysisSourceReady(run);
+  syncAnalysisControls(run);
+  if (analysisType && !sourceReady) {
+    setAnalysisError("完整源文件当前不可用或没有可解析数据，因此不能执行定量分析。上方缓存曲线仍可检视。");
+  }
+  elements.analysisHistoryCount.textContent = "0";
+  elements.analysisHistoryList.innerHTML =
+    '<div class="analysis-history-empty">尚无已保存记录</div>';
+}
+
+function pickValue(object, paths) {
+  for (const path of paths) {
+    let value = object;
+    for (const key of path.split(".")) value = value?.[key];
+    if (value !== undefined && value !== null) return value;
+  }
+  return null;
+}
+
+function displayMetric(value, unit = "") {
+  if (typeof value === "number") return `${formatNumber(value)}${unit ? ` ${unit}` : ""}`;
+  if (value === null || value === undefined || value === "") return "—";
+  return `${escapeHtml(value)}${unit ? ` ${unit}` : ""}`;
+}
+
+function resultWarnings(result, analysis = null) {
+  const sources = [
+    analysis?.warnings,
+    result?.warnings,
+    result?.quality_warnings,
+  ];
+  const warnings = sources.flatMap((value) =>
+    Array.isArray(value) ? value : (value ? [value] : []),
+  );
+  return [...new Set(warnings.filter(Boolean))];
+}
+
+function renderResultMetrics(analysis) {
+  const type = analysis.analysis_type;
+  const result = analysis.result || {};
+  let metrics;
+  if (type === "eis_resistance") {
+    metrics = [
+      {
+        label: "溶液电阻 Rs",
+        value: pickValue(result, [
+          "rs_ohm",
+          "solution_resistance",
+          "solution_resistance_ohm",
+          "rs",
+          "high_frequency_intercept_ohm",
+          "high_frequency_crossing.z_real",
+        ]),
+        unit: pickValue(result, ["resistance_unit", "unit"]) || "Ω",
+      },
+      {
+        label: "低频实轴交点",
+        value: pickValue(result, [
+          "low_frequency_intercept_ohm",
+          "low_frequency_intercept",
+          "low_frequency_crossing.z_real",
+        ]),
+        unit: pickValue(result, ["resistance_unit", "unit"]) || "Ω",
+      },
+      {
+        label: "表观弧直径",
+        value: pickValue(result, [
+          "apparent_arc_resistance_ohm",
+          "apparent_polarization_resistance",
+          "apparent_rp_ohm",
+          "arc_diameter_ohm",
+          "rp_screening_ohm",
+        ]),
+        unit: pickValue(result, ["resistance_unit", "unit"]) || "Ω",
+      },
+      {
+        label: "完整分析点",
+        value: pickValue(result, ["point_count", "analysis_point_count", "points_used"]),
+        unit: "点",
+      },
+    ];
+  } else {
+    metrics = [
+      {
+        label: "目标过电位 η",
+        value: pickValue(result, ["target_point.overpotential_mv", "overpotential_mv", "eta_mv", "overpotential"]),
+        unit: "mV",
+      },
+      {
+        label: "iR 修正后电位",
+        value: pickValue(result, [
+          "corrected_potential_rhe_v",
+          "corrected_potential_v",
+          "target_point.compensated_potential_v",
+          "e_comp_v",
+          "potential_at_target_v",
+        ]),
+        unit: "V vs RHE",
+      },
+      {
+        label: "原始测量电位",
+        value: pickValue(result, ["target_point.measured_potential_v", "measured_potential_v", "raw_potential_v", "e_measured_v"]),
+        unit: "V",
+      },
+      {
+        label: "目标电流密度",
+        value: pickValue(result, ["target_point.current_density_ma_cm2", "target_current_density_ma_cm2", "target_j_ma_cm2"]),
+        unit: "mA·cm⁻²",
+      },
+    ];
+  }
+  return metrics
+    .map(
+      (metric) => `
+        <div class="analysis-metric">
+          <span>${escapeHtml(metric.label)}</span>
+          <strong>${displayMetric(metric.value, metric.unit)}</strong>
+        </div>`,
+    )
+    .join("");
+}
+
+function renderAnalysisResult(analysis, saved = false) {
+  const result = analysis.result || {};
+  const warnings = resultWarnings(result, analysis);
+  const parameters = analysis.parameters || {};
+  const type = analysis.analysis_type;
+  const formula = type === "cv_overpotential"
+    ? [
+        pickValue(result, ["formula.rhe"]) ||
+          "E_RHE = E_measured + E_reference_vs_SHE + 0.05916 × pH",
+        pickValue(result, ["formula.ir"]) ||
+          "E_compensated = E_RHE - compensation_fraction × I × R_solution",
+        pickValue(result, ["formula.overpotential"]) ||
+          "按 HER/OER 方向校验有符号过电位后报告幅值",
+      ].join("；")
+    : "Rs = 高频端 Z″ = 0 时的 Z′ 线性插值";
+  const traceEntries = type === "cv_overpotential"
+    ? [
+        ["溶液", parameters.solution],
+        ["pH", parameters.ph],
+        ["反应", parameters.reaction],
+        ["参比", parameters.reference_electrode],
+        ["参比偏移", parameters.reference_offset_v == null ? null : `${parameters.reference_offset_v} V vs SHE`],
+        ["补偿", parameters.compensation_percent == null ? null : `${parameters.compensation_percent}%`],
+        ["Rs", parameters.solution_resistance_ohm == null ? null : `${parameters.solution_resistance_ohm} Ω`],
+        ["扫描分支", parameters.scan_branch],
+      ]
+    : [
+        ["算法", analysis.algorithm_id],
+        ["算法版本", analysis.algorithm_version],
+        ["源 SHA", analysis.source_sha256 ? `${analysis.source_sha256.slice(0, 12)}…` : null],
+      ];
+  const statusMessage = pickValue(result, ["message", "quality_note", "status_detail"]);
+  elements.analysisResults.innerHTML = `
+    <div class="analysis-metric-grid">${renderResultMetrics(analysis)}</div>
+    ${statusMessage ? `<p class="analysis-result-message">${escapeHtml(statusMessage)}</p>` : ""}
+    ${warnings.length ? `
+      <div class="analysis-warning-list">
+        <strong>质量提示</strong>
+        <ul>${warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul>
+      </div>` : ""}
+    <div class="analysis-trace">
+      <strong>计算依据</strong>
+      <code>${escapeHtml(formula)}</code>
+      <dl>
+        ${traceEntries
+          .filter(([, value]) => value !== null && value !== undefined && value !== "")
+          .map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`)
+          .join("")}
+      </dl>
+    </div>`;
+  elements.analysisResultFreshness.textContent = saved ? "已保存" : "预览 · 未保存";
+  elements.analysisResultFreshness.className =
+    `result-freshness ${saved ? "saved" : "preview"}`;
+}
+
+function markAnalysisDirty() {
+  if (!state.analysisPreview) return;
+  state.analysisDirty = true;
+  syncAnalysisControls();
+  elements.analysisResultFreshness.textContent = "参数已修改 · 请重新预览";
+  elements.analysisResultFreshness.className = "result-freshness stale";
+}
+
+function renderAnalysisHistory(items) {
+  elements.analysisHistoryCount.textContent = String(items.length);
+  if (!items.length) {
+    elements.analysisHistoryList.innerHTML =
+      '<div class="analysis-history-empty">尚无已保存记录</div>';
+    return;
+  }
+  elements.analysisHistoryList.innerHTML = items
+    .map((item) => {
+      const result = item.result || {};
+      const headline = item.analysis_type === "eis_resistance"
+        ? `Rs ${displayMetric(pickValue(result, ["solution_resistance", "rs_ohm", "solution_resistance_ohm", "rs"]), pickValue(result, ["resistance_unit", "unit"]) || "Ω")}`
+        : `η ${displayMetric(pickValue(result, ["target_point.overpotential_mv", "overpotential_mv", "eta_mv", "overpotential"]), "mV")}`;
+      return `
+        <article class="analysis-history-item">
+          <div>
+            <strong>${headline}</strong>
+            <span>
+              ${formatDate(item.created_utc)} · ${escapeHtml(item.algorithm_version || item.algorithm_id || "已记录")}
+              ${item.stale ? " · 源数据已变化" : ""}
+            </span>
+          </div>
+          <span class="history-hash ${item.stale ? "stale" : ""}" title="${escapeHtml(item.source_sha256 || "")}">
+            ${item.source_sha256 ? `SHA ${escapeHtml(item.source_sha256.slice(0, 8))}` : "SHA —"}
+          </span>
+        </article>`;
+    })
+    .join("");
+}
+
+async function loadAnalysisHistory(runId) {
+  const requestId = ++state.analysisHistoryRequestId;
+  try {
+    const items = await request(`/api/runs/${runId}/analyses`);
+    if (
+      requestId !== state.analysisHistoryRequestId ||
+      state.selectedId !== runId
+    ) return;
+    renderAnalysisHistory(Array.isArray(items) ? items : (items.analyses || []));
+  } catch (error) {
+    if (
+      requestId !== state.analysisHistoryRequestId ||
+      state.selectedId !== runId
+    ) return;
+    elements.analysisHistoryList.innerHTML =
+      `<div class="analysis-history-empty">${escapeHtml(error.message)}</div>`;
+  }
+}
+
+function renderDetail(run, { preserveAnalysis = false } = {}) {
   state.selectedRun = run;
+  elements.saveState.textContent = "";
   elements.detailInstrument.textContent = run ? `${run.instrument} 文件` : "选择一个实验文件";
   elements.detailTitle.textContent = run ? run.source_name : "曲线预览";
   elements.detailTechnique.textContent = run ? run.technique : "—";
@@ -393,6 +828,27 @@ function renderDetail(run) {
   elements.detailHash.title = run?.sha256 ?? "";
   fillMetadata(run);
   drawChart(run);
+  configureAnalysis(run, preserveAnalysis);
+}
+
+function renderDetailLoading(runId) {
+  const summary = state.runs.find((run) => run.id === runId);
+  renderDetail(null);
+  elements.detailInstrument.textContent = "正在读取";
+  elements.detailTitle.textContent = summary?.source_name || "加载实验文件…";
+  elements.chartEmptyMessage.textContent = "正在读取所选实验文件…";
+  elements.analysisModeBadge.textContent = "正在读取";
+}
+
+function renderDetailFailure(runId, error) {
+  const summary = state.runs.find((run) => run.id === runId);
+  renderDetail(null);
+  elements.detailInstrument.textContent = "读取失败";
+  elements.detailTitle.textContent = summary?.source_name || "无法打开所选文件";
+  elements.chartEmptyMessage.textContent = error.message;
+  elements.chartStats.innerHTML =
+    `<span class="stat-chip source-warning">${escapeHtml(error.message)}</span>`;
+  elements.analysisModeBadge.textContent = "读取失败";
 }
 
 function renderAudit(items) {
@@ -404,6 +860,7 @@ function renderAudit(items) {
     imported: "导入记录",
     updated: "源文件更新",
     metadata_updated: "样品信息更新",
+    analysis_saved: "方法分析已保存",
     deferred: "暂缓读取",
     read_error: "读取异常",
   };
@@ -452,16 +909,37 @@ async function loadAudit() {
 
 async function selectRun(runId, rerenderList = true) {
   const requestId = ++state.detailRequestId;
+  ++state.analysisRequestId;
+  ++state.analysisHistoryRequestId;
   const treeRequestId = state.runsRequestId;
+  state.analysisBusy = false;
+  state.metadataBusy = false;
   state.selectedId = runId;
   if (rerenderList) renderFileTree();
-  const run = await request(`/api/runs/${runId}`);
+  renderDetailLoading(runId);
+  let run;
+  try {
+    run = await request(`/api/runs/${runId}`);
+  } catch (error) {
+    if (
+      requestId === state.detailRequestId &&
+      treeRequestId === state.runsRequestId &&
+      state.selectedId === runId
+    ) {
+      renderDetailFailure(runId, error);
+      showToast(error.message, true);
+    }
+    return;
+  }
   if (
     requestId !== state.detailRequestId ||
     treeRequestId !== state.runsRequestId ||
     state.selectedId !== runId
   ) return;
   renderDetail(run);
+  if (analysisTypeForRun(run)) {
+    await loadAnalysisHistory(runId);
+  }
 }
 
 async function refreshAll(preserveSelection = true) {
@@ -498,11 +976,151 @@ elements.searchInput.addEventListener("input", () => {
 });
 elements.techniqueFilter.addEventListener("change", () => loadFileTree(false));
 
+function collectAnalysisParameters() {
+  if (analysisTypeForRun(state.selectedRun) !== "cv_overpotential") return {};
+  return {
+    solution: elements.cvSolution.value.trim(),
+    ph: Number(elements.cvPh.value),
+    reaction: elements.cvReaction.value,
+    reference_electrode: elements.cvReference.value,
+    reference_offset_v: Number(elements.cvReferenceOffset.value),
+    compensation_percent: Number(elements.cvCompensation.value),
+    solution_resistance_ohm: Number(elements.cvResistance.value),
+    area_cm2: Number(elements.cvArea.value),
+    target_current_density_ma_cm2: Number(elements.cvTargetCurrent.value),
+    scan_branch: elements.cvScanBranch.value,
+    online_compensation_status: elements.cvOnlineCompensation.value,
+  };
+}
+
+function applyCvBranchOptions(options, preferredValue = "") {
+  if (!Array.isArray(options) || !options.length) return;
+  const currentValue = preferredValue || elements.cvScanBranch.value;
+  elements.cvScanBranch.innerHTML = [
+    '<option value="auto">自动（仅单分支）</option>',
+    ...options.map((option) => {
+      const value = option.value || option.id;
+      const rows = option.source_row_start && option.source_row_end
+        ? ` · 行 ${option.source_row_start}–${option.source_row_end}`
+        : "";
+      return `<option value="${escapeHtml(value)}">${escapeHtml(option.label || value)}${escapeHtml(rows)}</option>`;
+    }),
+  ].join("");
+  const available = [...elements.cvScanBranch.options].some(
+    (option) => option.value === currentValue,
+  );
+  elements.cvScanBranch.value = available
+    ? currentValue
+    : (options[0].value || options[0].id);
+}
+
+async function calculateAnalysis(save) {
+  if (state.analysisBusy) return;
+  const run = state.selectedRun;
+  const runId = run?.id;
+  const analysisType = analysisTypeForRun(run);
+  if (!runId || !analysisType || !run.source_available) return;
+  if (!elements.analysisForm.reportValidity()) return;
+
+  const parameters = collectAnalysisParameters();
+  const requestId = ++state.analysisRequestId;
+  const endpoint = save
+    ? `/api/runs/${runId}/analyses`
+    : `/api/runs/${runId}/analyses/preview`;
+  setAnalysisError();
+  setAnalysisBusy(true);
+  elements.analysisSaveState.textContent = save ? "计算并保存中…" : "计算中…";
+  elements.analysisResultFreshness.textContent = "正在读取完整源数据…";
+  elements.analysisResultFreshness.className = "result-freshness busy";
+  try {
+    const analysis = await request(endpoint, {
+      method: "POST",
+      body: JSON.stringify({
+        analysis_type: analysisType,
+        parameters,
+      }),
+    });
+    if (requestId !== state.analysisRequestId || state.selectedId !== runId) return;
+    state.analysisPreview = analysis;
+    state.analysisPreviewSaved = save;
+    state.analysisDirty = false;
+    if (analysisType === "cv_overpotential") {
+      applyCvBranchOptions(
+        analysis.result?.branch_options,
+        analysis.parameters?.scan_branch,
+      );
+    }
+    renderAnalysisResult(analysis, save);
+    syncAnalysisControls();
+    elements.analysisSaveState.textContent = save ? "结果已保存" : "预览完成 · 尚未保存";
+    if (save) {
+      showToast("分析结果已保存到平台数据库");
+      await Promise.all([
+        loadAnalysisHistory(runId),
+        loadAudit(),
+      ]);
+    }
+  } catch (error) {
+    if (requestId !== state.analysisRequestId || state.selectedId !== runId) return;
+    const branchOptions = error.payload?.analysis_error?.details?.branch_options;
+    if (analysisType === "cv_overpotential" && Array.isArray(branchOptions)) {
+      applyCvBranchOptions(branchOptions);
+    }
+    setAnalysisError(error.message);
+    elements.analysisResultFreshness.textContent = "计算失败";
+    elements.analysisResultFreshness.className = "result-freshness stale";
+    elements.analysisSaveState.textContent = "";
+    showToast(error.message, true);
+  } finally {
+    if (requestId === state.analysisRequestId && state.selectedId === runId) {
+      setAnalysisBusy(false);
+      window.setTimeout(() => {
+        if (requestId === state.analysisRequestId) elements.analysisSaveState.textContent = "";
+      }, 2400);
+    }
+  }
+}
+
+elements.analysisForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  calculateAnalysis(false);
+});
+
+elements.saveAnalysis.addEventListener("click", () => calculateAnalysis(true));
+
+elements.analysisForm.addEventListener("input", markAnalysisDirty);
+elements.analysisForm.addEventListener("change", markAnalysisDirty);
+
+function syncReferenceOffset() {
+  const fixedZero = ["SHE", "RHE"].includes(elements.cvReference.value);
+  elements.cvReferenceOffset.disabled = fixedZero;
+  elements.cvReferenceOffset.value = fixedZero ? "0" : "";
+  elements.cvReferenceOffset.placeholder = fixedZero
+    ? "0"
+    : "按参比填充液/标定值确认";
+}
+
+elements.cvReference.addEventListener("change", () => {
+  syncReferenceOffset();
+  markAnalysisDirty();
+});
+
+elements.cvOnlineCompensation.addEventListener("change", () => {
+  const offlineCompensationAllowed =
+    elements.cvOnlineCompensation.value === "not_compensated";
+  elements.cvCompensation.disabled = !offlineCompensationAllowed;
+  if (!offlineCompensationAllowed) elements.cvCompensation.value = "0";
+  markAnalysisDirty();
+});
+
 elements.metadataForm.addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (state.metadataBusy) return;
   const runId = Number(elements.recordId.value);
   if (!runId) return;
-  elements.saveMetadata.disabled = true;
+  const requestId = ++state.metadataRequestId;
+  const detailRequestId = state.detailRequestId;
+  setMetadataBusy(true);
   elements.saveState.textContent = "保存中…";
   const payload = {
     sample_id: elements.sampleId.value,
@@ -517,16 +1135,46 @@ elements.metadataForm.addEventListener("submit", async (event) => {
       method: "POST",
       body: JSON.stringify(payload),
     });
-    renderDetail(run);
-    await Promise.all([loadFileTree(), loadAudit()]);
-    elements.saveState.textContent = "已保存";
-    showToast("样品信息已保存到平台数据库");
+    if (
+      requestId === state.metadataRequestId &&
+      detailRequestId === state.detailRequestId &&
+      state.selectedId === runId &&
+      Number(elements.recordId.value) === runId
+    ) {
+      setMetadataBusy(false);
+      renderDetail(run, { preserveAnalysis: true });
+      await Promise.all([loadFileTree(), loadAudit()]);
+      if (
+        requestId === state.metadataRequestId &&
+        state.selectedId === runId &&
+        Number(elements.recordId.value) === runId
+      ) {
+        const refreshedDetailRequestId = state.detailRequestId;
+        elements.saveState.textContent = "已保存";
+        showToast("样品信息已保存到平台数据库");
+        clearMetadataSaveStateLater(requestId, refreshedDetailRequestId);
+      }
+    } else {
+      await loadAudit();
+    }
   } catch (error) {
-    elements.saveState.textContent = "保存失败";
-    showToast(error.message, true);
+    if (
+      requestId === state.metadataRequestId &&
+      detailRequestId === state.detailRequestId &&
+      Number(elements.recordId.value) === runId
+    ) {
+      elements.saveState.textContent = "保存失败";
+      showToast(error.message, true);
+      clearMetadataSaveStateLater(requestId, detailRequestId);
+    }
   } finally {
-    elements.saveMetadata.disabled = false;
-    window.setTimeout(() => (elements.saveState.textContent = ""), 2000);
+    if (
+      requestId === state.metadataRequestId &&
+      state.selectedId === runId &&
+      Number(elements.recordId.value) === runId
+    ) {
+      setMetadataBusy(false);
+    }
   }
 });
 

@@ -3,8 +3,11 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import dataclasses
 import datetime as dt
 import hashlib
+import ipaddress
+import inspect
 import json
 import mimetypes
 import os
@@ -20,6 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Iterable
 
+from echem_platform.analysis import AnalysisValidationError
 from echem_platform.configuration import load_config, resolve_watch_roots
 from echem_platform.control import (
     STAGE_C_ID,
@@ -35,16 +39,24 @@ from echem_platform.parsers import (
     PARSER_VERSION,
     ParsedCurve,
     parse_curve,
+    parse_numeric_table,
 )
 
 
 APP_NAME = "电化学测试平台 V0.3 Stage C"
-APP_VERSION = "0.3.0-dev.8"
+APP_VERSION = "0.3.0-dev.9"
 APP_ROOT = Path(__file__).resolve().parent
 STATIC_ROOT = APP_ROOT / "static"
 DEFAULT_CONFIG = APP_ROOT / "config.json"
 DEFAULT_DATABASE = APP_ROOT / "state" / "echem-platform.sqlite3"
 MAX_JSON_REQUEST_BYTES = 1024 * 1024
+ANALYSIS_SCHEMA_VERSION = 1
+
+
+class AnalysisRequestError(Exception):
+    def __init__(self, message: str, status: int = HTTPStatus.BAD_REQUEST):
+        super().__init__(message)
+        self.status = int(status)
 
 
 def utc_now() -> str:
@@ -68,6 +80,132 @@ def source_is_available(source_path: str) -> bool:
         return Path(source_path).is_file()
     except OSError:
         return False
+
+
+def resolve_path_within_roots(
+    path: Path,
+    roots: Iterable[Path],
+    *,
+    strict: bool = True,
+) -> Path:
+    """Resolve a source path and require it to remain under an active root."""
+    try:
+        resolved = path.resolve(strict=strict)
+    except RuntimeError as exc:
+        raise OSError("unable to resolve source path") from exc
+    for root in roots:
+        try:
+            resolved_root = root.resolve(strict=False)
+            resolved.relative_to(resolved_root)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        return resolved
+    raise ValueError("path is outside the configured data folders")
+
+
+def _loopback_authority(value: str) -> tuple[str, int | None] | None:
+    """Return a canonical loopback host and port for a valid HTTP authority."""
+    authority = str(value or "").strip()
+    if (
+        not authority
+        or any(character.isspace() for character in authority)
+        or any(character in authority for character in "/?#@\\")
+    ):
+        return None
+    try:
+        parsed = urllib.parse.urlsplit(f"//{authority}")
+        port = parsed.port
+    except ValueError:
+        return None
+    if (
+        not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path
+        or parsed.query
+        or parsed.fragment
+    ):
+        return None
+    hostname = parsed.hostname.lower().rstrip(".")
+    if hostname == "localhost":
+        return hostname, port
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        return None
+    if not address.is_loopback:
+        return None
+    return address.compressed, port
+
+
+def validate_local_json_request(
+    *,
+    host: str,
+    origin: str | None,
+    content_type: str,
+    server_port: int,
+) -> None:
+    """Protect local mutation endpoints from cross-origin and rebinding writes."""
+    media_type = str(content_type or "").split(";", 1)[0].strip().lower()
+    if media_type != "application/json":
+        raise AnalysisRequestError(
+            "分析请求必须使用 application/json。",
+            HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
+        )
+
+    request_authority = _loopback_authority(host)
+    if request_authority is None:
+        raise AnalysisRequestError(
+            "分析请求的 Host 必须是本机回环地址。",
+            HTTPStatus.FORBIDDEN,
+        )
+    request_host, request_port = request_authority
+    effective_request_port = request_port if request_port is not None else 80
+    if effective_request_port != int(server_port):
+        raise AnalysisRequestError(
+            "分析请求的 Host 端口与本机服务不一致。",
+            HTTPStatus.FORBIDDEN,
+        )
+
+    if origin is None:
+        return
+    origin_value = origin.strip()
+    try:
+        parsed_origin = urllib.parse.urlsplit(origin_value)
+    except ValueError as exc:
+        raise AnalysisRequestError(
+            "分析请求的 Origin 无效。",
+            HTTPStatus.FORBIDDEN,
+        ) from exc
+    if (
+        parsed_origin.scheme.lower() != "http"
+        or not parsed_origin.netloc
+        or parsed_origin.path not in {"", "/"}
+        or parsed_origin.query
+        or parsed_origin.fragment
+        or parsed_origin.username is not None
+        or parsed_origin.password is not None
+    ):
+        raise AnalysisRequestError(
+            "分析请求的 Origin 必须与本机服务同源。",
+            HTTPStatus.FORBIDDEN,
+        )
+    origin_authority = _loopback_authority(parsed_origin.netloc)
+    if origin_authority is None:
+        raise AnalysisRequestError(
+            "分析请求的 Origin 必须与本机服务同源。",
+            HTTPStatus.FORBIDDEN,
+        )
+    origin_host, origin_port = origin_authority
+    effective_origin_port = origin_port if origin_port is not None else 80
+    if (
+        origin_host != request_host
+        or effective_origin_port != effective_request_port
+    ):
+        raise AnalysisRequestError(
+            "分析请求的 Origin 必须与本机服务同源。",
+            HTTPStatus.FORBIDDEN,
+        )
 
 
 class Database:
@@ -130,6 +268,33 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_runs_instrument ON runs(instrument);
                 CREATE INDEX IF NOT EXISTS idx_runs_technique ON runs(technique);
                 CREATE INDEX IF NOT EXISTS idx_runs_sha256 ON runs(sha256);
+                CREATE TABLE IF NOT EXISTS analysis_records (
+                    id INTEGER PRIMARY KEY,
+                    run_id INTEGER NOT NULL
+                        REFERENCES runs(id) ON DELETE RESTRICT,
+                    analysis_type TEXT NOT NULL,
+                    schema_version INTEGER NOT NULL,
+                    algorithm_id TEXT NOT NULL,
+                    algorithm_version TEXT NOT NULL,
+                    source_sha256 TEXT NOT NULL,
+                    parser_id TEXT NOT NULL,
+                    parser_version TEXT NOT NULL,
+                    parameters_json TEXT NOT NULL,
+                    result_json TEXT NOT NULL,
+                    created_utc TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_analysis_records_run
+                    ON analysis_records(run_id, id DESC);
+                CREATE TRIGGER IF NOT EXISTS analysis_records_no_update
+                BEFORE UPDATE ON analysis_records
+                BEGIN
+                    SELECT RAISE(ABORT, 'analysis records are immutable');
+                END;
+                CREATE TRIGGER IF NOT EXISTS analysis_records_no_delete
+                BEFORE DELETE ON analysis_records
+                BEGIN
+                    SELECT RAISE(ABORT, 'analysis records are immutable');
+                END;
                 CREATE TABLE IF NOT EXISTS audit (
                     id INTEGER PRIMARY KEY,
                     created_utc TEXT NOT NULL,
@@ -881,6 +1046,129 @@ class Database:
             ).fetchone()
         return dict(row) if row else None
 
+    @staticmethod
+    def _analysis_record_from_row(row: sqlite3.Row) -> dict[str, Any]:
+        record = {
+            "id": int(row["id"]),
+            "run_id": int(row["run_id"]),
+            "analysis_type": row["analysis_type"],
+            "schema_version": int(row["schema_version"]),
+            "algorithm_id": row["algorithm_id"],
+            "algorithm_version": row["algorithm_version"],
+            "source_sha256": row["source_sha256"],
+            "parser_id": row["parser_id"],
+            "parser_version": row["parser_version"],
+            "parameters": json.loads(row["parameters_json"]),
+            "result": json.loads(row["result_json"]),
+            "created_utc": row["created_utc"],
+            "preview": False,
+        }
+        keys = set(row.keys())
+        if "current_sha256" in keys:
+            record["stale"] = row["source_sha256"] != row["current_sha256"]
+        return record
+
+    def list_analyses(self, run_id: int) -> list[dict[str, Any]] | None:
+        with self.session() as connection:
+            run = connection.execute(
+                "SELECT id FROM runs WHERE id = ?",
+                (run_id,),
+            ).fetchone()
+            if not run:
+                return None
+            rows = connection.execute(
+                """
+                SELECT a.*, r.sha256 AS current_sha256
+                FROM analysis_records AS a
+                JOIN runs AS r ON r.id = a.run_id
+                WHERE a.run_id = ?
+                ORDER BY a.id DESC
+                LIMIT 200
+                """,
+                (run_id,),
+            ).fetchall()
+        return [self._analysis_record_from_row(row) for row in rows]
+
+    def save_analysis(
+        self,
+        *,
+        run_id: int,
+        analysis_type: str,
+        schema_version: int,
+        algorithm_id: str,
+        algorithm_version: str,
+        source_sha256: str,
+        parser_id: str,
+        parser_version: str,
+        parameters: dict[str, Any],
+        result: dict[str, Any],
+    ) -> dict[str, Any]:
+        parameters_json = json.dumps(
+            parameters,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        result_json = json.dumps(
+            result,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        if len(parameters_json.encode("utf-8")) > MAX_JSON_REQUEST_BYTES:
+            raise ValueError("分析参数超过 1 MiB。")
+        if len(result_json.encode("utf-8")) > MAX_JSON_REQUEST_BYTES:
+            raise ValueError("分析结果超过 1 MiB。")
+        created = utc_now()
+        with self._lock, self.session() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            run = connection.execute(
+                "SELECT sha256 FROM runs WHERE id = ?",
+                (run_id,),
+            ).fetchone()
+            if not run:
+                raise AnalysisRequestError("记录不存在。", HTTPStatus.NOT_FOUND)
+            if run["sha256"] != source_sha256:
+                raise AnalysisRequestError(
+                    "数据文件索引已变化，请重新预览后再保存。",
+                    HTTPStatus.CONFLICT,
+                )
+            cursor = connection.execute(
+                """
+                INSERT INTO analysis_records(
+                    run_id, analysis_type, schema_version, algorithm_id,
+                    algorithm_version, source_sha256, parser_id, parser_version,
+                    parameters_json, result_json, created_utc
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    analysis_type,
+                    int(schema_version),
+                    algorithm_id,
+                    algorithm_version,
+                    source_sha256,
+                    parser_id,
+                    parser_version,
+                    parameters_json,
+                    result_json,
+                    created,
+                ),
+            )
+            row = connection.execute(
+                """
+                SELECT a.*, r.sha256 AS current_sha256
+                FROM analysis_records AS a
+                JOIN runs AS r ON r.id = a.run_id
+                WHERE a.id = ?
+                """,
+                (int(cursor.lastrowid),),
+            ).fetchone()
+        assert row is not None
+        return self._analysis_record_from_row(row)
+
     def update_metadata(self, run_id: int, values: dict[str, Any]) -> dict[str, Any] | None:
         allowed = ("sample_id", "material", "electrolyte", "area_cm2", "tags", "notes")
         updates: dict[str, Any] = {}
@@ -975,14 +1263,26 @@ class Scanner:
 
     def iter_files(self) -> Iterable[Path]:
         for root in self.roots:
-            if not root.exists() or not root.is_dir():
+            try:
+                resolved_root = root.resolve(strict=True)
+            except OSError:
                 continue
-            for directory, dirnames, filenames in os.walk(root):
+            if not resolved_root.is_dir():
+                continue
+            for directory, dirnames, filenames in os.walk(resolved_root):
                 dirnames[:] = [name for name in dirnames if not name.startswith(".")]
                 for filename in filenames:
                     path = Path(directory) / filename
-                    if path.suffix.lower() in self.extensions:
-                        yield path
+                    if path.suffix.lower() not in self.extensions:
+                        continue
+                    try:
+                        yield resolve_path_within_roots(
+                            path,
+                            [resolved_root],
+                            strict=True,
+                        )
+                    except (OSError, ValueError):
+                        continue
 
     def scan(self) -> dict[str, Any]:
         if not self.lock.acquire(blocking=False):
@@ -1000,6 +1300,11 @@ class Scanner:
             for path in self.iter_files():
                 counters["seen"] += 1
                 try:
+                    path = resolve_path_within_roots(
+                        path,
+                        self.roots,
+                        strict=True,
+                    )
                     before = path.stat()
                     if before.st_size > self.max_file_bytes:
                         counters["skipped"] += 1
@@ -1009,7 +1314,10 @@ class Scanner:
                         continue
                     data = path.read_bytes()
                     after = path.stat()
-                    if before.st_size != after.st_size or before.st_mtime_ns != after.st_mtime_ns:
+                    if (
+                        before.st_size != after.st_size
+                        or before.st_mtime_ns != after.st_mtime_ns
+                    ):
                         counters["skipped"] += 1
                         self.database.audit("deferred", path.name, "File changed while being read.")
                         continue
@@ -1019,7 +1327,7 @@ class Scanner:
                     ).isoformat(timespec="seconds")
                     curve = parse_curve(path, data, self.max_points)
                     action = self.database.upsert_run(
-                        path.resolve(), fingerprint, after.st_size, modified, curve
+                        path, fingerprint, after.st_size, modified, curve
                     )
                     counters[action] += 1
                 except (OSError, UnicodeError, ValueError) as exc:
@@ -1076,6 +1384,245 @@ class RuntimeState:
         capabilities = self.control.capabilities()
         capabilities["dry_run"] = dry_run_capabilities()
         return capabilities
+
+    @staticmethod
+    def _json_object(value: Any, label: str) -> dict[str, Any]:
+        if dataclasses.is_dataclass(value) and not isinstance(value, type):
+            value = dataclasses.asdict(value)
+        elif hasattr(value, "to_dict") and callable(value.to_dict):
+            value = value.to_dict()
+        if not isinstance(value, dict):
+            raise ValueError(f"{label}必须是 JSON 对象。")
+        try:
+            serialized = json.dumps(
+                value,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{label}包含无法保存的值。") from exc
+        if len(serialized.encode("utf-8")) > MAX_JSON_REQUEST_BYTES:
+            raise ValueError(f"{label}超过 1 MiB。")
+        return json.loads(serialized)
+
+    @classmethod
+    def _public_analysis_value(cls, value: Any) -> Any:
+        if dataclasses.is_dataclass(value) and not isinstance(value, type):
+            value = dataclasses.asdict(value)
+        elif hasattr(value, "to_dict") and callable(value.to_dict):
+            value = value.to_dict()
+        if isinstance(value, dict):
+            return {
+                str(key): cls._public_analysis_value(item)
+                for key, item in value.items()
+                if str(key).lower() not in {"source_path", "absolute_path"}
+            }
+        if isinstance(value, (list, tuple)):
+            return [cls._public_analysis_value(item) for item in value]
+        return value
+
+    @staticmethod
+    def _canonical_analysis_type(value: Any) -> str:
+        normalized = str(value or "").strip().lower().replace("-", "_")
+        aliases = {
+            "eis": "eis_resistance",
+            "eis_resistance": "eis_resistance",
+            "resistance": "eis_resistance",
+            "cv": "cv_overpotential",
+            "cv_overpotential": "cv_overpotential",
+            "overpotential": "cv_overpotential",
+        }
+        analysis_type = aliases.get(normalized)
+        if not analysis_type:
+            raise ValueError("analysis_type 必须是 eis_resistance 或 cv_overpotential。")
+        return analysis_type
+
+    @staticmethod
+    def _call_analysis_function(
+        function: Any,
+        table: Any,
+        parameters: dict[str, Any],
+    ) -> Any:
+        signature = inspect.signature(function)
+        try:
+            signature.bind(table, parameters)
+        except TypeError:
+            try:
+                signature.bind(table, params=parameters)
+            except TypeError:
+                signature.bind(table)
+                return function(table)
+            return function(table, params=parameters)
+        return function(table, parameters)
+
+    def _analysis_source(self, run_id: int) -> tuple[dict[str, Any], bytes]:
+        run = self.database.get_run(run_id)
+        if not run:
+            raise AnalysisRequestError("记录不存在。", HTTPStatus.NOT_FOUND)
+        try:
+            source_path = resolve_path_within_roots(
+                Path(run["source_path"]),
+                self.scanner.roots,
+                strict=True,
+            )
+            before = source_path.stat()
+            if not source_path.is_file():
+                raise OSError("not a regular file")
+            if before.st_size > self.scanner.max_file_bytes:
+                raise AnalysisRequestError(
+                    "源数据文件超过当前安全读取上限。",
+                    HTTPStatus.CONFLICT,
+                )
+            with source_path.open("rb") as source:
+                data = source.read()
+            after_path = resolve_path_within_roots(
+                source_path,
+                self.scanner.roots,
+                strict=True,
+            )
+            if after_path != source_path:
+                raise AnalysisRequestError(
+                    "源数据文件在读取过程中离开了当前数据目录。",
+                    HTTPStatus.CONFLICT,
+                )
+            after = after_path.stat()
+        except AnalysisRequestError:
+            raise
+        except ValueError as exc:
+            raise AnalysisRequestError(
+                "源数据文件不在当前配置的数据目录内。",
+                HTTPStatus.FORBIDDEN,
+            ) from exc
+        except OSError as exc:
+            raise AnalysisRequestError(
+                "源数据文件当前不可读取，无法进行全分辨率分析。",
+                HTTPStatus.CONFLICT,
+            ) from exc
+        if (
+            before.st_size != after.st_size
+            or before.st_mtime_ns != after.st_mtime_ns
+        ):
+            raise AnalysisRequestError(
+                "源数据文件在读取过程中发生变化，请稍后重试。",
+                HTTPStatus.CONFLICT,
+            )
+        source_sha256 = hashlib.sha256(data).hexdigest()
+        if source_sha256 != run["sha256"]:
+            raise AnalysisRequestError(
+                "源数据文件已变化，请先重新扫描后再分析。",
+                HTTPStatus.CONFLICT,
+            )
+        run = dict(run)
+        run["source_path"] = str(source_path)
+        return run, data
+
+    def calculate_analysis(
+        self,
+        run_id: int,
+        analysis_type: str,
+        parameters: dict[str, Any],
+        *,
+        persist: bool,
+    ) -> dict[str, Any]:
+        from echem_platform.analysis import (
+            calculate_cv_overpotential,
+            calculate_eis_resistance,
+        )
+
+        analysis_type = self._canonical_analysis_type(analysis_type)
+        parameters = self._json_object(parameters, "parameters")
+        run, data = self._analysis_source(run_id)
+        technique = str(run.get("technique") or "").strip().upper()
+        expected = "EIS" if analysis_type == "eis_resistance" else "CV"
+        if technique != expected:
+            raise ValueError(f"当前记录是 {technique or '未知'} 数据，不能执行 {expected} 分析。")
+
+        table = parse_numeric_table(Path(run["source_path"]), data)
+        function = (
+            calculate_eis_resistance
+            if analysis_type == "eis_resistance"
+            else calculate_cv_overpotential
+        )
+        calculated = self._call_analysis_function(function, table, parameters)
+        calculated = self._public_analysis_value(calculated)
+        if not isinstance(calculated, dict):
+            raise ValueError("分析算法返回了无效结果。")
+
+        algorithm = calculated.pop("algorithm", {})
+        if not isinstance(algorithm, dict):
+            algorithm = {}
+        default_algorithm = (
+            "eis_high_frequency_intercept"
+            if analysis_type == "eis_resistance"
+            else "cv_rhe_ir_target_current_interpolation"
+        )
+        algorithm_id = str(
+            calculated.pop("algorithm_id", "")
+            or algorithm.get("id")
+            or default_algorithm
+        )[:160]
+        algorithm_version = str(
+            calculated.pop("algorithm_version", "")
+            or algorithm.get("version")
+            or "2026.07.26.1"
+        )[:80]
+        normalized_parameters = calculated.pop("parameters", parameters)
+        normalized_parameters = self._json_object(
+            self._public_analysis_value(normalized_parameters),
+            "分析参数",
+        )
+        calculated.pop("analysis_type", None)
+        calculated.pop("schema_version", None)
+        warnings = calculated.pop("warnings", [])
+        nested_result = calculated.pop("result", None)
+        if nested_result is not None:
+            if not isinstance(nested_result, dict):
+                raise ValueError("分析算法的 result 必须是 JSON 对象。")
+            result_payload = dict(nested_result)
+            for key, value in calculated.items():
+                result_payload.setdefault(key, value)
+        else:
+            result_payload = calculated
+        if warnings:
+            result_payload.setdefault("warnings", warnings)
+        result = self._json_object(
+            self._public_analysis_value(result_payload),
+            "分析结果",
+        )
+
+        common = {
+            "run_id": int(run_id),
+            "analysis_type": analysis_type,
+            "schema_version": ANALYSIS_SCHEMA_VERSION,
+            "algorithm_id": algorithm_id,
+            "algorithm_version": algorithm_version,
+            "source_sha256": run["sha256"],
+            "parser_id": run.get("parser_id", ""),
+            "parser_version": run.get("parser_version", "") or PARSER_VERSION,
+            "parameters": normalized_parameters,
+            "result": result,
+        }
+        if not persist:
+            return {
+                **common,
+                "created_utc": utc_now(),
+                "preview": True,
+                "stale": False,
+            }
+        saved = self.database.save_analysis(**common)
+        self.database.audit(
+            "analysis_saved",
+            str(run_id),
+            f"{analysis_type} / {algorithm_id} / source {run['sha256'][:12]}",
+        )
+        return saved
+
+    def list_analyses(self, run_id: int) -> list[dict[str, Any]]:
+        records = self.database.list_analyses(run_id)
+        if records is None:
+            raise AnalysisRequestError("记录不存在。", HTTPStatus.NOT_FOUND)
+        return records
 
     def file_tree(self, technique: str = "", query: str = "") -> dict[str, Any]:
         """Build a read-only folder/file index without exposing absolute source paths."""
@@ -1197,6 +1744,32 @@ def create_handler(runtime: RuntimeState):
         def send_error_json(self, status: int, message: str) -> None:
             self.send_json({"error": message}, status)
 
+        def require_local_json_request(self) -> None:
+            content_types = self.headers.get_all("Content-Type", [])
+            if len(content_types) != 1:
+                raise AnalysisRequestError(
+                    "分析请求必须且只能声明一个 application/json Content-Type。",
+                    HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
+                )
+            hosts = self.headers.get_all("Host", [])
+            if len(hosts) != 1:
+                raise AnalysisRequestError(
+                    "分析请求必须且只能使用一个本机回环 Host。",
+                    HTTPStatus.FORBIDDEN,
+                )
+            origins = self.headers.get_all("Origin", [])
+            if len(origins) > 1:
+                raise AnalysisRequestError(
+                    "分析请求的 Origin 无效。",
+                    HTTPStatus.FORBIDDEN,
+                )
+            validate_local_json_request(
+                host=hosts[0],
+                origin=origins[0] if origins else None,
+                content_type=content_types[0],
+                server_port=int(self.server.server_address[1]),
+            )
+
         def read_json(self) -> dict[str, Any]:
             length = int(self.headers.get("Content-Length", "0"))
             if length <= 0 or length > MAX_JSON_REQUEST_BYTES:
@@ -1307,6 +1880,9 @@ def create_handler(runtime: RuntimeState):
                             query=query.get("q", [""])[0],
                         )
                     )
+                elif re.fullmatch(r"/api/runs/\d+/analyses", path):
+                    run_id = int(path.split("/")[-2])
+                    self.send_json(runtime.list_analyses(run_id))
                 elif re.fullmatch(r"/api/runs/\d+", path):
                     run_id = int(path.rsplit("/", 1)[-1])
                     run = runtime.database.get_run(run_id)
@@ -1334,6 +1910,8 @@ def create_handler(runtime: RuntimeState):
                     self.send_static(path[len("/static/") :])
                 else:
                     self.send_error_json(HTTPStatus.NOT_FOUND, "Not found")
+            except AnalysisRequestError as exc:
+                self.send_error_json(exc.status, str(exc))
             except ControlSafetyError as exc:
                 self.send_json(exc.to_dict(), exc.status)
             except Exception:
@@ -1444,6 +2022,43 @@ def create_handler(runtime: RuntimeState):
                         raise ValueError("停止请求不接受参数。")
                     self.send_json(runtime.control.request_stop(run_id))
                     return
+                analysis_match = re.fullmatch(
+                    r"/api/runs/(\d+)/analyses(?:/(preview))?",
+                    path,
+                )
+                if analysis_match:
+                    self.require_local_json_request()
+                    payload = self.read_json()
+                    unknown = sorted(
+                        set(payload)
+                        - {"analysis_type", "type", "parameters", "params"}
+                    )
+                    if unknown:
+                        raise ValueError(
+                            "分析请求包含未知字段：" + ", ".join(unknown)
+                        )
+                    analysis_type = payload.get(
+                        "analysis_type",
+                        payload.get("type", ""),
+                    )
+                    parameters = payload.get(
+                        "parameters",
+                        payload.get("params", {}),
+                    )
+                    if not isinstance(parameters, dict):
+                        raise ValueError("parameters 必须是 JSON 对象。")
+                    preview = analysis_match.group(2) == "preview"
+                    result = runtime.calculate_analysis(
+                        int(analysis_match.group(1)),
+                        str(analysis_type),
+                        parameters,
+                        persist=not preview,
+                    )
+                    self.send_json(
+                        result,
+                        HTTPStatus.OK if preview else HTTPStatus.CREATED,
+                    )
+                    return
                 match = re.fullmatch(r"/api/runs/(\d+)/metadata", path)
                 if match:
                     payload = self.read_json()
@@ -1454,6 +2069,16 @@ def create_handler(runtime: RuntimeState):
                         self.send_error_json(HTTPStatus.NOT_FOUND, "记录不存在。")
                     return
                 self.send_error_json(HTTPStatus.NOT_FOUND, "Not found")
+            except AnalysisRequestError as exc:
+                self.send_error_json(exc.status, str(exc))
+            except AnalysisValidationError as exc:
+                self.send_json(
+                    {
+                        "error": exc.message,
+                        "analysis_error": exc.as_dict(),
+                    },
+                    HTTPStatus.BAD_REQUEST,
+                )
             except ProtocolValidationError as exc:
                 self.send_json(exc.to_dict(), HTTPStatus.BAD_REQUEST)
             except MacroValidationError as exc:

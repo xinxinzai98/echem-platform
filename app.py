@@ -44,7 +44,7 @@ from echem_platform.parsers import (
 
 
 APP_NAME = "电化学测试平台 V0.3 Stage C"
-APP_VERSION = "0.3.0-dev.10"
+APP_VERSION = "0.3.0-dev.11"
 APP_ROOT = Path(__file__).resolve().parent
 STATIC_ROOT = APP_ROOT / "static"
 DEFAULT_CONFIG = APP_ROOT / "config.json"
@@ -1590,6 +1590,19 @@ class RuntimeState:
             self._public_analysis_value(result_payload),
             "分析结果",
         )
+        quality = result.get("quality")
+        quality_level = (
+            str(quality.get("level", "")).strip()
+            if isinstance(quality, dict)
+            else ""
+        )
+        if persist and quality_level == "not_calculable":
+            raise AnalysisValidationError(
+                "当前分析结果不可计算，不能保存；请根据质量原因调整数据或参数后重新预览。",
+                field="quality",
+                code="analysis_not_calculable",
+                details={"quality": quality},
+            )
 
         common = {
             "run_id": int(run_id),

@@ -279,6 +279,14 @@ textarea {
   font-size: 12px;
 }
 
+#fileScopeFilter {
+  width: 58%;
+}
+
+#techniqueFilter {
+  width: 42%;
+}
+
 .filter-row.single-filter select {
   width: 100%;
 }
@@ -828,6 +836,44 @@ textarea {
 
 .analysis-results {
   min-height: 182px;
+}
+
+.analysis-quality {
+  display: grid;
+  gap: 3px;
+  margin-bottom: 11px;
+  padding: 10px 12px;
+  border: 1px solid #c9e3df;
+  border-radius: 9px;
+  color: var(--teal-dark);
+  background: var(--teal-soft);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.analysis-quality strong {
+  font-size: 11px;
+}
+
+.analysis-quality span {
+  color: inherit;
+}
+
+.analysis-quality ul {
+  margin: 3px 0 0;
+  padding-left: 17px;
+}
+
+.analysis-quality.quality-screening {
+  border-color: #f0cfac;
+  color: #70512b;
+  background: var(--orange-soft);
+}
+
+.analysis-quality.quality-not_calculable {
+  border-color: #efc4b7;
+  color: #8d3326;
+  background: var(--red-soft);
 }
 
 .analysis-result-empty,

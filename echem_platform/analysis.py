@@ -10,9 +10,9 @@ from .parsers import ParsedTable, normalized_header, unit_from_header
 
 ANALYSIS_SCHEMA_VERSION = "1"
 EIS_ALGORITHM_ID = "eis.real-axis-zero-crossing"
-EIS_ALGORITHM_VERSION = "1.0.0"
+EIS_ALGORITHM_VERSION = "1.1.0"
 CV_ALGORITHM_ID = "cv.rhe-ir-target-current"
-CV_ALGORITHM_VERSION = "1.0.0"
+CV_ALGORITHM_VERSION = "1.1.0"
 NERNST_RHE_SLOPE_V_PER_PH_25C = 0.05916
 
 
@@ -111,6 +111,26 @@ def _number(
             code="parameter_out_of_range",
         )
     return number
+
+
+def _optional_number(
+    parameters: Mapping[str, Any],
+    field: str,
+    *,
+    minimum: float | None = None,
+    maximum: float | None = None,
+    exclusive_minimum: bool = False,
+) -> float | None:
+    value = parameters.get(field)
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    return _number(
+        parameters,
+        field,
+        minimum=minimum,
+        maximum=maximum,
+        exclusive_minimum=exclusive_minimum,
+    )
 
 
 def _validate_table(table: ParsedTable, expected_technique: str) -> None:
@@ -408,7 +428,24 @@ def calculate_eis_resistance(
     warnings.append(
         "截距结果是零交叉线性插值的筛查值，不是等效电路拟合，也不应直接标记为正式 Rct。"
     )
+    if solution_resistance is None:
+        quality = {
+            "level": "not_calculable",
+            "label": "不可计算",
+            "reasons": [
+                "测量频率范围内没有得到有效的高频实轴交点，无法计算溶液电阻 Rs。"
+            ],
+        }
+    else:
+        quality = {
+            "level": "screening",
+            "label": "仅筛查",
+            "reasons": [
+                "当前结果来自实轴零交叉插值，不是等效电路拟合，仅可作为筛查值。"
+            ],
+        }
     result = {
+        "quality": quality,
         "resistance_unit": real_unit,
         "point_count": len(points),
         "frequency_range_hz": {
@@ -594,24 +631,23 @@ def _segment_cv(points: list[_CVPoint]) -> list[list[_CVPoint]]:
 def _branch_options(segments: list[list[_CVPoint]]) -> list[dict[str, Any]]:
     options: list[dict[str, Any]] = []
     for index, segment in enumerate(segments, start=1):
+        segment_id = f"segment_{index}"
+        start_potential = segment[0].potential_v
+        end_potential = segment[-1].potential_v
         direction = (
             "increasing"
-            if segment[-1].potential_v > segment[0].potential_v
+            if end_potential > start_potential
             else "decreasing"
         )
-        if len(segments) == 2:
-            value = "forward" if index == 1 else "reverse"
-        else:
-            value = f"segment_{index}"
+        direction_label = "电位递增" if direction == "increasing" else "电位递减"
         options.append(
             {
-                "id": f"segment_{index}",
-                "value": value,
+                "id": segment_id,
+                "value": segment_id,
                 "direction": direction,
                 "label": (
-                    f"正向扫描（段 {index}）"
-                    if direction == "increasing"
-                    else f"反向扫描（段 {index}）"
+                    f"段{index}：{start_potential:.6g}→{end_potential:.6g} V"
+                    f"（{direction_label}）"
                 ),
                 "source_row_start": segment[0].source_row,
                 "source_row_end": segment[-1].source_row,
@@ -835,11 +871,6 @@ def calculate_cv_overpotential(
         minimum=0.0,
         maximum=100.0,
     )
-    solution_resistance_ohm = _number(
-        raw_parameters,
-        "solution_resistance_ohm",
-        minimum=0.0,
-    )
     area_cm2 = _number(
         raw_parameters,
         "area_cm2",
@@ -868,6 +899,12 @@ def calculate_cv_overpotential(
             field="online_compensation_status",
             code="invalid_parameter",
         )
+    solution_resistance_ohm = _optional_number(
+        raw_parameters,
+        "solution_resistance_ohm",
+        minimum=0.0,
+        exclusive_minimum=compensation_percent > 0.0,
+    )
     if compensation_percent > 0:
         if online_compensation_status == "already_compensated":
             raise AnalysisValidationError(
@@ -880,6 +917,12 @@ def calculate_cv_overpotential(
                 "源数据在线补偿状态未知；确认未在线补偿前不能应用非零补偿因子。",
                 field="compensation_percent",
                 code="compensation_status_unknown",
+            )
+        if solution_resistance_ohm is None:
+            raise AnalysisValidationError(
+                "应用非零离线 iR 补偿时，solution_resistance_ohm 必须大于 0。",
+                field="solution_resistance_ohm",
+                code="missing_parameter",
             )
 
     normalized_parameters: dict[str, Any] = {
@@ -906,6 +949,9 @@ def calculate_cv_overpotential(
         segments,
         scan_branch,
     )
+    # Persist the stable segment identifier even when an older client submits
+    # the legacy forward/reverse alias.
+    normalized_parameters["scan_branch"] = selected_branch["id"]
     target_signed = -target_magnitude if reaction == "HER" else target_magnitude
     crossings = _target_crossings(branch, target_signed)
     warnings: list[str] = []
@@ -937,10 +983,14 @@ def calculate_cv_overpotential(
         )
         potential_rhe_v = measured_potential_v + reference_conversion_v
         applied_ir_drop_v = (
-            compensation_percent
-            / 100.0
-            * target_current_a
-            * solution_resistance_ohm
+            0.0
+            if compensation_percent == 0.0
+            else (
+                compensation_percent
+                / 100.0
+                * target_current_a
+                * float(solution_resistance_ohm)
+            )
         )
         compensated_potential_v = potential_rhe_v - applied_ir_drop_v
         equilibrium_potential_v = 0.0 if reaction == "HER" else 1.229
@@ -1000,7 +1050,46 @@ def calculate_cv_overpotential(
         "CV 结果是所选扫描支路上的表观过电位；正式活性比较应同时核对扫描速率、循环迟滞和稳态/LSV 数据。"
     )
 
+    not_calculable_reasons: list[str] = []
+    screening_reasons: list[str] = []
+    if target_point is None:
+        not_calculable_reasons.append(
+            "所选分支未达到目标电流密度，未计算目标过电位。"
+        )
+    if len(crossings) > 1:
+        screening_reasons.append(
+            "所选分支存在多个目标电流交点，结果仅使用扫描顺序中的第一个交点。"
+        )
+    if online_compensation_status == "unknown":
+        screening_reasons.append(
+            "源数据在线补偿状态未知，结果仅可用于筛查。"
+        )
+    elif online_compensation_status == "already_compensated":
+        screening_reasons.append(
+            "源数据已在线补偿，但当前记录没有在线补偿比例和对应 Rs，结果仅可用于筛查。"
+        )
+
+    if not_calculable_reasons:
+        quality_level = "not_calculable"
+        quality_label = "不可计算"
+        quality_reasons = not_calculable_reasons + screening_reasons
+    elif screening_reasons:
+        quality_level = "screening"
+        quality_label = "仅筛查"
+        quality_reasons = screening_reasons
+    else:
+        quality_level = "quantitative"
+        quality_label = "可定量"
+        quality_reasons = [
+            "目标电流交点唯一，且源数据在线补偿状态已明确。"
+        ]
+
     result = {
+        "quality": {
+            "level": quality_level,
+            "label": quality_label,
+            "reasons": quality_reasons,
+        },
         "branch_options": branch_options,
         "selected_branch": selected_branch,
         "source_point_count": len(points),

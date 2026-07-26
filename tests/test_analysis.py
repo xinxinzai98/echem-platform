@@ -137,6 +137,16 @@ class EISResistanceTests(unittest.TestCase):
         )
         self.assertFalse(result["extrapolated"])
         self.assertTrue(any("不是等效电路拟合" in item for item in analysis["warnings"]))
+        self.assertEqual(
+            result["quality"],
+            {
+                "level": "screening",
+                "label": "仅筛查",
+                "reasons": [
+                    "当前结果来自实轴零交叉插值，不是等效电路拟合，仅可作为筛查值。"
+                ],
+            },
+        )
 
     def test_no_zero_crossing_returns_no_resistance_and_never_extrapolates(self):
         table = eis_table(
@@ -156,6 +166,9 @@ class EISResistanceTests(unittest.TestCase):
         self.assertEqual(result["crossings"], [])
         self.assertFalse(result["extrapolated"])
         self.assertTrue(any("未外推溶液电阻" in item for item in analysis["warnings"]))
+        self.assertEqual(result["quality"]["level"], "not_calculable")
+        self.assertEqual(result["quality"]["label"], "不可计算")
+        self.assertTrue(result["quality"]["reasons"])
 
     def test_resistance_units_distinguish_ohm_and_area_normalized_ohm(self):
         cases = (
@@ -368,6 +381,29 @@ class CVOverpotentialTests(unittest.TestCase):
 
         self.assertEqual(forward["selected_branch"]["id"], "segment_1")
         self.assertEqual(reverse["selected_branch"]["id"], "segment_2")
+        self.assertEqual(
+            [option["value"] for option in forward["branch_options"]],
+            ["segment_1", "segment_2"],
+        )
+        self.assertEqual(
+            [option["label"] for option in forward["branch_options"]],
+            [
+                "段1：-1→-0.8 V（电位递增）",
+                "段2：-0.8→-1 V（电位递减）",
+            ],
+        )
+        self.assertEqual(
+            calculate_cv_overpotential(table, forward_parameters)["parameters"][
+                "scan_branch"
+            ],
+            "segment_1",
+        )
+        self.assertEqual(
+            calculate_cv_overpotential(table, reverse_parameters)["parameters"][
+                "scan_branch"
+            ],
+            "segment_2",
+        )
         self.assertAlmostEqual(
             forward["target_point"]["measured_potential_v"],
             -0.95,
@@ -417,6 +453,52 @@ class CVOverpotentialTests(unittest.TestCase):
 
         self.assertIsNone(analysis["result"]["target_point"])
         self.assertTrue(any("未外推过电位" in item for item in analysis["warnings"]))
+        self.assertEqual(
+            analysis["result"]["quality"]["level"],
+            "not_calculable",
+        )
+
+    def test_cv_quality_distinguishes_quantitative_and_screening_results(self):
+        quantitative_parameters = cv_parameters(
+            "HER",
+            compensation_percent=0.0,
+        )
+        quantitative_parameters.update(
+            {
+                "reference_electrode": "RHE",
+                "reference_offset_v": 0.0,
+            }
+        )
+        quantitative = calculate_cv_overpotential(
+            cv_table([(-1.0, -0.02), (-0.9, 0.0)]),
+            quantitative_parameters,
+        )
+        self.assertEqual(
+            quantitative["result"]["quality"]["level"],
+            "quantitative",
+        )
+
+        multiple_crossings = calculate_cv_overpotential(
+            cv_table(
+                [
+                    (-1.1, -0.005),
+                    (-1.0, -0.020),
+                    (-0.9, -0.005),
+                    (-0.8, -0.020),
+                ]
+            ),
+            quantitative_parameters,
+        )
+        self.assertEqual(
+            multiple_crossings["result"]["quality"]["level"],
+            "screening",
+        )
+        self.assertTrue(
+            any(
+                "多个目标电流交点" in reason
+                for reason in multiple_crossings["result"]["quality"]["reasons"]
+            )
+        )
 
     def test_online_compensation_blocks_nonzero_second_compensation(self):
         with self.assertRaises(AnalysisValidationError) as caught:
@@ -452,6 +534,10 @@ class CVOverpotentialTests(unittest.TestCase):
             ),
         )
         self.assertIsNotNone(allowed["result"]["target_point"])
+        self.assertEqual(
+            allowed["result"]["quality"]["level"],
+            "screening",
+        )
 
         unknown_without_offline_compensation = calculate_cv_overpotential(
             cv_table([(-1.0, -0.02), (-0.9, 0.0)]),
@@ -470,6 +556,75 @@ class CVOverpotentialTests(unittest.TestCase):
                 for warning in unknown_without_offline_compensation["warnings"]
             )
         )
+        self.assertEqual(
+            unknown_without_offline_compensation["result"]["quality"]["level"],
+            "screening",
+        )
+
+    def test_zero_offline_compensation_allows_null_rs_without_recording_a_fake_zero(self):
+        base = cv_parameters(
+            "HER",
+            compensation_percent=0.0,
+            online_compensation_status="not_compensated",
+        )
+        base["solution_resistance_ohm"] = None
+
+        not_compensated = calculate_cv_overpotential(
+            cv_table([(-1.0, -0.02), (-0.9, 0.0)]),
+            base,
+        )
+
+        self.assertIsNone(
+            not_compensated["parameters"]["solution_resistance_ohm"]
+        )
+        self.assertEqual(
+            not_compensated["result"]["target_point"]["applied_ir_drop_v"],
+            0.0,
+        )
+        self.assertEqual(
+            not_compensated["result"]["quality"]["level"],
+            "quantitative",
+        )
+
+        for status in ("unknown", "already_compensated"):
+            with self.subTest(status=status):
+                parameters = dict(base)
+                parameters["online_compensation_status"] = status
+                analysis = calculate_cv_overpotential(
+                    cv_table([(-1.0, -0.02), (-0.9, 0.0)]),
+                    parameters,
+                )
+                self.assertIsNone(
+                    analysis["parameters"]["solution_resistance_ohm"]
+                )
+                self.assertEqual(
+                    analysis["result"]["quality"]["level"],
+                    "screening",
+                )
+
+    def test_nonzero_offline_compensation_requires_positive_rs(self):
+        for invalid_rs, expected_code in (
+            (None, "missing_parameter"),
+            ("", "missing_parameter"),
+            (0.0, "parameter_out_of_range"),
+        ):
+            with self.subTest(solution_resistance_ohm=invalid_rs):
+                parameters = cv_parameters(
+                    "HER",
+                    compensation_percent=85.0,
+                    online_compensation_status="not_compensated",
+                )
+                parameters["solution_resistance_ohm"] = invalid_rs
+                with self.assertRaises(AnalysisValidationError) as caught:
+                    calculate_cv_overpotential(
+                        cv_table([(-1.0, -0.02), (-0.9, 0.0)]),
+                        parameters,
+                    )
+                self.assertEqual(caught.exception.code, expected_code)
+                self.assertEqual(
+                    caught.exception.field,
+                    "solution_resistance_ohm",
+                )
 
 
 class AnalysisPersistenceTests(unittest.TestCase):
@@ -526,6 +681,7 @@ class AnalysisPersistenceTests(unittest.TestCase):
         assert original is not None
         self.assertEqual(len(original), 1)
         self.assertEqual(original[0], saved)
+        self.assertEqual(saved["parameters"]["scan_branch"], "segment_1")
 
         with self.assertRaises(sqlite3.DatabaseError):
             with self.database.session() as connection:
@@ -590,6 +746,117 @@ class AnalysisPersistenceTests(unittest.TestCase):
         self.assertEqual(caught.exception.status, 409)
         self.assertIn("重新扫描", str(caught.exception))
         self.assertEqual(self.database.list_analyses(run["id"]), [])
+
+    def test_runtime_refuses_to_persist_not_calculable_preview(self):
+        source = self.source_root / "target_not_reached_cv.txt"
+        source.write_text(
+            "\n".join(
+                [
+                    "Technique: Cyclic Voltammetry",
+                    "Potential/V,Current/A",
+                    "-1.0,-0.001",
+                    "-0.9,-0.002",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        runtime, run = self.make_runtime(source)
+        parameters = cv_parameters("HER", compensation_percent=0.0)
+        audit_before = self.database.recent_audit(200)
+
+        preview = runtime.calculate_analysis(
+            run["id"],
+            "cv_overpotential",
+            parameters,
+            persist=False,
+        )
+        self.assertEqual(
+            preview["result"]["quality"]["level"],
+            "not_calculable",
+        )
+
+        with self.assertRaises(AnalysisValidationError) as caught:
+            runtime.calculate_analysis(
+                run["id"],
+                "cv_overpotential",
+                parameters,
+                persist=True,
+            )
+        self.assertEqual(caught.exception.code, "analysis_not_calculable")
+        self.assertEqual(caught.exception.field, "quality")
+        self.assertEqual(
+            caught.exception.details["quality"]["level"],
+            "not_calculable",
+        )
+        self.assertEqual(self.database.list_analyses(run["id"]), [])
+        self.assertEqual(self.database.recent_audit(200), audit_before)
+
+    def test_runtime_refuses_to_persist_not_calculable_eis_result(self):
+        source = self.source_root / "no_intercept_eis.txt"
+        source.write_text(
+            "\n".join(
+                [
+                    "Method: EIS",
+                    "Freq/Hz,Z'/ohm,Z\"/ohm",
+                    "100000,1,-0.1",
+                    "10000,2,-0.4",
+                    "1000,4,-0.8",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        runtime, run = self.make_runtime(source)
+        audit_before = self.database.recent_audit(200)
+
+        preview = runtime.calculate_analysis(
+            run["id"],
+            "eis_resistance",
+            {},
+            persist=False,
+        )
+        self.assertEqual(
+            preview["result"]["quality"]["level"],
+            "not_calculable",
+        )
+        with self.assertRaises(AnalysisValidationError) as caught:
+            runtime.calculate_analysis(
+                run["id"],
+                "eis_resistance",
+                {},
+                persist=True,
+            )
+
+        self.assertEqual(caught.exception.code, "analysis_not_calculable")
+        self.assertEqual(self.database.list_analyses(run["id"]), [])
+        self.assertEqual(self.database.recent_audit(200), audit_before)
+
+    def test_runtime_allows_screening_result_to_be_persisted(self):
+        source = self.source_root / "screening_eis.txt"
+        source.write_text(
+            "\n".join(
+                [
+                    "Method: EIS",
+                    "Freq/Hz,Z'/ohm,Z\"/ohm",
+                    "100000,1,1",
+                    "10000,3,-1",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        runtime, run = self.make_runtime(source)
+
+        saved = runtime.calculate_analysis(
+            run["id"],
+            "eis_resistance",
+            {},
+            persist=True,
+        )
+
+        self.assertEqual(saved["result"]["quality"]["level"], "screening")
+        records = self.database.list_analyses(run["id"])
+        assert records is not None
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["result"]["quality"]["level"], "screening")
 
 
 if __name__ == "__main__":

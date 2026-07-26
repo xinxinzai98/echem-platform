@@ -18,6 +18,7 @@ const state = {
 const elements = {
   scanButton: document.querySelector("#scanButton"),
   searchInput: document.querySelector("#searchInput"),
+  fileScopeFilter: document.querySelector("#fileScopeFilter"),
   techniqueFilter: document.querySelector("#techniqueFilter"),
   treeCount: document.querySelector("#treeCount"),
   fileTree: document.querySelector("#fileTree"),
@@ -114,6 +115,59 @@ function showToast(message, isError = false) {
   elements.toast.classList.add("show");
   window.clearTimeout(showToast.timer);
   showToast.timer = window.setTimeout(() => elements.toast.classList.remove("show"), 2600);
+}
+
+function isOtherFile(run) {
+  const pathParts = String(run?.relative_path || "")
+    .replaceAll("\\", "/")
+    .split("/")
+    .map((part) => part.trim().toLowerCase().replaceAll(/[-\s]+/g, "_"));
+  return (
+    pathParts.includes("control_programs") ||
+    pathParts.includes("diagnostics") ||
+    pathParts.includes("rejected_data")
+  );
+}
+
+function runMatchesFileScope(run, scope = elements.fileScopeFilter.value) {
+  if (scope === "all") return true;
+  return scope === "other" ? isOtherFile(run) : !isOtherFile(run);
+}
+
+function filterTreeByScope(tree) {
+  const roots = (tree?.roots || []).map((root) => {
+    const files = (root.files || []).filter((run) => runMatchesFileScope(run));
+    return { ...root, files, file_count: files.length };
+  });
+  return {
+    ...tree,
+    roots,
+    total: roots.reduce((sum, root) => sum + root.file_count, 0),
+  };
+}
+
+function isRecognizedTechnique(value) {
+  const technique = String(value || "").trim().toUpperCase();
+  return Boolean(
+    technique &&
+    !["未识别", "UNKNOWN", "UNRECOGNIZED", "N/A", "—"].includes(technique)
+  );
+}
+
+function latestAnalyzableRun(runs) {
+  return [...runs]
+    .filter((run) =>
+      run.source_available &&
+      run.parse_status === "parsed" &&
+      Number(run.point_count) > 0 &&
+      isRecognizedTechnique(run.technique) &&
+      Boolean(analysisTypeForRun(run))
+    )
+    .sort((left, right) => {
+      const modifiedDifference =
+        new Date(right.modified_utc).getTime() - new Date(left.modified_utc).getTime();
+      return modifiedDifference || Number(right.id) - Number(left.id);
+    })[0] || null;
 }
 
 function makeFolderNode(name = "") {
@@ -455,6 +509,7 @@ function analysisSourceReady(run = state.selectedRun) {
 
 function syncAnalysisControls(run = state.selectedRun) {
   const analysisType = analysisTypeForRun(run);
+  const qualityLevel = state.analysisPreview?.result?.quality?.level;
   elements.eisFields.disabled =
     state.analysisBusy || analysisType !== "eis_resistance";
   elements.cvFields.disabled =
@@ -465,7 +520,13 @@ function syncAnalysisControls(run = state.selectedRun) {
     state.analysisBusy ||
     !state.analysisPreview ||
     state.analysisPreviewSaved ||
-    state.analysisDirty;
+    state.analysisDirty ||
+    qualityLevel === "not_calculable";
+  elements.saveAnalysis.textContent = qualityLevel === "screening"
+    ? "保存为筛查记录"
+    : qualityLevel === "not_calculable"
+      ? "当前结果不可保存"
+      : "计算并保存";
 }
 
 function setAnalysisBusy(busy) {
@@ -565,6 +626,31 @@ function syncReferenceOffset(resetCustom = false) {
     : "选择参比电极后自动填写";
 }
 
+function syncOfflineCompensation() {
+  const offlineCompensationAllowed =
+    elements.cvOnlineCompensation.value === "not_compensated";
+  elements.cvCompensation.disabled = !offlineCompensationAllowed;
+  if (!offlineCompensationAllowed) elements.cvCompensation.value = "0";
+  elements.cvCompensation.title = offlineCompensationAllowed
+    ? "已确认源数据未在线补偿，可设置离线补偿比例"
+    : "仅在确认源数据未在线补偿后才可设置非零离线补偿";
+  syncResistanceRequirement();
+}
+
+function syncResistanceRequirement() {
+  const compensationPercent = Number(elements.cvCompensation.value);
+  const resistanceRequired =
+    elements.cvOnlineCompensation.value === "not_compensated" &&
+    Number.isFinite(compensationPercent) &&
+    compensationPercent > 0;
+  elements.cvResistance.disabled = !resistanceRequired;
+  elements.cvResistance.required = resistanceRequired;
+  if (!resistanceRequired) elements.cvResistance.value = "";
+  elements.cvResistance.placeholder = resistanceRequired
+    ? "例如 2.50"
+    : "设置非零补偿后填写";
+}
+
 function configureAnalysis(run, preserveResult = false) {
   const analysisType = analysisTypeForRun(run);
   elements.analysisSaveState.textContent = "";
@@ -587,17 +673,15 @@ function configureAnalysis(run, preserveResult = false) {
     elements.cvReferenceCustom.value = "";
     elements.cvReferenceOffset.value = "";
     syncReferenceOffset();
-    elements.cvCompensation.value = "85";
-    elements.cvCompensation.disabled = false;
+    elements.cvOnlineCompensation.value = "unknown";
+    elements.cvCompensation.value = "0";
+    syncOfflineCompensation();
     elements.cvResistance.value = "";
     elements.cvArea.value = run.area_cm2 || "";
     elements.cvTargetCurrent.value = "10";
     elements.cvScanBranch.innerHTML = `
-      <option value="auto">自动（仅单分支）</option>
-      <option value="forward">正扫</option>
-      <option value="reverse">回扫</option>`;
+      <option value="auto">自动识别（预览后选择具体数据段）</option>`;
     elements.cvScanBranch.value = "auto";
-    elements.cvOnlineCompensation.value = "not_compensated";
   }
   if (!preserveResult) resetAnalysisResult();
   const sourceReady = analysisSourceReady(run);
@@ -635,6 +719,84 @@ function resultWarnings(result, analysis = null) {
     Array.isArray(value) ? value : (value ? [value] : []),
   );
   return [...new Set(warnings.filter(Boolean))];
+}
+
+function qualityPresentation(analysis) {
+  const resultQuality = analysis?.result?.quality;
+  const level = resultQuality?.level;
+  const presentations = {
+    quantitative: {
+      label: "可定量",
+      detail: "满足当前算法的定量条件。",
+    },
+    screening: {
+      label: "仅筛查",
+      detail: "可以保存，但必须连同质量提示一起解释。",
+    },
+    not_calculable: {
+      label: "不可计算",
+      detail: "当前结果不能保存为正式分析记录。",
+    },
+  };
+  return level && presentations[level]
+    ? {
+        level,
+        ...presentations[level],
+        reasons: Array.isArray(resultQuality.reasons)
+          ? resultQuality.reasons.filter(Boolean)
+          : [],
+      }
+    : null;
+}
+
+function cvBranchIdentifier(option) {
+  return String(option?.segment_id || option?.id || option?.value || "").trim();
+}
+
+function cvBranchLabel(option) {
+  if (!option) return "—";
+  const identifier = cvBranchIdentifier(option);
+  const match = identifier.match(/^segment_(\d+)$/);
+  const segmentLabel = match
+    ? `段 ${match[1]}（${identifier}）`
+    : `数据段 ${identifier || "—"}`;
+  const potentialRange = option.potential_range_v || {};
+  const start = Number(potentialRange.start);
+  const end = Number(potentialRange.end);
+  const potentialLabel = Number.isFinite(start) && Number.isFinite(end)
+    ? `${formatNumber(start)} → ${formatNumber(end)} V`
+    : "";
+  const directionLabel = option.direction === "increasing"
+    ? "电位递增"
+    : option.direction === "decreasing"
+      ? "电位递减"
+      : "";
+  const hasRows =
+    option.source_row_start !== undefined &&
+    option.source_row_start !== null &&
+    option.source_row_end !== undefined &&
+    option.source_row_end !== null;
+  const rowsLabel = hasRows
+    ? `行 ${option.source_row_start}–${option.source_row_end}`
+    : "";
+  return [segmentLabel, potentialLabel, directionLabel, rowsLabel]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+function selectedCvBranchLabel(analysis) {
+  const result = analysis?.result || {};
+  if (result.selected_branch) return cvBranchLabel(result.selected_branch);
+  const selectedValue = String(analysis?.parameters?.scan_branch || "");
+  const selectedOption = (result.branch_options || []).find((option) =>
+    [option.segment_id, option.id, option.value]
+      .filter(Boolean)
+      .some((value) => String(value) === selectedValue)
+  );
+  if (selectedOption) return cvBranchLabel(selectedOption);
+  return selectedValue === "auto"
+    ? "自动识别（单一数据段）"
+    : selectedValue || "—";
 }
 
 function renderResultMetrics(analysis) {
@@ -725,6 +887,7 @@ function renderResultMetrics(analysis) {
 function renderAnalysisResult(analysis, saved = false) {
   const result = analysis.result || {};
   const warnings = resultWarnings(result, analysis);
+  const quality = qualityPresentation(analysis);
   const parameters = analysis.parameters || {};
   const type = analysis.analysis_type;
   const formula = type === "cv_overpotential"
@@ -746,7 +909,7 @@ function renderAnalysisResult(analysis, saved = false) {
         ["参比电势", parameters.reference_offset_v == null ? null : `${parameters.reference_offset_v} V vs SHE`],
         ["补偿", parameters.compensation_percent == null ? null : `${parameters.compensation_percent}%`],
         ["Rs", parameters.solution_resistance_ohm == null ? null : `${parameters.solution_resistance_ohm} Ω`],
-        ["扫描分支", parameters.scan_branch],
+        ["扫描分支", selectedCvBranchLabel(analysis)],
       ]
     : [
         ["算法", analysis.algorithm_id],
@@ -755,6 +918,14 @@ function renderAnalysisResult(analysis, saved = false) {
       ];
   const statusMessage = pickValue(result, ["message", "quality_note", "status_detail"]);
   elements.analysisResults.innerHTML = `
+    ${quality ? `
+      <div class="analysis-quality quality-${escapeHtml(quality.level)}">
+        <strong>结果质量：${escapeHtml(quality.label)}</strong>
+        <span>${escapeHtml(quality.detail)}</span>
+        ${quality.reasons.length
+          ? `<ul>${quality.reasons.map((reason) => `<li>${escapeHtml(reason)}</li>`).join("")}</ul>`
+          : ""}
+      </div>` : ""}
     <div class="analysis-metric-grid">${renderResultMetrics(analysis)}</div>
     ${statusMessage ? `<p class="analysis-result-message">${escapeHtml(statusMessage)}</p>` : ""}
     ${warnings.length ? `
@@ -865,30 +1036,40 @@ function renderDetailFailure(runId, error) {
   elements.analysisModeBadge.textContent = "读取失败";
 }
 
-async function loadFileTree(preserveSelection = true) {
+async function loadFileTree({
+  selectInitial = false,
+  refreshSelected = false,
+} = {}) {
   const requestId = ++state.runsRequestId;
   const parameters = new URLSearchParams();
   if (elements.techniqueFilter.value) parameters.set("technique", elements.techniqueFilter.value);
   if (elements.searchInput.value.trim()) parameters.set("q", elements.searchInput.value.trim());
-  const tree = await request(`/api/files/tree?${parameters.toString()}`);
+  const responseTree = await request(`/api/files/tree?${parameters.toString()}`);
   if (requestId !== state.runsRequestId) return;
-  state.tree = tree;
-  state.runs = tree.roots.flatMap((root) =>
+  state.tree = filterTreeByScope(responseTree);
+  state.runs = state.tree.roots.flatMap((root) =>
     root.files.map((run) => ({ ...run, root_id: root.id })),
   );
-  if (!preserveSelection || !state.runs.some((run) => run.id === state.selectedId)) {
-    state.selectedId = state.runs[0]?.id ?? null;
+  let initialRun = null;
+  if (selectInitial && !state.selectedId) {
+    initialRun = latestAnalyzableRun(state.runs);
+    state.selectedId = initialRun?.id ?? null;
   }
   renderFileTree();
-  if (state.selectedId) await selectRun(state.selectedId, false);
-  else renderDetail(null);
+  const selectedVisible = state.runs.some((run) => run.id === state.selectedId);
+  if (initialRun) {
+    await selectRun(initialRun.id, false);
+  } else if (refreshSelected && selectedVisible) {
+    await selectRun(state.selectedId, false);
+  } else if (selectInitial && !state.selectedId) {
+    renderDetail(null);
+  }
 }
 
 async function selectRun(runId, rerenderList = true) {
   const requestId = ++state.detailRequestId;
   ++state.analysisRequestId;
   ++state.analysisHistoryRequestId;
-  const treeRequestId = state.runsRequestId;
   state.analysisBusy = false;
   state.selectedId = runId;
   if (rerenderList) renderFileTree();
@@ -899,7 +1080,6 @@ async function selectRun(runId, rerenderList = true) {
   } catch (error) {
     if (
       requestId === state.detailRequestId &&
-      treeRequestId === state.runsRequestId &&
       state.selectedId === runId
     ) {
       renderDetailFailure(runId, error);
@@ -909,7 +1089,6 @@ async function selectRun(runId, rerenderList = true) {
   }
   if (
     requestId !== state.detailRequestId ||
-    treeRequestId !== state.runsRequestId ||
     state.selectedId !== runId
   ) return;
   renderDetail(run);
@@ -918,9 +1097,12 @@ async function selectRun(runId, rerenderList = true) {
   }
 }
 
-async function refreshAll(preserveSelection = true) {
+async function refreshAll(refreshSelected = true) {
   try {
-    await loadFileTree(preserveSelection);
+    await loadFileTree({
+      selectInitial: !state.selectedId,
+      refreshSelected,
+    });
   } catch (error) {
     showToast(error.message, true);
   }
@@ -947,20 +1129,29 @@ elements.scanButton.addEventListener("click", async () => {
 let searchDelay;
 elements.searchInput.addEventListener("input", () => {
   window.clearTimeout(searchDelay);
-  searchDelay = window.setTimeout(() => loadFileTree(false), 220);
+  searchDelay = window.setTimeout(() => loadFileTree(), 220);
 });
-elements.techniqueFilter.addEventListener("change", () => loadFileTree(false));
+elements.fileScopeFilter.addEventListener("change", () => loadFileTree());
+elements.techniqueFilter.addEventListener("change", () => loadFileTree());
 
 function collectAnalysisParameters() {
   if (analysisTypeForRun(state.selectedRun) !== "cv_overpotential") return {};
+  const compensationPercent = Number(elements.cvCompensation.value);
+  const resistanceValue = elements.cvResistance.value.trim();
+  const solutionResistance =
+    elements.cvOnlineCompensation.value === "not_compensated" &&
+    compensationPercent > 0 &&
+    resistanceValue
+      ? Number(resistanceValue)
+      : null;
   return {
     solution: selectedSolutionValue(),
     ph: Number(elements.cvPh.value),
     reaction: elements.cvReaction.value,
     reference_electrode: selectedReferenceValue(),
     reference_offset_v: Number(elements.cvReferenceOffset.value),
-    compensation_percent: Number(elements.cvCompensation.value),
-    solution_resistance_ohm: Number(elements.cvResistance.value),
+    compensation_percent: compensationPercent,
+    solution_resistance_ohm: solutionResistance,
     area_cm2: Number(elements.cvArea.value),
     target_current_density_ma_cm2: Number(elements.cvTargetCurrent.value),
     scan_branch: elements.cvScanBranch.value,
@@ -971,22 +1162,21 @@ function collectAnalysisParameters() {
 function applyCvBranchOptions(options, preferredValue = "") {
   if (!Array.isArray(options) || !options.length) return;
   const currentValue = preferredValue || elements.cvScanBranch.value;
+  const stableOptions = options
+    .map((option) => ({
+      ...option,
+      stableValue: cvBranchIdentifier(option),
+    }))
+    .filter((option) => option.stableValue);
+  const availableValues = new Set(stableOptions.map((option) => option.stableValue));
+  const selectedValue = availableValues.has(currentValue) ? currentValue : "";
   elements.cvScanBranch.innerHTML = [
-    '<option value="auto">自动（仅单分支）</option>',
-    ...options.map((option) => {
-      const value = option.value || option.id;
-      const rows = option.source_row_start && option.source_row_end
-        ? ` · 行 ${option.source_row_start}–${option.source_row_end}`
-        : "";
-      return `<option value="${escapeHtml(value)}">${escapeHtml(option.label || value)}${escapeHtml(rows)}</option>`;
-    }),
+    '<option value="">请选择数据段</option>',
+    ...stableOptions.map((option) =>
+      `<option value="${escapeHtml(option.stableValue)}">${escapeHtml(cvBranchLabel(option))}</option>`
+    ),
   ].join("");
-  const available = [...elements.cvScanBranch.options].some(
-    (option) => option.value === currentValue,
-  );
-  elements.cvScanBranch.value = available
-    ? currentValue
-    : (options[0].value || options[0].id);
+  elements.cvScanBranch.value = selectedValue;
 }
 
 async function calculateAnalysis(save) {
@@ -995,6 +1185,13 @@ async function calculateAnalysis(save) {
   const runId = run?.id;
   const analysisType = analysisTypeForRun(run);
   if (!runId || !analysisType || !run.source_available) return;
+  if (
+    save &&
+    state.analysisPreview?.result?.quality?.level === "not_calculable"
+  ) {
+    setAnalysisError("当前预览质量为“不可计算”，不能保存为正式分析记录。");
+    return;
+  }
   if (!elements.analysisForm.reportValidity()) return;
 
   const parameters = collectAnalysisParameters();
@@ -1074,10 +1271,12 @@ elements.cvReference.addEventListener("change", () => {
 });
 
 elements.cvOnlineCompensation.addEventListener("change", () => {
-  const offlineCompensationAllowed =
-    elements.cvOnlineCompensation.value === "not_compensated";
-  elements.cvCompensation.disabled = !offlineCompensationAllowed;
-  if (!offlineCompensationAllowed) elements.cvCompensation.value = "0";
+  syncOfflineCompensation();
+  markAnalysisDirty();
+});
+
+elements.cvCompensation.addEventListener("input", () => {
+  syncResistanceRequirement();
   markAnalysisDirty();
 });
 
@@ -1085,4 +1284,4 @@ window.addEventListener("resize", () => {
   if (state.selectedRun) drawChart(state.selectedRun);
 });
 
-refreshAll(false);
+refreshAll();

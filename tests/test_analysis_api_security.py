@@ -148,6 +148,50 @@ class AnalysisPostSecurityTests(unittest.TestCase):
         )
         self.require(self.local_headers())
 
+    def test_not_calculable_persist_error_is_returned_as_structured_400(self):
+        class RejectingRuntime:
+            @staticmethod
+            def calculate_analysis(*_args, **_kwargs):
+                raise APP.AnalysisValidationError(
+                    "当前分析结果不可计算，不能保存。",
+                    field="quality",
+                    code="analysis_not_calculable",
+                    details={
+                        "quality": {
+                            "level": "not_calculable",
+                            "label": "不可计算",
+                            "reasons": ["测试质量门"],
+                        }
+                    },
+                )
+
+        handler_type = APP.create_handler(RejectingRuntime())
+        handler = handler_type.__new__(handler_type)
+        handler.path = "/api/runs/1/analyses"
+        handler.require_local_json_request = lambda: None
+        handler.read_json = lambda: {
+            "analysis_type": "eis_resistance",
+            "parameters": {},
+        }
+        responses: list[tuple[dict, int]] = []
+        handler.send_json = lambda payload, status=200: responses.append(
+            (payload, int(status))
+        )
+
+        handler.do_POST()
+
+        self.assertEqual(len(responses), 1)
+        payload, status = responses[0]
+        self.assertEqual(status, 400)
+        self.assertEqual(
+            payload["analysis_error"]["code"],
+            "analysis_not_calculable",
+        )
+        self.assertEqual(
+            payload["analysis_error"]["details"]["quality"]["level"],
+            "not_calculable",
+        )
+
 
 class _PausingConnection:
     def __init__(self, connection: sqlite3.Connection, owner):

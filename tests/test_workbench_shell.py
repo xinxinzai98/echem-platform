@@ -128,6 +128,7 @@ class WorkbenchShellTests(unittest.TestCase):
             "cvCompensation",
             "cvResistance",
             "cvScanBranch",
+            "cvOnlineCompensation",
             "previewAnalysis",
             "saveAnalysis",
         ):
@@ -158,6 +159,56 @@ class WorkbenchShellTests(unittest.TestCase):
         self.assertNotIn("metadataRequestId", script)
         self.assertNotIn("/api/audit", script)
         self.assertNotIn("/metadata", script)
+
+    def test_analysis_frontend_enforces_p0_data_and_scientific_safety_gates(self) -> None:
+        parser = self.parse_page("analysis.html")
+        page = (STATIC / "analysis.html").read_text(encoding="utf-8")
+        script = (STATIC / "analysis.js").read_text(encoding="utf-8")
+        css = (STATIC / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn("fileScopeFilter", parser.ids)
+        self.assertIn('<option value="experiment">实验数据</option>', page)
+        self.assertIn('<option value="other">其他文件（控制 / 诊断 / 拒绝）</option>', page)
+        self.assertIn('pathParts.includes("control_programs")', script)
+        self.assertIn('pathParts.includes("diagnostics")', script)
+        self.assertIn('pathParts.includes("rejected_data")', script)
+        self.assertIn("latestAnalyzableRun", script)
+        self.assertIn('run.parse_status === "parsed"', script)
+        self.assertIn("Number(run.point_count) > 0", script)
+        self.assertIn("Boolean(analysisTypeForRun(run))", script)
+        self.assertIn(
+            'elements.fileScopeFilter.addEventListener("change", () => loadFileTree())',
+            script,
+        )
+        self.assertIn(
+            'elements.techniqueFilter.addEventListener("change", () => loadFileTree())',
+            script,
+        )
+        self.assertNotIn("loadFileTree(false)", script)
+
+        self.assertIn('<option value="unknown" selected>', page)
+        self.assertIn('value="0" disabled required', page)
+        self.assertNotIn('value="85"', page)
+        self.assertIn("syncOfflineCompensation", script)
+        self.assertIn("syncResistanceRequirement", script)
+        self.assertIn("solution_resistance_ohm: solutionResistance", script)
+        self.assertIn('<option value="auto">自动识别（预览后选择具体数据段）</option>', page)
+        self.assertIn("cvBranchIdentifier", script)
+        self.assertIn("potential_range_v", script)
+        self.assertIn("电位递增", script)
+        self.assertIn("请选择数据段", script)
+        self.assertNotIn("<option value=\"forward\">正扫</option>", page)
+        self.assertNotIn("<option value=\"reverse\">回扫</option>", page)
+
+        self.assertIn('qualityLevel === "not_calculable"', script)
+        self.assertIn("保存为筛查记录", script)
+        self.assertIn("结果质量：", script)
+        self.assertIn("resultQuality.reasons", script)
+        self.assertIn("可定量", script)
+        self.assertIn("仅筛查", script)
+        self.assertIn("不可计算", script)
+        self.assertIn(".analysis-quality.quality-screening", css)
+        self.assertIn(".analysis-quality.quality-not_calculable", css)
 
     def test_analysis_page_omits_deferred_summary_and_context_regions(self) -> None:
         page = (STATIC / "analysis.html").read_text(encoding="utf-8")

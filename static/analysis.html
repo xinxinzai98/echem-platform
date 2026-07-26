@@ -97,7 +97,12 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
           <input id="searchInput" type="search" placeholder="搜索文件夹或文件">
         </label>
-        <div class="filter-row single-filter">
+        <div class="filter-row">
+          <select id="fileScopeFilter" aria-label="文件范围筛选">
+            <option value="experiment">实验数据</option>
+            <option value="other">其他文件（控制 / 诊断 / 拒绝）</option>
+            <option value="all">全部文件</option>
+          </select>
           <select id="techniqueFilter" aria-label="测试类型筛选">
             <option value="">全部测试方法</option>
             <option>CV</option>
@@ -233,13 +238,21 @@
                     自定义参比电极与内部填充液
                     <input id="cvReferenceCustom" name="reference_electrode_custom" autocomplete="off" placeholder="例如 Ag/AgCl（3 M KCl）" disabled>
                   </label>
+                  <label class="span-two">
+                    在线补偿状态
+                    <select id="cvOnlineCompensation" name="online_compensation_status" required>
+                      <option value="unknown" selected>不确定（不允许离线补偿）</option>
+                      <option value="not_compensated">确认未在线补偿</option>
+                      <option value="already_compensated">已在线补偿</option>
+                    </select>
+                  </label>
                   <label>
-                    iR 补偿 / %
-                    <input id="cvCompensation" name="compensation_percent" type="number" min="0" max="100" step="0.1" inputmode="decimal" value="85" required>
+                    离线 iR 补偿 / %
+                    <input id="cvCompensation" name="compensation_percent" type="number" min="0" max="100" step="0.1" inputmode="decimal" value="0" disabled required>
                   </label>
                   <label>
                     溶液电阻 Rs / Ω
-                    <input id="cvResistance" name="solution_resistance_ohm" type="number" min="0" step="0.0001" inputmode="decimal" placeholder="例如 2.50" required>
+                    <input id="cvResistance" name="solution_resistance_ohm" type="number" min="0.0001" step="0.0001" inputmode="decimal" placeholder="设置非零补偿后填写" disabled>
                   </label>
                   <label>
                     电极面积 / cm²
@@ -249,20 +262,10 @@
                     目标电流密度 / mA·cm⁻²
                     <input id="cvTargetCurrent" name="target_current_density_ma_cm2" type="number" min="0.01" step="0.01" inputmode="decimal" value="10" required>
                   </label>
-                  <label>
+                  <label class="span-two">
                     扫描分支
                     <select id="cvScanBranch" name="scan_branch" required>
-                      <option value="auto">自动（仅单分支）</option>
-                      <option value="forward">正扫</option>
-                      <option value="reverse">回扫</option>
-                    </select>
-                  </label>
-                  <label>
-                    在线补偿状态
-                    <select id="cvOnlineCompensation" name="online_compensation_status" required>
-                      <option value="not_compensated">确认未在线补偿</option>
-                      <option value="already_compensated">已在线补偿</option>
-                      <option value="unknown">不确定（不允许离线补偿）</option>
+                      <option value="auto">自动识别（预览后选择具体数据段）</option>
                     </select>
                   </label>
                 </div>
@@ -283,7 +286,7 @@
                   计算并保存
                 </button>
               </div>
-              <p class="analysis-action-note">“预览计算”不会保存；只有点击“计算并保存”才会新增一条分析记录。</p>
+              <p class="analysis-action-note">“预览计算”不会保存；保存按钮会按结果质量显示可用操作。</p>
             </form>
 
             <section class="analysis-result-column" aria-labelledby="analysisResultTitle">

@@ -237,6 +237,20 @@ Python 模块编译与前端 JavaScript 语法检查均通过。
 - 10 个 smoke 临时脚本、数据库和日志及 1 个临时清理脚本已精确删除，复核无同前缀遗留
 - 未访问 COM3 / COM4，未执行 OCP，未启动或停止 CHI / CorrTest
 
+### 解析器 2026.07.26.5 Windows 真实数据补丁验收
+
+- 源码提交：`b3f0bc5`
+- 部署归档 SHA-256：`e4ac04e5edeb10bde5f3b8a49784b165aa18f5d87fabea4c6eaef38183bdc33b`
+- 候选应用版本仍为 `0.3.0-dev.9`，解析器更新为 `2026.07.26.5`；仅原位更新 `D:\EchemPlatform-next`
+- Windows 完整回归共 110 项，全部通过；Python 模块编译通过
+- 只读定向扫描两组真实实验目录共 16 个文件：导入 16、跳过 0、错误 0
+- CHI CV 1500 行、CHI EIS 72 行、CorrTest CV 3799 行、CorrTest EIS 60 行；类型、曲线坐标和 SHA-256 与 Mac 验收一致
+- 四个真实源文件在验收前后 SHA-256 不变，`config.local.json` 与便携 Python 哈希不变
+- 8788 临时分析页返回 HTTP 200，状态为 `read_only_sources_and_stage_c_locked`；验收后监听已停止
+- 正式版 8787 监听 PID `30852` 未变；CHI760E PID `29480`、CorrTest CSAnalysis PID `27552`、CSStudio PID `3912` 前后不变
+- 部署归档、临时配置、数据库、日志和一次性脚本均已精确删除，无同前缀遗留
+- 未访问 COM3 / COM4，未执行 OCP，未启动或停止 CHI / CorrTest
+
 ## 私有样例验证器冒烟测试
 
 - 使用 1 个 CHI CV 和 1 个 CorrTest EIS 公开演示文件模拟私有目录

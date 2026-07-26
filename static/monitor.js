@@ -9,6 +9,7 @@ const state = {
 
 const elements = {
   controlPill: document.querySelector("#controlPill"),
+  sidebarControlState: document.querySelector("#sidebarControlState"),
   readinessBox: document.querySelector(".hero-status"),
   readinessTitle: document.querySelector("#readinessTitle"),
   readinessNote: document.querySelector("#readinessNote"),
@@ -142,6 +143,7 @@ function renderActionAvailability() {
   const enabled = Boolean(state.capabilities?.instrument_control_enabled);
   const ready = Boolean(state.preflight?.ready);
   elements.controlPill.textContent = enabled ? "阶段 C 已启用" : "阶段 C 控制锁定";
+  elements.sidebarControlState.textContent = enabled ? "阶段 C 已启用" : "控制默认锁定";
   elements.controlPill.classList.toggle("enabled", enabled);
   elements.prepareButton.disabled = !enabled || !ready || !state.draft;
 }

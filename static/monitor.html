@@ -8,30 +8,77 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%2317212b'/%3E%3Cpath d='M10 38c8-24 16 20 24-8s14 16 20-10' fill='none' stroke='%237ee2d7' stroke-width='5' stroke-linecap='round'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/static/styles.css">
   <link rel="stylesheet" href="/static/monitor.css">
+  <link rel="stylesheet" href="/static/workbench.css">
 </head>
 <body class="monitor-page">
-  <header class="topbar">
-    <div class="brand">
-      <div class="brand-mark" aria-hidden="true">
-        <svg viewBox="0 0 48 48" role="img">
-          <path d="M8 28c5-15 10 14 16-4s11 10 16-6"/>
-          <circle cx="8" cy="28" r="3"/>
-          <circle cx="40" cy="18" r="3"/>
-        </svg>
-      </div>
-      <div>
-        <h1>60 秒 OCP 联调</h1>
-        <p>V0.3 阶段 C · 本机单任务安全门</p>
-      </div>
-    </div>
-    <nav class="top-actions" aria-label="页面导航">
-      <a class="top-link" href="/">数据工作台</a>
-      <a class="top-link" href="/protocol">协议编辑</a>
-      <div id="controlPill" class="safety-pill"><span></span>正在读取控制状态</div>
-    </nav>
-  </header>
+  <div class="workbench-shell">
+    <aside class="workbench-sidebar">
+      <a class="workbench-brand" href="/" aria-label="返回数据工作台">
+        <div class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 48 48" role="img">
+            <path d="M8 28c5-15 10 14 16-4s11 10 16-6"/>
+            <circle cx="8" cy="28" r="3"/>
+            <circle cx="40" cy="18" r="3"/>
+          </svg>
+        </div>
+        <div>
+          <strong>EchemPlatform</strong>
+          <span>电化学测试工作台</span>
+        </div>
+      </a>
 
-  <main class="monitor-main">
+      <div class="workbench-environment">
+        <div>
+          <strong>Windows 本机</strong>
+          <small>测试环境 · 只读优先</small>
+        </div>
+      </div>
+
+      <nav class="workbench-navigation" aria-label="工作台功能">
+        <span class="workbench-nav-label">Workspace</span>
+        <a class="workbench-nav-item" href="/">
+          <span class="workbench-nav-number">01</span>
+          <span class="workbench-nav-copy">
+            <strong>数据工作台</strong>
+            <small>曲线、样品与数据源</small>
+          </span>
+        </a>
+        <a class="workbench-nav-item" href="/protocol">
+          <span class="workbench-nav-number">02</span>
+          <span class="workbench-nav-copy">
+            <strong>协议编辑</strong>
+            <small>连续工步与 Dry-run</small>
+          </span>
+        </a>
+        <a class="workbench-nav-item" href="/monitor" aria-current="page">
+          <span class="workbench-nav-number">03</span>
+          <span class="workbench-nav-copy">
+            <strong>阶段 C 安全门</strong>
+            <small>预检、确认与运行监控</small>
+          </span>
+        </a>
+      </nav>
+
+      <div class="workbench-sidebar-footer">
+        <span>Safety status</span>
+        <strong id="sidebarControlState">正在读取状态</strong>
+        <small>仅本机 · 127.0.0.1</small>
+      </div>
+    </aside>
+
+    <div class="workbench-content">
+      <header class="topbar workbench-topbar">
+        <div class="workbench-page-heading">
+          <span class="eyebrow">Workspace / Safety gate</span>
+          <h1>阶段 C 安全门</h1>
+          <p>60 秒 OCP 的本机预检与运行监控</p>
+        </div>
+        <div class="top-actions">
+          <div id="controlPill" class="safety-pill"><span></span>正在读取控制状态</div>
+        </div>
+      </header>
+
+      <main class="monitor-main">
     <section class="monitor-hero">
       <div>
         <span class="eyebrow">Stage C safety gate</span>
@@ -134,7 +181,9 @@
         </article>
       </aside>
     </section>
-  </main>
+      </main>
+    </div>
+  </div>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="/static/monitor.js"></script>

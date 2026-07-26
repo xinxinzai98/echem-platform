@@ -204,6 +204,23 @@ Python 模块编译与前端 JavaScript 语法检查均通过。
 - 同输入设计对照见 `design-qa.md`，`final result: passed`
 - 本地验收未访问 COM3 / COM4、未启动仪器、未执行 OCP
 
+## V0.3.0-dev.9 Windows 固定旁路验收
+
+- 源码提交：`2b7d271`
+- 部署归档 SHA-256：`9c7def818ab67ac01331394ac849946e7f67d05eb729e1faf7a406f11184e317`
+- 仅原位更新固定旁路目录 `D:\EchemPlatform-next`，版本由 `0.3.0-dev.8` 更新为 `0.3.0-dev.9`
+- 便携 Python、`config.local.json` 和 `state` 均保留，未新建 D 盘版本目录
+- Windows 完整回归共 102 项，全部通过；Python 模块编译通过
+- 8788 临时服务返回 `read_only_sources_and_stage_c_locked`，分析页 HTTP 200
+- `instrument_control=false`、`launch_available=false`、`serial_access=false`
+- 只使用候选目录内公开演示数据执行预览：CV OER 结果为 `110.11927350427332 mV`，EIS 无实轴交点时返回 0 个交点且不外推
+- smoke 只调用预览接口，没有保存分析记录；验收后 8788 已停止
+- 正式版仍为 `0.3.0-dev.2`，8787 监听 PID 始终为 `30852`
+- CHI760E PID `29480`、CorrTest CSAnalysis PID `27552`、CSStudio PID `3912` 前后不变
+- D 盘根目录只保留 `D:\EchemPlatform` 与 `D:\EchemPlatform-next`
+- 10 个 smoke 临时脚本、数据库和日志及 1 个临时清理脚本已精确删除，复核无同前缀遗留
+- 未访问 COM3 / COM4，未执行 OCP，未启动或停止 CHI / CorrTest
+
 ## 私有样例验证器冒烟测试
 
 - 使用 1 个 CHI CV 和 1 个 CorrTest EIS 公开演示文件模拟私有目录

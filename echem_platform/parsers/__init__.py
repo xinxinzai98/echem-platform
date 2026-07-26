@@ -14,7 +14,7 @@ from .text import (
     unit_from_header,
 )
 
-PARSER_VERSION = "2026.07.24.2"
+PARSER_VERSION = "2026.07.26.3"
 
 __all__ = [
     "ParsedCurve",

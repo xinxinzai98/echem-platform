@@ -49,6 +49,54 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(curve.y_name, "Zimag(ohm)")
         self.assertEqual(curve.point_count, 15)
 
+    def test_real_chi_and_corrtest_text_exports_are_auto_detected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            chi_path = root / "S3EIS.txt"
+            chi_path.write_text(
+                "\n".join(
+                    [
+                        "A.C. Impedance",
+                        "Instrument Model: CHI760E",
+                        "",
+                        'Freq/Hz, Z\'/ohm, Z"/ohm, Z/ohm, Phase/deg',
+                        "1.0e5, 1.20, 0.40, 1.26, 18.4",
+                        "1.0e4, 1.30, -0.10, 1.30, -4.4",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            corrtest_path = root / "her-eis.txt"
+            corrtest_path.write_text(
+                "\n".join(
+                    [
+                        "CSStudioFile,ID_EISVSFRQ,fixture-header",
+                        "Freq(Hz)\tAmpl(mV)\tZ'(Ohm.cm²)\tZ''(Ohm.cm²)\tPhase",
+                        "+1.0E+05\t10\t+1.21E+00\t+6.47E-01\t28.1",
+                        "+1.0E+04\t10\t+1.18E+00\t-2.10E-02\t-1.0",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            chi = APP.parse_curve(chi_path, chi_path.read_bytes(), 2000)
+            corrtest = APP.parse_curve(
+                corrtest_path,
+                corrtest_path.read_bytes(),
+                2000,
+            )
+
+        self.assertEqual((chi.status, chi.instrument, chi.technique), ("parsed", "CHI", "EIS"))
+        self.assertEqual((chi.x_name, chi.y_name), ("Z'/ohm", 'Z"/ohm'))
+        self.assertEqual(
+            (corrtest.status, corrtest.instrument, corrtest.technique),
+            ("parsed", "CorrTest", "EIS"),
+        )
+        self.assertEqual(
+            (corrtest.x_name, corrtest.y_name),
+            ("Z'(Ohm.cm²)", "Z''(Ohm.cm²)"),
+        )
+
     def test_binary_is_metadata_only(self):
         path = ROOT / "demo_data" / "chi_ocpt_demo.bin"
         curve = APP.parse_curve(path, path.read_bytes(), 2000)
@@ -180,6 +228,45 @@ class ScannerTests(unittest.TestCase):
         self.assertEqual(result["skipped"], 1)
         self.assertEqual(database.status_counts()["total"], 0)
 
+    def test_file_tree_groups_mixed_workstation_exports_by_relative_folder(self):
+        chi_folder = self.source / "20260725" / "CHI batch"
+        corrtest_folder = self.source / "20260725" / "CorrTest batch"
+        chi_folder.mkdir(parents=True)
+        corrtest_folder.mkdir(parents=True)
+        (chi_folder / "S2CV.txt").write_bytes(
+            (ROOT / "demo_data" / "chi_cv_demo.txt").read_bytes()
+        )
+        (corrtest_folder / "her-eis.z60").write_bytes(
+            (ROOT / "demo_data" / "corrtest_eis_demo.z60").read_bytes()
+        )
+        database, scanner = self.make_scanner()
+        scanner.scan()
+        runtime = APP.RuntimeState(
+            database,
+            scanner,
+            APP.load_config(ROOT / "config.json"),
+        )
+
+        tree = runtime.file_tree()
+        payload = json.dumps(tree, ensure_ascii=False)
+        files = tree["roots"][0]["files"]
+
+        self.assertEqual(tree["total"], 2)
+        self.assertFalse(tree["truncated"])
+        self.assertEqual(
+            {item["instrument"] for item in files},
+            {"CHI", "CorrTest"},
+        )
+        self.assertEqual(
+            {item["relative_path"] for item in files},
+            {
+                "20260725/CHI batch/S2CV.txt",
+                "20260725/CorrTest batch/her-eis.z60",
+            },
+        )
+        self.assertNotIn(str(self.source), payload)
+        self.assertNotIn("source_path", payload)
+
 
 class ProtocolDraftDatabaseTests(unittest.TestCase):
     def test_draft_is_persisted_with_revision_without_requiring_valid_protocol(self):
@@ -299,6 +386,7 @@ class ProtocolApiTests(unittest.TestCase):
         self.assertIn('"/steps"', handler_source)
         self.assertIn('"/analysis"', handler_source)
         self.assertIn('"/environment"', handler_source)
+        self.assertIn('"/api/files/tree"', handler_source)
         self.assertIn("Content-Security-Policy", handler_source)
         self.assertIn("X-Content-Type-Options", handler_source)
 

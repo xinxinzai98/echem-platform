@@ -39,7 +39,7 @@ from echem_platform.parsers import (
 
 
 APP_NAME = "电化学测试平台 V0.3 Stage C"
-APP_VERSION = "0.3.0-dev.7"
+APP_VERSION = "0.3.0-dev.8"
 APP_ROOT = Path(__file__).resolve().parent
 STATIC_ROOT = APP_ROOT / "static"
 DEFAULT_CONFIG = APP_ROOT / "config.json"
@@ -813,6 +813,51 @@ class Database:
             results.append(result)
         return results
 
+    def list_run_sources(
+        self,
+        technique: str = "",
+        query: str = "",
+        limit: int = 2000,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """Return indexed source paths for trusted, server-side tree construction."""
+        conditions: list[str] = []
+        parameters: list[Any] = []
+        if technique:
+            conditions.append("technique = ?")
+            parameters.append(technique)
+        if query:
+            conditions.append(
+                """
+                (
+                    source_name LIKE ? OR source_path LIKE ? OR sample_id LIKE ?
+                    OR material LIKE ? OR tags LIKE ?
+                )
+                """
+            )
+            wildcard = f"%{query[:200]}%"
+            parameters.extend([wildcard] * 5)
+        where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+        bounded_limit = min(max(int(limit), 1), 5000)
+        with self.session() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT id, source_path, source_name, instrument, technique,
+                       parse_status, parser_id, point_count, modified_utc,
+                       sample_id
+                FROM runs{where}
+                ORDER BY modified_utc DESC, id DESC
+                LIMIT ?
+                """,
+                [*parameters, bounded_limit + 1],
+            ).fetchall()
+        truncated = len(rows) > bounded_limit
+        results: list[dict[str, Any]] = []
+        for row in rows[:bounded_limit]:
+            result = dict(row)
+            result["source_available"] = source_is_available(result["source_path"])
+            results.append(result)
+        return results, truncated
+
     def get_run(self, run_id: int) -> dict[str, Any] | None:
         with self.session() as connection:
             row = connection.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
@@ -1032,6 +1077,74 @@ class RuntimeState:
         capabilities["dry_run"] = dry_run_capabilities()
         return capabilities
 
+    def file_tree(self, technique: str = "", query: str = "") -> dict[str, Any]:
+        """Build a read-only folder/file index without exposing absolute source paths."""
+        rows, truncated = self.database.list_run_sources(
+            technique=technique,
+            query=query,
+        )
+        roots: list[dict[str, Any]] = []
+        root_entries: list[tuple[Path, dict[str, Any]]] = []
+        label_counts: dict[str, int] = {}
+        for index, root in enumerate(self.scanner.roots, start=1):
+            base_label = root.name or str(root)
+            label_counts[base_label] = label_counts.get(base_label, 0) + 1
+            suffix = label_counts[base_label]
+            entry = {
+                "id": f"root-{index}",
+                "name": base_label if suffix == 1 else f"{base_label} ({suffix})",
+                "available": root.exists() and root.is_dir(),
+                "file_count": 0,
+                "files": [],
+            }
+            roots.append(entry)
+            try:
+                comparable_root = root.resolve()
+            except OSError:
+                comparable_root = root
+            root_entries.append((comparable_root, entry))
+
+        cached_entry: dict[str, Any] | None = None
+        for row in rows:
+            source = Path(row.pop("source_path"))
+            matches: list[tuple[Path, dict[str, Any], Path]] = []
+            for root, entry in root_entries:
+                try:
+                    relative = source.relative_to(root)
+                except ValueError:
+                    continue
+                matches.append((root, entry, relative))
+            if matches:
+                _, entry, relative = max(
+                    matches,
+                    key=lambda item: len(item[0].parts),
+                )
+            else:
+                if cached_entry is None:
+                    cached_entry = {
+                        "id": "cached",
+                        "name": "历史缓存",
+                        "available": False,
+                        "file_count": 0,
+                        "files": [],
+                    }
+                    roots.append(cached_entry)
+                entry = cached_entry
+                relative = Path(row["source_name"])
+
+            file_entry = {
+                **row,
+                "relative_path": relative.as_posix(),
+            }
+            entry["files"].append(file_entry)
+            entry["file_count"] += 1
+
+        return {
+            "roots": roots,
+            "total": sum(root["file_count"] for root in roots),
+            "truncated": truncated,
+        }
+
     def status(self) -> dict[str, Any]:
         counts = self.database.status_counts()
         roots = [
@@ -1183,6 +1296,13 @@ def create_handler(runtime: RuntimeState):
                     self.send_json(
                         runtime.database.list_runs(
                             instrument=query.get("instrument", [""])[0],
+                            technique=query.get("technique", [""])[0],
+                            query=query.get("q", [""])[0],
+                        )
+                    )
+                elif path == "/api/files/tree":
+                    self.send_json(
+                        runtime.file_tree(
                             technique=query.get("technique", [""])[0],
                             query=query.get("q", [""])[0],
                         )

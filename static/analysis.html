@@ -74,7 +74,7 @@
         <div class="workbench-page-heading">
           <span class="eyebrow">Workspace / Analysis</span>
           <h1>数据分析</h1>
-          <p>实验曲线、样品元数据与文件完整性</p>
+          <p>按数据文件夹检视实验文件，并自动解析 CHI 与 CorrTest 数据</p>
         </div>
         <div class="top-actions">
           <div class="safety-pill"><span></span>控制默认锁定</div>
@@ -110,24 +110,19 @@
       <aside class="sidebar panel">
         <div class="panel-heading">
           <div>
-              <span class="eyebrow">Analysis data</span>
-              <h2>测试记录</h2>
+              <span class="eyebrow">Data folders</span>
+              <h2>实验数据文件</h2>
           </div>
+          <span id="treeCount" class="tree-count" role="status">—</span>
         </div>
         <label class="search-box">
           <span class="sr-only">搜索</span>
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
-          <input id="searchInput" type="search" placeholder="样品、材料或文件名">
+          <input id="searchInput" type="search" placeholder="搜索文件夹、文件或样品">
         </label>
-        <div class="filter-row">
-          <select id="instrumentFilter" aria-label="仪器筛选">
-            <option value="">全部仪器</option>
-            <option value="CHI">CHI</option>
-            <option value="CorrTest">CorrTest</option>
-            <option value="未知">未识别</option>
-          </select>
+        <div class="filter-row single-filter">
           <select id="techniqueFilter" aria-label="测试类型筛选">
-            <option value="">全部方法</option>
+            <option value="">全部测试方法</option>
             <option>CV</option>
             <option>LSV</option>
             <option>EIS</option>
@@ -138,7 +133,9 @@
             <option>未识别</option>
           </select>
         </div>
-        <div id="runList" class="run-list" aria-live="polite"></div>
+        <nav class="file-tree-navigation" aria-label="实验数据文件">
+          <div id="fileTree" class="file-tree"></div>
+        </nav>
       </aside>
 
       <section class="detail-column">
@@ -154,10 +151,10 @@
             </div>
           </div>
           <div class="chart-shell">
-            <canvas id="curveChart" aria-label="电化学测试曲线"></canvas>
+            <canvas id="curveChart" aria-label="电化学测试曲线" aria-describedby="chartStats"></canvas>
             <div id="chartEmpty" class="chart-empty">
-              <div class="empty-icon">⌁</div>
-              <p>从左侧选择一条已解析的数据记录</p>
+              <span class="eyebrow" aria-hidden="true">Curve preview</span>
+              <p>从左侧数据文件夹中选择一个实验文件</p>
             </div>
           </div>
           <div id="chartStats" class="chart-stats"></div>
@@ -197,15 +194,6 @@
           </article>
         </div>
       </section>
-    </section>
-
-    <section class="source-panel panel">
-      <div>
-        <span class="eyebrow">受控数据源</span>
-        <h2>监控目录</h2>
-      </div>
-      <div id="watchRoots" class="root-list"></div>
-      <div class="source-note">平台不会在这些目录中创建、重命名或删除文件。</div>
     </section>
       </main>
     </div>

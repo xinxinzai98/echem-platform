@@ -1,11 +1,14 @@
 // Data-analysis module state.
 const state = {
+  tree: null,
   runs: [],
   selectedId: null,
   selectedRun: null,
   status: null,
   refreshTimer: null,
   runsRequestId: 0,
+  detailRequestId: 0,
+  openFolders: new Set(),
 };
 
 const elements = {
@@ -15,9 +18,9 @@ const elements = {
   sourceSummary: document.querySelector("#sourceSummary"),
   scanButton: document.querySelector("#scanButton"),
   searchInput: document.querySelector("#searchInput"),
-  instrumentFilter: document.querySelector("#instrumentFilter"),
   techniqueFilter: document.querySelector("#techniqueFilter"),
-  runList: document.querySelector("#runList"),
+  treeCount: document.querySelector("#treeCount"),
+  fileTree: document.querySelector("#fileTree"),
   detailInstrument: document.querySelector("#detailInstrument"),
   detailTitle: document.querySelector("#detailTitle"),
   detailTechnique: document.querySelector("#detailTechnique"),
@@ -36,7 +39,6 @@ const elements = {
   saveMetadata: document.querySelector("#saveMetadata"),
   saveState: document.querySelector("#saveState"),
   auditList: document.querySelector("#auditList"),
-  watchRoots: document.querySelector("#watchRoots"),
   toast: document.querySelector("#toast"),
 };
 
@@ -100,41 +102,151 @@ function renderStatus() {
   elements.sourceSummary.textContent = unavailableSources
     ? `${available}/${status.watch_roots.length} 个目录可用 · ${unavailableSources} 条源文件不可用`
     : `${available}/${status.watch_roots.length} 个目录可用`;
-  elements.watchRoots.innerHTML = status.watch_roots
-    .map(
-      (root) =>
-        `<span class="root-chip ${root.available ? "" : "missing"}" title="${escapeHtml(root.path)}">` +
-        `${escapeHtml(root.path)}${root.available ? "" : " · 不可用"}</span>`,
-    )
-    .join("");
 }
 
-function renderRunList() {
-  if (!state.runs.length) {
-    elements.runList.innerHTML = `<div class="empty-list">当前筛选条件下没有数据记录</div>`;
-    return;
-  }
-  elements.runList.innerHTML = state.runs
-    .map((run) => {
-      const label = run.sample_id || run.source_name;
-      const secondary = run.sample_id ? run.source_name : run.instrument;
+function makeFolderNode(name = "") {
+  return { name, folders: new Map(), files: [] };
+}
+
+function buildNestedTree(root) {
+  const node = makeFolderNode(root.name);
+  root.files.forEach((run) => {
+    const parts = run.relative_path.split("/").filter(Boolean);
+    const fileName = parts.pop() || run.source_name;
+    let current = node;
+    parts.forEach((part) => {
+      if (!current.folders.has(part)) {
+        current.folders.set(part, makeFolderNode(part));
+      }
+      current = current.folders.get(part);
+    });
+    current.files.push({ ...run, source_name: fileName });
+  });
+  return node;
+}
+
+function selectedFolderKeys() {
+  const selected = state.runs.find((run) => run.id === state.selectedId);
+  if (!selected) return new Set();
+  const keys = new Set([selected.root_id]);
+  const parts = selected.relative_path.split("/").filter(Boolean);
+  parts.pop();
+  let key = selected.root_id;
+  parts.forEach((part) => {
+    key = `${key}/${part}`;
+    keys.add(key);
+  });
+  return keys;
+}
+
+function renderFileButton(run) {
+  const sourceState = run.source_available
+    ? ""
+    : '<span class="source-state">源文件不可用</span>';
+  const sampleState = run.sample_id
+    ? `<span class="file-sample" title="${escapeHtml(run.sample_id)}">样品 · ${escapeHtml(run.sample_id)}</span>`
+    : "";
+  const parsedState = run.parse_status === "metadata_only"
+    ? "仅元数据"
+    : `${run.point_count.toLocaleString("zh-CN")} 点`;
+  return `
+    <button
+      class="file-node ${run.id === state.selectedId ? "active" : ""} ${run.source_available ? "" : "source-missing"}"
+      data-run-id="${run.id}"
+      type="button"
+      title="${escapeHtml(run.relative_path)}"
+      ${run.id === state.selectedId ? 'aria-current="true"' : ""}
+    >
+      <span class="file-node-main">
+        <span class="file-node-name">${escapeHtml(run.source_name)}</span>
+        <span class="file-node-badges">
+          <span class="parser-badge">${escapeHtml(run.instrument)}</span>
+          <span class="technique-badge">${escapeHtml(run.technique)}</span>
+        </span>
+      </span>
+      <span class="file-node-meta">
+        <span>${escapeHtml(parsedState)}</span>
+        ${sampleState}
+        <span class="file-time">${formatDate(run.modified_utc)}</span>
+        ${sourceState}
+      </span>
+    </button>`;
+}
+
+function renderFolderContents(node, key, depth, forceOpen) {
+  const folders = [...node.folders.values()].sort((a, b) =>
+    a.name.localeCompare(b.name, "zh-CN", { numeric: true }),
+  );
+  const files = [...node.files].sort((a, b) =>
+    new Date(b.modified_utc).getTime() - new Date(a.modified_utc).getTime(),
+  );
+  const folderMarkup = folders
+    .map((folder) => {
+      const folderKey = `${key}/${folder.name}`;
+      const count = countFolderFiles(folder);
+      const open = forceOpen || state.openFolders.has(folderKey);
       return `
-        <button class="run-item ${run.id === state.selectedId ? "active" : ""} ${run.source_available ? "" : "source-missing"}" data-run-id="${run.id}" type="button">
-          <span class="run-item-top">
-            <span class="run-item-name" title="${escapeHtml(label)}">${escapeHtml(label)}</span>
-            <span class="run-item-tags">
-              <span class="run-item-method">${escapeHtml(run.technique)}</span>
-              ${run.source_available ? "" : '<span class="source-state">源文件不可用</span>'}
+        <details class="folder-node nested-folder" data-folder-key="${escapeHtml(folderKey)}" ${open ? "open" : ""}>
+          <summary>
+            <span class="folder-summary-content">
+              <span class="folder-name">${escapeHtml(folder.name)}</span>
+              <span class="folder-count">${count}</span>
             </span>
-          </span>
-          <span class="run-item-meta">
-            <span>${escapeHtml(secondary)}</span>
-            <span>${run.point_count.toLocaleString("zh-CN")} 点 · ${formatDate(run.modified_utc)}</span>
-          </span>
-        </button>`;
+          </summary>
+          <div class="folder-children">
+            ${renderFolderContents(folder, folderKey, depth + 1, forceOpen)}
+          </div>
+        </details>`;
     })
     .join("");
-  elements.runList.querySelectorAll(".run-item").forEach((button) => {
+  return folderMarkup + files.map(renderFileButton).join("");
+}
+
+function countFolderFiles(node) {
+  return node.files.length + [...node.folders.values()]
+    .reduce((sum, child) => sum + countFolderFiles(child), 0);
+}
+
+function renderFileTree() {
+  const tree = state.tree;
+  const selectedKeys = selectedFolderKeys();
+  selectedKeys.forEach((key) => state.openFolders.add(key));
+  const forceOpen = Boolean(elements.searchInput.value.trim());
+  elements.treeCount.textContent = tree?.truncated
+    ? `${tree.total}+ 个文件`
+    : `${tree?.total || 0} 个文件`;
+  if (!tree || !tree.roots.length) {
+    elements.fileTree.innerHTML = '<div class="empty-list">尚未配置数据文件夹</div>';
+    return;
+  }
+  elements.fileTree.innerHTML = tree.roots
+    .map((root) => {
+      const rootNode = buildNestedTree(root);
+      const rootOpen = forceOpen || state.openFolders.has(root.id) || root.file_count > 0;
+      const availability = root.available ? "" : '<span class="folder-state">不可用</span>';
+      const empty = root.file_count
+        ? renderFolderContents(rootNode, root.id, 0, forceOpen)
+        : '<div class="empty-folder">该目录下没有符合条件的实验文件</div>';
+      return `
+        <details class="folder-node tree-root" data-folder-key="${escapeHtml(root.id)}" ${rootOpen ? "open" : ""}>
+          <summary>
+            <span class="folder-summary-content">
+              <span class="folder-name">${escapeHtml(root.name)}</span>
+              <span class="folder-count">${root.file_count}</span>
+              ${availability}
+            </span>
+          </summary>
+          <div class="folder-children">${empty}</div>
+        </details>`;
+    })
+    .join("");
+  elements.fileTree.querySelectorAll("details[data-folder-key]").forEach((details) => {
+    details.addEventListener("toggle", () => {
+      if (details.open) state.openFolders.add(details.dataset.folderKey);
+      else state.openFolders.delete(details.dataset.folderKey);
+    });
+  });
+  elements.fileTree.querySelectorAll(".file-node").forEach((button) => {
     button.addEventListener("click", () => selectRun(Number(button.dataset.runId)));
   });
 }
@@ -274,7 +386,7 @@ function drawChart(run) {
 
 function renderDetail(run) {
   state.selectedRun = run;
-  elements.detailInstrument.textContent = run ? run.instrument : "选择一条记录";
+  elements.detailInstrument.textContent = run ? `${run.instrument} 文件` : "选择一个实验文件";
   elements.detailTitle.textContent = run ? run.source_name : "曲线预览";
   elements.detailTechnique.textContent = run ? run.technique : "—";
   elements.detailHash.textContent = run ? `SHA ${run.sha256.slice(0, 12)}…` : "SHA-256";
@@ -315,19 +427,21 @@ async function loadStatus() {
   renderStatus();
 }
 
-async function loadRuns(preserveSelection = true) {
+async function loadFileTree(preserveSelection = true) {
   const requestId = ++state.runsRequestId;
   const parameters = new URLSearchParams();
-  if (elements.instrumentFilter.value) parameters.set("instrument", elements.instrumentFilter.value);
   if (elements.techniqueFilter.value) parameters.set("technique", elements.techniqueFilter.value);
   if (elements.searchInput.value.trim()) parameters.set("q", elements.searchInput.value.trim());
-  const runs = await request(`/api/runs?${parameters.toString()}`);
+  const tree = await request(`/api/files/tree?${parameters.toString()}`);
   if (requestId !== state.runsRequestId) return;
-  state.runs = runs;
+  state.tree = tree;
+  state.runs = tree.roots.flatMap((root) =>
+    root.files.map((run) => ({ ...run, root_id: root.id })),
+  );
   if (!preserveSelection || !state.runs.some((run) => run.id === state.selectedId)) {
     state.selectedId = state.runs[0]?.id ?? null;
   }
-  renderRunList();
+  renderFileTree();
   if (state.selectedId) await selectRun(state.selectedId, false);
   else renderDetail(null);
 }
@@ -337,16 +451,23 @@ async function loadAudit() {
 }
 
 async function selectRun(runId, rerenderList = true) {
+  const requestId = ++state.detailRequestId;
+  const treeRequestId = state.runsRequestId;
   state.selectedId = runId;
-  if (rerenderList) renderRunList();
+  if (rerenderList) renderFileTree();
   const run = await request(`/api/runs/${runId}`);
+  if (
+    requestId !== state.detailRequestId ||
+    treeRequestId !== state.runsRequestId ||
+    state.selectedId !== runId
+  ) return;
   renderDetail(run);
 }
 
 async function refreshAll(preserveSelection = true) {
   try {
     await Promise.all([loadStatus(), loadAudit()]);
-    await loadRuns(preserveSelection);
+    await loadFileTree(preserveSelection);
   } catch (error) {
     showToast(error.message, true);
   }
@@ -373,10 +494,9 @@ elements.scanButton.addEventListener("click", async () => {
 let searchDelay;
 elements.searchInput.addEventListener("input", () => {
   window.clearTimeout(searchDelay);
-  searchDelay = window.setTimeout(() => loadRuns(false), 220);
+  searchDelay = window.setTimeout(() => loadFileTree(false), 220);
 });
-elements.instrumentFilter.addEventListener("change", () => loadRuns(false));
-elements.techniqueFilter.addEventListener("change", () => loadRuns(false));
+elements.techniqueFilter.addEventListener("change", () => loadFileTree(false));
 
 elements.metadataForm.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -398,7 +518,7 @@ elements.metadataForm.addEventListener("submit", async (event) => {
       body: JSON.stringify(payload),
     });
     renderDetail(run);
-    await Promise.all([loadRuns(), loadAudit()]);
+    await Promise.all([loadFileTree(), loadAudit()]);
     elements.saveState.textContent = "已保存";
     showToast("样品信息已保存到平台数据库");
   } catch (error) {

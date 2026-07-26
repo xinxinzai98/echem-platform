@@ -1,4 +1,5 @@
 const state = {
+  status: null,
   capabilities: null,
   preflight: null,
   draft: null,
@@ -15,6 +16,8 @@ const elements = {
   readinessNote: document.querySelector("#readinessNote"),
   preflightList: document.querySelector("#preflightList"),
   refreshButton: document.querySelector("#refreshButton"),
+  dataFolderSummary: document.querySelector("#dataFolderSummary"),
+  dataFolderList: document.querySelector("#dataFolderList"),
   draftRevision: document.querySelector("#draftRevision"),
   draftSummary: document.querySelector("#draftSummary"),
   prepareButton: document.querySelector("#prepareButton"),
@@ -109,6 +112,37 @@ function renderPreflight() {
   renderActionAvailability();
 }
 
+function renderDataFolders() {
+  const roots = state.status?.watch_roots || [];
+  const available = roots.filter((root) => root.available).length;
+  elements.dataFolderSummary.textContent = `${available}/${roots.length} 个可用`;
+  elements.dataFolderList.replaceChildren(
+    ...roots.map((root) => {
+      const row = document.createElement("div");
+      row.className = `data-folder-row ${root.available ? "available" : "missing"}`;
+      const copy = document.createElement("div");
+      const name = document.createElement("strong");
+      const normalized = String(root.path || "").replaceAll("\\", "/").replace(/\/+$/, "");
+      name.textContent = normalized.split("/").pop() || root.path || "未命名目录";
+      const path = document.createElement("span");
+      path.className = "data-folder-path";
+      path.textContent = root.path;
+      copy.append(name, path);
+      const status = document.createElement("span");
+      status.className = "data-folder-state";
+      status.textContent = root.available ? "可读取" : "不可用";
+      row.append(copy, status);
+      return row;
+    }),
+  );
+  if (!roots.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.textContent = "尚未配置数据文件夹";
+    elements.dataFolderList.replaceChildren(empty);
+  }
+}
+
 function renderDraft() {
   const draft = state.draft;
   if (!draft) return;
@@ -186,13 +220,16 @@ function renderRun() {
 }
 
 async function refreshReadiness() {
-  const [capabilities, preflight] = await Promise.all([
+  const [capabilities, preflight, status] = await Promise.all([
     request("/api/control/capabilities"),
     request("/api/control/preflight"),
+    request("/api/status"),
   ]);
   state.capabilities = capabilities;
   state.preflight = preflight;
+  state.status = status;
   renderPreflight();
+  renderDataFolders();
   renderActionAvailability();
 }
 

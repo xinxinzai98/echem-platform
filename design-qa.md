@@ -1,65 +1,53 @@
-# EchemPlatform 工作台信息架构设计 QA
+# EchemPlatform 数据文件夹视图设计 QA
 
 ## Comparison setup
 
-- Source visual truth: `/Users/hive/Documents/Codex/2026-07-24/wo/outputs/EchemPlatform-sidebar-v0.3.0-dev.6/protocol-sidebar-1440x1200.png`
-- Browser-rendered implementation: `/Users/hive/Documents/Codex/2026-07-24/wo/outputs/EchemPlatform-workspace-v0.3.0-dev.7/workspace-overview-viewport-1440x1200.png`
-- Same-input comparison: `/Users/hive/Documents/Codex/2026-07-24/wo/outputs/EchemPlatform-workspace-v0.3.0-dev.7/workspace-style-comparison-2880x1200.png`
-- Source state: previous shared-shell protocol page at `/protocol`.
-- Implementation state: new overview page at `/`, with two instrument records, healthy local data sources, locked instrument control, and four recent activities.
-- Source pixels: `1425 × 1188`; normalized to `1440 × 1200`.
-- Implementation browser viewport: `1440 × 1200` CSS px at device pixel ratio `1`.
-- Implementation capture: `1440 × 1200` pixels.
+- Source visual truth: `/Users/hive/.codex/visualizations/2026/07/24/019f9364-18cc-73f3-9fb4-3c6d2c27e792/echem-analysis-dev7-source.jpg`
+- Browser-rendered implementation: `/Users/hive/.codex/visualizations/2026/07/24/019f9364-18cc-73f3-9fb4-3c6d2c27e792/echem-analysis-dev8-implementation.jpg`
+- Same-input comparison: `/Users/hive/.codex/visualizations/2026/07/24/019f9364-18cc-73f3-9fb4-3c6d2c27e792/echem-analysis-dev8-comparison.png`
+- Source state: `v0.3.0-dev.7` flat record list with instrument selector and monitored-directory footer.
+- Implementation state: `v0.3.0-dev.8` configured-folder tree with automatic CHI/CorrTest file recognition.
+- Both captures: `1425 × 1188` pixels from the same in-app browser tab and viewport override.
 
 ## Full-view comparison evidence
 
-The new overview intentionally changes the page responsibility while preserving the selected product shell. The dark `232 px` sidebar, light canvas, teal safety palette, white cards, border radii, shadow weight, eyebrow labels, compact top bar, and desktop density remain consistent with the source. The primary content is now limited to the three requested regions: instrument activity, system indicators, and recent activity.
+The implementation preserves the established desktop workbench shell, card hierarchy, status row, curve panel, sample metadata form, audit stream, typography, spacing, and teal safety palette. The left analysis rail now communicates filesystem structure instead of implying that the operator must choose a workstation. A configured root is expanded into folders and files; each file carries parser and technique badges while selection continues to drive the existing curve and metadata detail.
 
-The comparison also confirms the requested navigation hierarchy. “工作台”, “工步设置”, and “数据分析” remain in the main navigation. “环境检测与设置” is removed from that list and appears as a compact gear utility in the bottom-left corner.
+The former two-select toolbar is reduced to search plus test-method filtering. This creates enough vertical and horizontal room for nested paths without changing the overall two-column workbench rhythm. The monitored-directory footer is absent from the analysis page.
 
-## Focused region comparison evidence
+## Focused behavior evidence
 
-A separate crop was not required because the `2880 × 1200` same-input comparison keeps both sidebars, complete top bars, main card boundaries, status chips, typography, and the bottom-left utility dock legible at equal scale. Browser DOM checks separately confirmed the three main routes, active states, gear route, and core page headings.
+- The configured root expands and collapses through native `details`/`summary` controls.
+- Searching `chi` returns the two CHI files and updates the visible count to `2 个文件`.
+- Selecting the EIS filter returns only the CorrTest EIS fixture.
+- CHI and CorrTest files appear together in the same tree without a workstation selector.
+- The bottom-left settings entry opens `/environment`, where the full monitored path, availability state, and read-only boundary are shown.
+- File selection updates the parser label, technique, curve, SHA-256, source availability, and metadata form.
+- No browser console errors were reported during the checked flow.
 
-## Required fidelity surfaces
+## Fidelity and accessibility review
 
-- Fonts and typography: The Inter/PingFang/Microsoft YaHei stack and the existing heading, eyebrow, body, and compact UI weights are preserved. The new metric figures use the same bold optical hierarchy as the earlier status row.
-- Spacing and layout rhythm: The shell width, `18 px` grid gap, `14–17 px` radii, and card padding remain aligned with the previous interface. The overview uses a two-column top region and one full-width activity region without horizontal overflow at `1440 px`.
-- Colors and visual tokens: Existing ink, teal, paper, canvas, line, orange, and shadow tokens remain the source of truth. No new competing palette was introduced.
-- Image quality and asset fidelity: The product mark is preserved. The new settings control uses the official Bootstrap Icons gear asset rather than a text glyph or a handcrafted icon.
-- Copy and content: Page labels now match the requested mental model. Instrument activity is explicitly described as file-side observation, preventing the UI from implying that the platform has taken control of CHI or CorrTest.
+- Existing visual tokens and component radii are preserved; no competing palette or new asset style was introduced.
+- Folder hierarchy uses native disclosure controls and a subtle connector line, not handcrafted icons or text glyphs.
+- File buttons provide `aria-current`, visible source-missing text, and high-contrast `:focus-visible` treatment.
+- The interactive tree is no longer an `aria-live` region; only the compact file count announces changes.
+- The curve canvas is associated with the text statistics region for a non-visual summary.
+- Full data paths are reserved for the settings page; the analysis tree receives only root labels and relative paths.
 
 ## Findings
 
-- No actionable P0, P1, or P2 findings remain.
-- [P3] The overview leaves intentional whitespace below the recent-activity panel at a `1200 px`-high viewport. This keeps the operational content compact and avoids inventing extra dashboard modules.
+- No actionable P0, P1, or P2 visual or interaction findings remain.
+- [P3] The local demo root is flat, so the screenshot shows the root disclosure plus file leaves; nested folder rendering is covered by an automated mixed-folder test and will be visible against the Windows experiment hierarchy.
 
-## Comparison history
+## Verification checklist
 
-### Iteration 1
-
-- Source and implementation were normalized to `1440 × 1200` and placed in one comparison image.
-- No actionable P0, P1, or P2 visual mismatch was found after the intentional information-architecture change.
-- Browser interaction evidence:
-  - `/` displays only “仪器当前活动”, “系统指标”, and “最近活动”.
-  - Sidebar navigation opened `/steps` and `/analysis`.
-  - The bottom-left gear opened `/environment`.
-  - “仅校验” on `/steps` returned the visible state `校验通过` / `通过`.
-- Console evidence: no browser errors or warnings were reported across the checked routes.
-
-## Implementation checklist
-
-- [x] Main workspace limited to current instrument activity, system indicators, and recent activity.
-- [x] “协议编辑” renamed and repositioned as “工步设置”.
-- [x] Data curve and metadata tooling moved into the independent `/analysis` module.
-- [x] Stage C safety content reframed as `/environment`.
-- [x] Environment entry reduced to a bottom-left settings gear.
-- [x] Legacy `/protocol` and `/monitor` routes retained for compatibility.
-- [x] Desktop launcher now opens the overview.
-- [x] Automated suite and browser interaction checks passed.
-
-## Follow-up polish
-
-- A later iteration can add instrument-specific live-state adapters when a verified, read-only process or file heartbeat is available.
+- [x] No workstation selection is required.
+- [x] Configured data roots render as folder/file trees.
+- [x] CHI and CorrTest text exports are automatically identified and parsed.
+- [x] CHI EIS `Z'` / `Z"` headers map to Nyquist axes.
+- [x] Search, method filtering, folder disclosure, and file selection work.
+- [x] Monitored-directory UI moved to environment settings.
+- [x] Absolute source paths are not exposed by the file-tree API.
+- [x] Automated suite passes.
 
 final result: passed

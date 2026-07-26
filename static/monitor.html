@@ -117,6 +117,18 @@
         <article class="panel">
           <div class="panel-heading">
             <div>
+              <span class="eyebrow">Read-only data folders</span>
+              <h2>只读数据文件夹</h2>
+            </div>
+            <span id="dataFolderSummary" class="status-chip">正在读取</span>
+          </div>
+          <div id="dataFolderList" class="data-folder-list"></div>
+          <p class="boundary-note">数据分析会递归读取这些目录，并自动识别 CHI 与 CorrTest 文件；不会创建、重命名或删除原始数据。</p>
+        </article>
+
+        <article class="panel">
+          <div class="panel-heading">
+            <div>
               <span class="eyebrow">Locked run settings</span>
               <h2>安全设置与运行快照</h2>
             </div>

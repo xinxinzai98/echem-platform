@@ -83,8 +83,10 @@ def find_axis_indices(headers: list[str], technique: str = "") -> tuple[int, int
                 return index
         return None
 
-    real_index = first_matching(("zreal", "z'", "rez", "zre"))
-    imag_index = first_matching(("zimag", "z''", "imz", "zim"))
+    real_index = first_matching(("zreal", "z'", "z’", "z′", "zprime", "rez", "zre"))
+    imag_index = first_matching(
+        ("zimag", 'z"', "z''", "z”", "z″", "zdoubleprime", "imz", "zim")
+    )
     if real_index is not None and imag_index is not None and real_index != imag_index:
         return real_index, imag_index
 
@@ -196,6 +198,8 @@ def parse_curve(path: Path, data: bytes, max_points: int) -> ParsedCurve:
                     "freq",
                     "zreal",
                     "zimag",
+                    "z'",
+                    'z"',
                     "time",
                     "e(v",
                     "i(a",

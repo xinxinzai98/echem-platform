@@ -2,7 +2,7 @@
   "instrument_control_enabled": false,
   "control_stage": "off",
   "watch_roots": [
-    "C:\\Path\\To\\CorrTest\\Data",
-    "D:\\Path\\To\\CHI\\ExportedData"
+    "D:\\Path\\To\\ExperimentData",
+    "E:\\Path\\To\\ArchivedExperimentData"
   ]
 }

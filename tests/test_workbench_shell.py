@@ -101,7 +101,22 @@ class WorkbenchShellTests(unittest.TestCase):
         parser = self.parse_page("analysis.html")
         self.assertIn('curveChart', parser.ids)
         self.assertIn('metadataForm', parser.ids)
+        self.assertIn('fileTree', parser.ids)
+        self.assertIn('treeCount', parser.ids)
+        self.assertNotIn('runList', parser.ids)
+        self.assertNotIn('watchRoots', parser.ids)
         self.assertIn("/static/analysis.js", parser.scripts)
+
+    def test_data_folders_are_managed_from_environment_settings(self) -> None:
+        analysis = (STATIC / "analysis.html").read_text(encoding="utf-8")
+        monitor = (STATIC / "monitor.html").read_text(encoding="utf-8")
+        script = (STATIC / "analysis.js").read_text(encoding="utf-8")
+        self.assertNotIn("监控目录", analysis)
+        self.assertNotIn('id="instrumentFilter"', analysis)
+        self.assertIn('id="dataFolderList"', monitor)
+        self.assertIn('id="dataFolderSummary"', monitor)
+        self.assertIn("/api/files/tree", script)
+        self.assertIn("parser-badge", script)
 
     def test_workspace_pages_do_not_duplicate_element_ids(self) -> None:
         for name in self.pages:

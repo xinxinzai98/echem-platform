@@ -122,10 +122,14 @@ function isOtherFile(run) {
     .replaceAll("\\", "/")
     .split("/")
     .map((part) => part.trim().toLowerCase().replaceAll(/[-\s]+/g, "_"));
-  return (
-    pathParts.includes("control_programs") ||
-    pathParts.includes("diagnostics") ||
-    pathParts.includes("rejected_data")
+  const folderParts = pathParts.slice(0, -1);
+  return folderParts.some(
+    (part) =>
+      ["control_programs", "diagnostics", "rejected_data"].includes(part) ||
+      part === "diag" ||
+      part === "diagnostic" ||
+      part.startsWith("diag_") ||
+      part.startsWith("diagnostic_"),
   );
 }
 

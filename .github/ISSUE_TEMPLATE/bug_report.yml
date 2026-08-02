@@ -1,0 +1,53 @@
+name: Bug report
+description: Report a reproducible software defect without private or proprietary data.
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting a defect. Do not include real experimental data, credentials, private paths, logs with identifiers, or vendor-proprietary files. Security issues must use private vulnerability reporting.
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: v0.1.4 or a commit SHA
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Operating system, Python version, and browser if relevant.
+      placeholder: Windows 11, Python 3.13, Edge
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Minimal reproduction
+      description: Use synthetic data or describe the shape of the input without sharing private content.
+      placeholder: Numbered steps and the smallest safe reproduction.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Remove usernames, paths, addresses, sample identifiers, and other sensitive values.
+    validations:
+      required: true
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Confirmations
+      options:
+        - label: This report does not disclose a security vulnerability.
+          required: true
+        - label: This report contains no real experimental data, credential, private identifier, or vendor-proprietary material.
+          required: true

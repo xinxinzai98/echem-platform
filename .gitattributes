@@ -11,5 +11,8 @@
 *.md text eol=lf
 
 *.bin binary
+*.jpg binary
+*.jpeg binary
+*.png binary
 *.sqlite3 binary
 *.zip binary

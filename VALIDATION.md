@@ -69,7 +69,7 @@ python3 -m compileall -q app.py tests scripts
 node --check static/app.js
 ```
 
-GitHub Actions runs these checks on Windows and Linux with Python 3.9 and 3.14. A workflow file or local pass is not a green CI result; the formal Release must wait for the actual default-branch workflow to pass.
+Version `0.1.4` does not claim hosted CI or an operating-system/Python matrix. The primary maintainer runs these exact commands from a clean release commit, builds the fixed source ZIP, and repeats the checks from the extracted archive before publication. Command output, environment versions, the tagged commit, and the final artifact digest are retained as release evidence.
 
 ## Browser acceptance with synthetic data
 

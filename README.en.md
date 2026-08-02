@@ -1,6 +1,5 @@
 # Echem Platform V0
 
-[![Tests](https://github.com/xinxinzai98/echem-platform/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/xinxinzai98/echem-platform/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/xinxinzai98/echem-platform?display_name=tag)](https://github.com/xinxinzai98/echem-platform/releases)
 
@@ -87,7 +86,7 @@ python3 scripts/check_docs.py
 node --check static/app.js
 ```
 
-CI covers Python 3.9 and Python 3.14 on Windows and Linux. See [VALIDATION.md](VALIDATION.md) for validation evidence and [docs/RELEASING.md](docs/RELEASING.md) for the release process.
+The project currently does not use hosted CI. Release evidence comes from running the reproducible commands above on a clean commit and repeating the same checks from the extracted release archive; it is not a claim of cross-platform CI coverage. See [VALIDATION.md](VALIDATION.md) for validation evidence and [docs/RELEASING.md](docs/RELEASING.md) for the release process.
 
 ## Project status and community
 

@@ -78,7 +78,12 @@ def candidate_paths() -> list[str]:
             if (path.is_file() or path.is_symlink())
             and not any(part in FALLBACK_SKIP_PARTS for part in path.relative_to(ROOT).parts)
         )
-    return sorted(item.decode("utf-8") for item in result.stdout.split(b"\0") if item)
+    candidates = (item.decode("utf-8") for item in result.stdout.split(b"\0") if item)
+    return sorted(
+        item
+        for item in candidates
+        if (ROOT / item).exists() or (ROOT / item).is_symlink()
+    )
 
 
 def is_documentation_image(relative: Path) -> bool:

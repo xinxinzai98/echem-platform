@@ -1,6 +1,5 @@
 # 电化学测试平台 V0
 
-[![Tests](https://github.com/xinxinzai98/echem-platform/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/xinxinzai98/echem-platform/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/xinxinzai98/echem-platform?display_name=tag)](https://github.com/xinxinzai98/echem-platform/releases)
 
@@ -87,7 +86,7 @@ python3 scripts/check_docs.py
 node --check static/app.js
 ```
 
-CI 在 Windows 和 Linux 上覆盖 Python 3.9 与 Python 3.14。验证记录见 [VALIDATION.md](VALIDATION.md)，发布流程见 [docs/RELEASING.md](docs/RELEASING.md)。
+本项目当前不使用托管 CI。发布证据来自在干净提交上运行上述可复现命令，并从解压后的发布包再次执行相同检查；这不构成跨操作系统 CI 覆盖声明。验证记录见 [VALIDATION.md](VALIDATION.md)，发布流程见 [docs/RELEASING.md](docs/RELEASING.md)。
 
 ## 项目状态与参与方式
 

@@ -1,6 +1,6 @@
 # Release process
 
-Only the primary maintainer may publish an official release. A release must be built from a clean commit on `main` after CI is green.
+Only the primary maintainer may publish an official release. A release must be built from a clean commit on `main` after the full local validation procedure passes.
 
 ## 1. Confirm scope and version
 
@@ -20,7 +20,7 @@ python3 -m compileall -q app.py tests scripts
 node --check static/app.js
 ```
 
-Wait for the Windows and Linux GitHub Actions jobs on `main` to pass. Local output is not a substitute for green CI.
+Record the operating system, Python version, Node.js version, command results, and release commit. This project currently does not use hosted CI and must not claim cross-platform CI coverage.
 
 ## 3. Build the fixed source artifact
 
@@ -49,13 +49,15 @@ Get-FileHash .\dist\echem-platform-v0.1.4.zip -Algorithm SHA256
 
 ## 4. Tag and publish
 
-1. Review `docs/releases/v0.1.4.md` and remove its draft warning.
+1. Review `docs/releases/v0.1.4.md` and confirm every capability and limitation still matches the tagged commit.
 2. Create an annotated tag `v0.1.4` at the validated `main` commit.
 3. Push the tag without force.
 4. Create a GitHub Release using the prepared notes.
 5. Attach the fixed ZIP and `.sha256` file.
 6. Download the attachments from GitHub and verify the hash again.
 7. Confirm the README release badge and GitHub license detection are correct.
+
+Before tagging, extract the ZIP into a new temporary directory and repeat the validation commands from that extracted tree. Do not treat a successful build command alone as artifact validation.
 
 Do not publish a Windows portable claim unless the attached artifact actually contains and documents a licensed portable runtime. The `0.1.4` source artifact does not bundle Python.
 

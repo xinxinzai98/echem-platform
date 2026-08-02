@@ -17,7 +17,7 @@ All notable changes to this project are documented in this file. The format foll
 - SHA-256 source fingerprints, local SQLite metadata, and audit events.
 - Synthetic CHI CV, CHI metadata-only, CorrTest EIS, and CorrTest GalStatic fixtures.
 - English documentation, MIT license, contribution guidance, data policy, known limitations, citation metadata, and community templates.
-- Windows and Linux CI covering Python 3.9 and 3.14.
+- Reproducible clean-checkout validation commands and an extracted-release recheck procedure.
 - Reproducible synthetic demo, public-tree disclosure guard, release builder, and draft release notes.
 
 ### Security

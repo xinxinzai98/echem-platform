@@ -11,6 +11,36 @@ venv/
 runtime/
 packages/
 logs/
+dist/
+release-artifacts/
+output/
+config.local.json
+private_data/
+private_fixtures/
+inventory/
+diagnostics/
+remote_tools/
+
+# Local instrument exports and vendor installers
+Windows测试数据_*/
+*.msi
+*.exe
+*.dll
+*.pdb
+*.7z
+*.rar
+*.zip
+*.tar
+*.tgz
+*.gz
+*.bz2
+*.xz
+*.dmg
+*.pkg
+*.pfx
+*.p12
+*.pem
+*.key
 
 # Generated platform state
 state/*

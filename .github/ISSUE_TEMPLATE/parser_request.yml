@@ -1,0 +1,45 @@
+name: Parser support request
+description: Propose support for a new or mismatched electrochemistry text export.
+title: "[Parser] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Prefer a minimal synthetic fixture. Do not upload real unpublished data, vendor binaries, SDKs, manuals, configuration, or licensed files.
+  - type: input
+    id: source
+    attributes:
+      label: Instrument and export software
+      placeholder: Instrument family and software version, if known
+    validations:
+      required: true
+  - type: input
+    id: method
+    attributes:
+      label: Test method and extension
+      placeholder: EIS, .txt
+    validations:
+      required: true
+  - type: textarea
+    id: structure
+    attributes:
+      label: Safe format description
+      description: Describe delimiters, headers, units, encoding, and representative synthetic rows.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected parser result
+      description: Instrument, technique, X/Y axes, units, status, and expected point count.
+    validations:
+      required: true
+  - type: checkboxes
+    id: rights
+    attributes:
+      label: Data and rights confirmation
+      options:
+        - label: Any proposed fixture is synthetic or I have documented authority to publish it.
+          required: true
+        - label: No vendor binary, SDK, manual, license, private configuration, or real confidential data is included.
+          required: true

@@ -1,67 +1,109 @@
-# V0 本地验证记录
+# V0.1.4 validation record
 
-验证日期：2026-07-24
-版本：0.1.4
-验证环境：macOS 自动化测试与 Windows 本机启动验收，均使用本地回环地址 `127.0.0.1`
+This record is scoped to version `0.1.4`. It separates reproducible synthetic-fixture checks from maintainer-operated Windows acceptance. It does not claim independent adoption or compatibility with every real instrument export.
 
-## 自动化测试
+## Clean-checkout automated tests
 
-共 10 项，全部通过：
+Validation date: 2026-08-02
 
-- CHI CV 文本识别与坐标轴解析
-- CorrTest EIS Nyquist 坐标轴解析
-- CorrTest GalStatic 默认使用电位—时间曲线
-- CHI `.bin` 仅登记元数据
-- 曲线降采样保留首尾点
-- 扫描前后源文件内容、大小和修改时间不变
-- 重复扫描按 SHA-256 去重
-- 样品信息只写平台数据库
-- 正在写入的文件暂缓导入
-- 拒绝绑定 `0.0.0.0` 等非回环地址
-- SQLite 连接在 Windows 与 macOS 上均显式关闭，不遗留数据库文件锁
+Command:
 
-## 模拟数据扫描
+```sh
+python3 -m unittest discover -s tests -v
+```
 
-- 发现文件：4
-- 成功建立索引：4
-- 可绘制曲线：3
-- 元数据模式：1
-- 读取错误：0
+Expected result: 10 tests pass.
 
-覆盖方法：
+The tests cover:
 
-- CHI CV
-- CHI OCP `.bin` 元数据
-- CorrTest EIS
-- CorrTest GalStatic / CP
+1. CHI CV text recognition and axes
+2. CorrTest EIS Nyquist axes
+3. CorrTest GalStatic potential-versus-time selection
+4. CHI `.bin` metadata-only behavior
+5. curve downsampling with preserved endpoints
+6. source bytes, size, and modification time unchanged by scanning
+7. sample metadata written only to the platform database
+8. deferral of a recently modified file
+9. rejection of a non-loopback bind address
+10. resolution of relative watch roots from the configuration directory
 
-## 浏览器界面验收
+The test suite uses temporary directories and closes SQLite connections explicitly.
 
-- 平台状态卡、只读标识和监控目录正常显示
-- CHI / CorrTest 仪器筛选正常
-- CV、EIS、CP/GCD 方法筛选正常
-- EIS Nyquist 曲线正常绘制
-- GalStatic 电位—时间曲线正常绘制
-- 样品编号、材料、电解液、面积、标签和备注可保存
-- 保存后出现审计记录
-- 再次扫描返回“新增 0，更新 0”
-- 页面控制台错误：0
-- 快速连续切换仪器和测试方法时，旧请求不会覆盖新筛选结果
-- Windows 本机启动器会进行健康检查并打开默认浏览器；停止器只匹配平台自己的便携 Python 进程
+## Reproducible synthetic demo
 
-## Windows 本机启动验收
+Command:
 
-- 部署目录：`D:\EchemPlatform`
-- 启动器健康检查：HTTP 200
-- 启动后仅监听 `127.0.0.1:8787`
-- 验收流程能够启动、检查并停止平台
-- 验收结束后无平台进程或监听端口残留
-- `serial_access=false`
-- `instrument_control=false`
+```sh
+python3 scripts/run_demo.py
+```
 
-## 尚未执行
+Expected result:
 
-- 未接入真实实验数据目录
-- 未访问 COM3 / COM4
-- 未调用 CHI 宏
-- 未安装或调用 CorrTest SDK
+| Metric | Expected |
+|---|---:|
+| Files seen | 4 |
+| Files indexed | 4 |
+| Parsed curves | 3 |
+| Metadata-only files | 1 |
+| Read errors | 0 |
+
+Covered fixture categories:
+
+- CHI CV text
+- CHI `.bin` metadata-only placeholder
+- CorrTest EIS text
+- CorrTest GalStatic / CP text
+
+All four files are synthetic. Provenance, expected fields, and SHA-256 values are in [demo_data/README.md](demo_data/README.md).
+
+## Release-readiness commands
+
+The release candidate must pass all of the following from a clean checkout:
+
+```sh
+python3 -m unittest discover -s tests -v
+python3 scripts/run_demo.py
+python3 scripts/check_public_tree.py
+python3 scripts/check_docs.py
+python3 -m compileall -q app.py tests scripts
+node --check static/app.js
+```
+
+GitHub Actions runs these checks on Windows and Linux with Python 3.9 and 3.14. A workflow file or local pass is not a green CI result; the formal Release must wait for the actual default-branch workflow to pass.
+
+## Browser acceptance with synthetic data
+
+- Status cards show 4 data files, 3 parsed curves, and 4 integrity records.
+- CHI and CorrTest filters show the expected fixtures.
+- CV, EIS, and CP/GCD method filters work.
+- The EIS fixture renders as a Nyquist curve.
+- The GalStatic fixture renders potential versus time.
+- Metadata edits are stored in SQLite and create an audit event.
+- A second scan reports no new or updated source file.
+- Browser console errors: 0.
+
+The public screenshot in `docs/images/dashboard-demo.jpg` must be regenerated only from these synthetic fixtures and reviewed according to [DATA_POLICY.md](DATA_POLICY.md).
+
+## Maintainer-operated Windows acceptance
+
+Original acceptance date: 2026-07-24
+
+- Local launcher health check returned HTTP 200.
+- The service listened only on `127.0.0.1:8787`.
+- The acceptance flow started, checked, and stopped the platform.
+- No platform process or listening port remained after acceptance.
+- `serial_access=false`.
+- `instrument_control=false`.
+
+The source archive does not contain `runtime/python.exe`; launcher acceptance applies to a separately constructed maintainer portable environment.
+
+## Not validated for `0.1.4`
+
+- No real experimental directory was indexed as part of the `0.1.4` record.
+- No serial port was accessed.
+- No CHI macro was executed.
+- No CorrTest SDK was installed or called.
+- No independent external user or laboratory deployment was confirmed.
+- No Windows installer or portable runtime is included in the source release.
+
+Separate development-line evidence is labeled in [ADOPTION.md](ADOPTION.md) and must not be presented as `0.1.4` validation.

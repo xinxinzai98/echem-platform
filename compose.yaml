@@ -1,0 +1,199 @@
+name: start-stop-analysis
+
+x-start-stop-common: &start-stop-common
+  build:
+    context: .
+    args:
+      APP_UID: "501"
+      APP_GID: "20"
+      APP_VERSION: ${ECHEM_IMAGE_VERSION:-0.6.0-dev.7.2}
+      VCS_REF: ${ECHEM_GIT_SHA:-unknown}
+      BUILD_STATE: ${ECHEM_GIT_STATE:-unknown}
+  image: ${ECHEM_IMAGE_REPOSITORY:-start-stop-analysis}:${ECHEM_IMAGE_TAG:-0.6.0-dev.7.2}
+  restart: unless-stopped
+  stop_grace_period: ${ECHEM_STOP_GRACE_PERIOD:-90s}
+  read_only: true
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  logging:
+    driver: json-file
+    options:
+      max-size: ${ECHEM_LOG_MAX_SIZE:-10m}
+      max-file: ${ECHEM_LOG_MAX_FILES:-5}
+  environment:
+    ECHEM_CONTAINER_MODE: "1"
+    HOME: /Users/hive
+    MPLCONFIGDIR: /app/scratch/matplotlib
+    PYTHONFAULTHANDLER: "1"
+    PYTHONUNBUFFERED: "1"
+    START_STOP_SQLITE_JOURNAL_MODE: ${ECHEM_SQLITE_JOURNAL_MODE:-DELETE}
+    START_STOP_BACKUP_SCHEDULE_ENABLED: ${ECHEM_BACKUP_SCHEDULE_ENABLED:-1}
+    START_STOP_BACKUP_SCHEDULE_LABEL: ${ECHEM_BACKUP_SCHEDULE_LABEL:-每 4 周周日 03:00 后台执行}
+    START_STOP_FONT_BOLD: /usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc
+    START_STOP_FONT_REGULAR: /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc
+    START_STOP_IMAGE_REFERENCE: ${ECHEM_IMAGE_REPOSITORY:-start-stop-analysis}:${ECHEM_IMAGE_TAG:-0.6.0-dev.7.2}
+    START_STOP_SERVICE_VERSION: ${ECHEM_IMAGE_VERSION:-0.6.0-dev.7.2}
+    START_STOP_VCS_REF: ${ECHEM_GIT_SHA:-unknown}
+    START_STOP_BUILD_STATE: ${ECHEM_GIT_STATE:-unknown}
+    START_STOP_WORKBOOK_BUILDER: /app/start_stop_analysis/material_config_workbook.py
+    TZ: Asia/Shanghai
+
+services:
+  local:
+    <<: *start-stop-common
+    container_name: start-stop-analysis-local
+    cpus: ${ECHEM_LOCAL_CPU_LIMIT:-4.0}
+    mem_limit: ${ECHEM_LOCAL_MEMORY_LIMIT:-8g}
+    pids_limit: ${ECHEM_LOCAL_PIDS_LIMIT:-512}
+    command:
+      - --container-mode
+      - --bind
+      - 0.0.0.0
+      - --port
+      - "8787"
+      - --public-host
+      - 127.0.0.1
+      - --public-port
+      - ${ECHEM_LOCAL_PORT:-18787}
+      - --database
+      - /app/state/database/start-stop.sqlite3
+      - --analysis-dir
+      - /app/state/published-cache/current
+      - --analysis-script
+      - /app/start_stop_analysis/analyze_and_plot_start_stop.py
+      - --collection-config
+      - /app/docker/collection-config.json
+      - --workstation-state-file
+      - /app/state/published-cache/workstation-monitor.json
+      - --scratch-dir
+      - /app/scratch
+      - --backup-dir
+      - /app/state/backups
+      - --estimated-output-bytes
+      - "400000000"
+    ports:
+      - 127.0.0.1:${ECHEM_LOCAL_PORT:-18787}:8787
+    networks:
+      - local_runtime
+    tmpfs:
+      - /tmp:size=${ECHEM_LOCAL_TMP_SIZE:-256m},mode=1777
+      - /app/scratch:size=${ECHEM_LOCAL_SCRATCH_SIZE:-4g},mode=0700,uid=501,gid=20
+      - /Users/hive/.cache:size=${ECHEM_LOCAL_CACHE_SIZE:-128m},mode=0700,uid=501,gid=20
+    volumes:
+      - ./state/docker/database:/app/state/database
+      # Mount the cache parent so atomic `current` swaps remain visible to LAN readers.
+      - ${ECHEM_PUBLISHED_DIR:-./state/docker/published}:/app/state/published-cache
+      # Backups are produced outside the application with SQLite's online-backup API.
+      # The application receives only a read-only view for future status reporting.
+      - type: bind
+        source: ${ECHEM_BACKUP_DIR:-./state/docker/backups}
+        target: /app/state/backups
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${ECHEM_SSH_DIR:-/Users/hive/.ssh}/aghid_windows_codex_ed25519
+        target: /Users/hive/.ssh/aghid_windows_codex_ed25519
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${ECHEM_SSH_DIR:-/Users/hive/.ssh}/id_ed25519_192_168_110_155
+        target: /Users/hive/.ssh/id_ed25519_192_168_110_155
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${ECHEM_SSH_DIR:-/Users/hive/.ssh}/windows_192_168_110_164_ed25519
+        target: /Users/hive/.ssh/windows_192_168_110_164_ed25519
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${ECHEM_SSH_DIR:-/Users/hive/.ssh}/known_hosts
+        target: /Users/hive/.ssh/known_hosts
+        read_only: true
+        bind:
+          create_host_path: false
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import http.client; c=http.client.HTTPConnection('127.0.0.1',8787,timeout=5); c.request('GET','/healthz',headers={'Host':'127.0.0.1:${ECHEM_LOCAL_PORT:-18787}'}); raise SystemExit(0 if c.getresponse().status == 200 else 1)"
+      interval: ${ECHEM_HEALTHCHECK_INTERVAL:-60s}
+      timeout: ${ECHEM_HEALTHCHECK_TIMEOUT:-5s}
+      retries: ${ECHEM_HEALTHCHECK_RETRIES:-3}
+      start_period: ${ECHEM_HEALTHCHECK_START_PERIOD:-30s}
+
+  lan-readonly:
+    <<: *start-stop-common
+    container_name: start-stop-analysis-lan-readonly
+    cpus: ${ECHEM_LAN_CPU_LIMIT:-1.0}
+    mem_limit: ${ECHEM_LAN_MEMORY_LIMIT:-1g}
+    pids_limit: ${ECHEM_LAN_PIDS_LIMIT:-128}
+    command:
+      - --container-mode
+      - --lan-read-only
+      - --lan-auth-file
+      - /run/start-stop-secrets/lan-basic-auth.txt
+      - --bind
+      - 0.0.0.0
+      - --port
+      - "8787"
+      - --public-host
+      - ${ECHEM_LAN_IP:-192.168.110.158}
+      - --public-port
+      - ${ECHEM_LAN_PORT:-18788}
+      - --database
+      - /tmp/start-stop-lan.sqlite3
+      - --cv-eis-database
+      - /app/state/database-readonly/start-stop.sqlite3
+      - --analysis-dir
+      - /app/state/published-cache/current
+      - --collection-config
+      - /app/docker/collection-config.json
+      - --workstation-state-file
+      - /app/state/published-cache/workstation-monitor.json
+      - --scratch-dir
+      - /tmp/start-stop-lan-scratch
+    ports:
+      # Docker Desktop for macOS cannot reliably publish to a specific host
+      # interface address.  Publish the port through the Desktop proxy and let
+      # the service enforce the exact LAN Host plus its read-only route policy.
+      - ${ECHEM_LAN_BIND:-0.0.0.0}:${ECHEM_LAN_PORT:-18788}:8787
+    networks:
+      - lan_runtime
+    depends_on:
+      local:
+        condition: service_healthy
+    tmpfs:
+      - /tmp:size=${ECHEM_LAN_TMP_SIZE:-256m},mode=1777
+      - /Users/hive/.cache:size=${ECHEM_LAN_CACHE_SIZE:-64m},mode=0700,uid=501,gid=20
+    volumes:
+      - ./state/docker/database:/app/state/database-readonly:ro
+      - ${ECHEM_PUBLISHED_DIR:-./state/docker/published}:/app/state/published-cache:ro
+      - type: bind
+        source: ${ECHEM_LAN_AUTH_FILE:-./state/docker/secrets/lan-basic-auth.txt}
+        target: /run/start-stop-secrets/lan-basic-auth.txt
+        read_only: true
+        bind:
+          create_host_path: false
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import http.client; c=http.client.HTTPConnection('127.0.0.1',8787,timeout=5); c.request('GET','/healthz',headers={'Host':'${ECHEM_LAN_IP:-192.168.110.158}:${ECHEM_LAN_PORT:-18788}'}); raise SystemExit(0 if c.getresponse().status == 200 else 1)"
+      interval: ${ECHEM_HEALTHCHECK_INTERVAL:-60s}
+      timeout: ${ECHEM_HEALTHCHECK_TIMEOUT:-5s}
+      retries: ${ECHEM_HEALTHCHECK_RETRIES:-3}
+      start_period: ${ECHEM_HEALTHCHECK_START_PERIOD:-30s}
+
+networks:
+  local_runtime:
+    name: start-stop-analysis-local-runtime
+  lan_runtime:
+    name: start-stop-analysis-lan-runtime

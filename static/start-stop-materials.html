@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>材料库 · Start–stop Studio</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%2317212b'/%3E%3Cpath d='M10 38c8-24 16 20 24-8s14 16 20-10' fill='none' stroke='%237ee2d7' stroke-width='5' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/workbench.css">
+  <link rel="stylesheet" href="/static/start-stop.css">
+  <link rel="stylesheet" href="/static/start-stop-config.css">
+  <script src="/static/start-stop-shell.js"></script>
+</head>
+<body class="start-stop-app start-stop-repository-mode">
+  <div class="workbench-shell">
+    <aside id="workbenchSidebar" class="workbench-sidebar">
+      <div class="workbench-sidebar-head">
+        <a id="materialsWorkbenchBrand" class="workbench-brand" href="/start-stop" aria-label="返回启停运行配置">
+          <div class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 48 48" role="img">
+              <path d="M8 28c5-15 10 14 16-4s11 10 16-6"/>
+              <circle cx="8" cy="28" r="3"/>
+              <circle cx="40" cy="18" r="3"/>
+            </svg>
+          </div>
+          <div>
+            <strong>Start–stop Studio</strong>
+            <span>启停数据分析</span>
+          </div>
+        </a>
+        <button id="workbenchSidebarToggle" class="workbench-sidebar-toggle" type="button" aria-controls="workbenchNavigation" aria-expanded="true" aria-label="收起侧边栏">
+          <span class="workbench-sidebar-toggle-icon" aria-hidden="true">‹</span>
+          <span class="workbench-sidebar-toggle-label">收起</span>
+        </button>
+      </div>
+
+      <div class="workbench-environment">
+        <div>
+          <strong id="materialsEnvironmentTitle">Docker 独立程序</strong>
+          <small id="materialsEnvironmentNote">原始字节入库 · SHA-256 可追溯</small>
+          <span id="workbenchVersion" class="workbench-version-badge" role="status">版本读取中</span>
+        </div>
+      </div>
+
+      <nav id="workbenchNavigation" class="workbench-navigation" aria-label="启停数据功能">
+        <a id="startStopConfigNavItem" class="workbench-nav-item" data-config-route href="/start-stop" aria-label="01 运行与绘图配置" title="运行与绘图配置">
+          <span id="startStopConfigNavNumber" class="workbench-nav-number">01</span>
+          <span class="workbench-nav-copy"><strong>运行与绘图配置</strong><small>数据、实验机与绘图规则</small></span>
+        </a>
+        <a id="startStopWorkstationsNavItem" class="workbench-nav-item" data-workstations-route href="/start-stop/workstations" aria-label="02 工作站监控" title="工作站监控">
+          <span id="startStopWorkstationsNavNumber" class="workbench-nav-number">02</span>
+          <span class="workbench-nav-copy"><strong>工作站监控</strong><small>六个工作站与当前材料</small></span>
+        </a>
+        <a id="startStopNavItem" class="workbench-nav-item" data-analysis-route href="/start-stop/analysis" aria-label="03 启停分析" title="启停分析">
+          <span id="startStopNavNumber" class="workbench-nav-number">03</span>
+          <span class="workbench-nav-copy"><strong>启停分析</strong><small>曲线检查、高亮与缩放</small></span>
+        </a>
+        <a id="startStopCvEisNavItem" class="workbench-nav-item" data-cv-eis-route href="/start-stop/cv-eis" aria-label="04 CV–EIS 分析" title="CV–EIS 分析">
+          <span id="startStopCvEisNavNumber" class="workbench-nav-number">04</span>
+          <span class="workbench-nav-copy"><strong>CV–EIS 分析</strong><small>过电位、Rs 与 iR 补偿</small></span>
+        </a>
+        <a id="startStopMaterialsNavItem" class="workbench-nav-item" data-materials-route href="/start-stop/materials" aria-current="page" aria-label="05 材料库" title="材料库">
+          <span id="startStopMaterialsNavNumber" class="workbench-nav-number">05</span>
+          <span class="workbench-nav-copy"><strong>材料库</strong><small>全名、备注与入图范围</small></span>
+        </a>
+      </nav>
+
+      <div class="workbench-utility-dock">
+        <div class="workbench-mini-status">
+          <strong id="sidebarMaterialsState">正在读取材料库</strong>
+          <small>持久材料配置</small>
+        </div>
+      </div>
+    </aside>
+
+    <div class="workbench-content">
+      <header class="topbar workbench-topbar start-stop-topbar">
+        <div class="workbench-page-heading">
+          <span class="eyebrow">Start–stop / Materials library</span>
+          <h1>材料库</h1>
+          <p>管理完整材料名、实验备注与入图范围，并按需生成 PDF 图集</p>
+        </div>
+        <div class="top-actions start-stop-actions">
+          <a class="secondary-outline-button action-link" href="/start-stop">返回运行配置</a>
+          <a class="secondary-outline-button action-link" href="/start-stop/analysis">打开启停分析</a>
+          <div class="export-menu materials-export-menu">
+            <button id="materialsExportPdf" class="export-button" type="button" aria-expanded="false" aria-haspopup="menu" aria-controls="materialsExportMenu">生成 PDF 图集</button>
+            <div id="materialsExportMenu" class="export-menu-panel" role="menu" aria-label="PDF 图集下载" hidden>
+              <a id="materialsDownloadStandardPdf" role="menuitem" href="/api/start-stop/pdf?kind=standard">下载原始数据图集</a>
+              <a id="materialsDownloadWaterPdf" role="menuitem" href="/api/start-stop/pdf?kind=water">下载水位补偿图集</a>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <main class="start-stop-main config-main materials-main">
+        <section id="materialsNotice" class="workspace-notice" role="alert" aria-live="polite" hidden></section>
+
+        <section class="panel config-editor-panel">
+          <div class="config-editor-heading">
+            <div>
+              <span class="eyebrow">Persistent atlas configuration</span>
+              <h2>材料表</h2>
+              <p>星标用于长期收藏关键材料；“入图”只决定 PDF 总结图集和默认曲线集，二者互不影响。</p>
+            </div>
+            <div class="config-editor-state">
+              <span class="config-meta-chip">材料 <strong id="materialsCount">—</strong></span>
+              <span class="config-meta-chip favorite-meta-chip">已收藏 <strong id="materialsFavoriteCount">—</strong></span>
+              <span class="config-meta-chip">已入图 <strong id="materialsIncludedCount">—</strong></span>
+              <span class="config-meta-chip">新增或已变 <strong id="materialsChangedCount">—</strong></span>
+              <span class="config-meta-chip">配置 <strong id="materialsRevision">—</strong><small id="materialsUpdatedAt">正在读取时间</small></span>
+              <span id="materialsDirtyBadge" class="dirty-badge" hidden>有未保存修改</span>
+            </div>
+          </div>
+
+          <div class="config-toolbar">
+            <label class="search-box config-search">
+              <span class="sr-only">搜索材料</span>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+              <input id="materialsSearch" type="search" placeholder="搜索绘图名、自动名、备注或路径">
+            </label>
+            <select id="materialsFilter" aria-label="材料配置筛选">
+              <option value="all">全部材料</option>
+              <option value="favorite">已收藏材料</option>
+              <option value="included">已进入图集</option>
+              <option value="excluded">未进入图集</option>
+              <option value="changed">新增或数据已更新</option>
+            </select>
+            <select id="materialsSort" aria-label="材料配置排序">
+              <option value="favorites_first">收藏优先</option>
+              <option value="source_order">数据源顺序</option>
+              <option value="name_asc">材料名称 A–Z</option>
+            </select>
+            <button id="includeVisibleMaterials" class="local-write-only" type="button">可见材料全部入图</button>
+            <button id="excludeVisibleMaterials" class="local-write-only" type="button">可见材料全部不入图</button>
+            <span id="visibleMaterialsCount" role="status">—</span>
+          </div>
+
+          <div class="config-table-head" aria-hidden="true">
+            <span>收藏 / 数据来源与接续顺序</span>
+            <span>完整绘图名称</span>
+            <span>备注</span>
+            <span>入图</span>
+          </div>
+          <div id="materialsList" class="config-material-list" aria-busy="true">
+            <div class="start-stop-loading">正在读取材料库…</div>
+          </div>
+
+          <footer class="config-save-bar">
+            <div>
+              <strong id="materialsSaveState" role="status" aria-live="polite">材料配置已保存</strong>
+              <span>颜色与线型由绘图器按当前分析顺序自动分配；PDF 叠加图的同色最多使用两种线型。</span>
+            </div>
+            <div class="config-save-actions local-write-only">
+              <button id="reloadMaterials" class="secondary-outline-button" type="button">放弃未保存修改</button>
+              <button id="saveMaterials" class="secondary-outline-button" type="button">仅保存</button>
+              <button id="saveMaterialsAndRender" class="primary-button" type="button">保存并更新平台分析</button>
+            </div>
+          </footer>
+        </section>
+      </main>
+    </div>
+  </div>
+  <script src="/static/start-stop-materials.js"></script>
+</body>
+</html>

@@ -1,0 +1,165 @@
+services:
+  local:
+    environment:
+      START_STOP_BACKUP_STATUS_FILE: /app/state/backup-status/scheduled-backup-status.json
+    volumes:
+      # Keep the multi-gigabyte SQLite repository on Docker Desktop's native
+      # Linux filesystem instead of a Windows bind mount.  This avoids shared
+      # mmap/WAL edge cases and makes database writes independent of NTFS file
+      # sharing latency.
+      - type: volume
+        source: start_stop_database
+        target: /app/state/database
+      - type: volume
+        source: backup_status
+        target: /app/state/backup-status
+        read_only: true
+    # NTFS bind mounts also expose SSH private keys with synthetic 0777
+    # permissions. OpenSSH correctly refuses those files, so stage private
+    # 0600 copies in /tmp and rewrite only the runtime collection config to
+    # reference the staged paths.
+    entrypoint:
+      - /usr/bin/tini
+      - --
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        umask 077
+        mkdir -p /tmp/start-stop-ssh
+        cp /Users/hive/.ssh/aghid_windows_codex_ed25519 /tmp/start-stop-ssh/
+        cp /Users/hive/.ssh/id_ed25519_192_168_110_155 /tmp/start-stop-ssh/
+        cp /Users/hive/.ssh/windows_192_168_110_164_ed25519 /tmp/start-stop-ssh/
+        cp /Users/hive/.ssh/known_hosts /tmp/start-stop-ssh/
+        chmod 600 /tmp/start-stop-ssh/aghid_windows_codex_ed25519
+        chmod 600 /tmp/start-stop-ssh/id_ed25519_192_168_110_155
+        chmod 600 /tmp/start-stop-ssh/windows_192_168_110_164_ed25519
+        chmod 600 /tmp/start-stop-ssh/known_hosts
+        sed 's#/Users/hive/.ssh/#/tmp/start-stop-ssh/#g' \
+          /app/docker/collection-config.json \
+          > /tmp/collection-config.windows.json
+        exec python3 /app/start_stop_service.py "$@"
+      - start-stop-service
+    command:
+      - --container-mode
+      - --bind
+      - 0.0.0.0
+      - --port
+      - "8787"
+      - --public-host
+      - 127.0.0.1
+      - --public-port
+      - ${ECHEM_LOCAL_PORT:-18787}
+      - --database
+      - /app/state/database/start-stop.sqlite3
+      - --analysis-dir
+      - /app/state/published-cache/current
+      - --analysis-script
+      - /app/start_stop_analysis/analyze_and_plot_start_stop.py
+      - --collection-config
+      - /tmp/collection-config.windows.json
+      - --workstation-state-file
+      - /app/state/published-cache/workstation-monitor.json
+      - --scratch-dir
+      - /app/scratch
+      - --backup-dir
+      - /app/state/backups
+      - --estimated-output-bytes
+      - "400000000"
+
+  backup-scheduler:
+    image: ${ECHEM_IMAGE_REPOSITORY:-start-stop-analysis}:${ECHEM_IMAGE_TAG:-0.6.0-dev.7.2-windows}
+    container_name: start-stop-analysis-backup-scheduler
+    restart: unless-stopped
+    user: "501:20"
+    read_only: true
+    network_mode: none
+    cpus: ${ECHEM_BACKUP_CPU_LIMIT:-1.0}
+    mem_limit: ${ECHEM_BACKUP_MEMORY_LIMIT:-512m}
+    pids_limit: ${ECHEM_BACKUP_PIDS_LIMIT:-64}
+    stop_grace_period: 90s
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: ${ECHEM_LOG_MAX_SIZE:-10m}
+        max-file: ${ECHEM_LOG_MAX_FILES:-5}
+    environment:
+      PYTHONFAULTHANDLER: "1"
+      PYTHONUNBUFFERED: "1"
+      TZ: Asia/Shanghai
+    entrypoint:
+      - python3
+      - /app/scripts/run_start_stop_backup_scheduler.py
+    command:
+      - --database
+      - /app/state/database/start-stop.sqlite3
+      - --backup-dir
+      - /app/state/backups
+      - --status-file
+      - /app/state/backup-status/scheduled-backup-status.json
+      - --anchor-local
+      - "${ECHEM_BACKUP_SCHEDULE_ANCHOR:-2026-08-30T03:00:00+08:00}"
+      - --window-minutes
+      - "15"
+      - --poll-seconds
+      - "300"
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    volumes:
+      - type: volume
+        source: start_stop_database
+        target: /app/state/database
+        read_only: true
+      - type: bind
+        source: ${ECHEM_BACKUP_DIR:-./state/docker/backups}
+        target: /app/state/backups
+        bind:
+          create_host_path: false
+      - type: volume
+        source: backup_status
+        target: /app/state/backup-status
+
+  lan-readonly:
+    # The Windows-hosted LAN page is intentionally public inside the scoped
+    # laboratory subnet. The service remains read-only and rejects every
+    # write route before consuming a request body.
+    command:
+      - --container-mode
+      - --lan-read-only
+      - --lan-no-auth
+      - --bind
+      - 0.0.0.0
+      - --port
+      - "8787"
+      - --public-host
+      - ${ECHEM_LAN_IP:-192.168.110.225}
+      - --public-port
+      - ${ECHEM_LAN_PORT:-18788}
+      - --database
+      - /tmp/start-stop-lan.sqlite3
+      - --cv-eis-database
+      - /app/state/database-readonly/start-stop.sqlite3
+      - --analysis-dir
+      - /app/state/published-cache/current
+      - --collection-config
+      - /app/docker/collection-config.json
+      - --workstation-state-file
+      - /app/state/published-cache/workstation-monitor.json
+      - --scratch-dir
+      - /tmp/start-stop-lan-scratch
+    volumes:
+      - type: volume
+        source: start_stop_database
+        target: /app/state/database-readonly
+        read_only: true
+
+volumes:
+  start_stop_database:
+    name: ${ECHEM_DATABASE_VOLUME_NAME:-start-stop-analysis-database}
+  backup_status:
+    name: ${ECHEM_BACKUP_STATUS_VOLUME_NAME:-start-stop-analysis-backup-status}
+    external: true

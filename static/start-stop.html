@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>启停分析 · Start–stop Studio</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%2317212b'/%3E%3Cpath d='M10 38c8-24 16 20 24-8s14 16 20-10' fill='none' stroke='%237ee2d7' stroke-width='5' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/workbench.css">
+  <link rel="stylesheet" href="/static/start-stop.css">
+  <script src="/static/start-stop-shell.js"></script>
+</head>
+<body class="start-stop-app start-stop-repository-mode">
+  <div class="workbench-shell">
+    <aside id="workbenchSidebar" class="workbench-sidebar">
+      <div class="workbench-sidebar-head">
+        <a id="workbenchBrand" class="workbench-brand" href="/start-stop" aria-label="返回启停数据分析首页">
+          <div class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 48 48" role="img">
+              <path d="M8 28c5-15 10 14 16-4s11 10 16-6"/>
+              <circle cx="8" cy="28" r="3"/>
+              <circle cx="40" cy="18" r="3"/>
+            </svg>
+          </div>
+          <div>
+            <strong id="workbenchBrandTitle">Start–stop Studio</strong>
+            <span id="workbenchBrandSubtitle">启停数据分析</span>
+          </div>
+        </a>
+        <button id="workbenchSidebarToggle" class="workbench-sidebar-toggle" type="button" aria-controls="workbenchNavigation" aria-expanded="true" aria-label="收起侧边栏">
+          <span class="workbench-sidebar-toggle-icon" aria-hidden="true">‹</span>
+          <span class="workbench-sidebar-toggle-label">收起</span>
+        </button>
+      </div>
+
+      <div class="workbench-environment">
+        <div>
+          <strong id="workbenchEnvironmentTitle">Docker 独立程序</strong>
+          <small id="workbenchEnvironmentNote">原始字节入库 · SHA-256 可追溯</small>
+          <span id="workbenchVersion" class="workbench-version-badge" role="status">版本读取中</span>
+        </div>
+      </div>
+
+      <nav id="workbenchNavigation" class="workbench-navigation" aria-label="启停数据功能">
+        <span class="workbench-nav-label">Start–stop analysis</span>
+        <a id="startStopConfigNavItem" class="workbench-nav-item" data-config-route href="/start-stop" aria-label="01 运行与绘图配置" title="运行与绘图配置">
+          <span id="startStopConfigNavNumber" class="workbench-nav-number">01</span>
+          <span class="workbench-nav-copy">
+            <strong>运行与绘图配置</strong>
+            <small>数据、实验机与绘图规则</small>
+          </span>
+        </a>
+        <a id="startStopWorkstationsNavItem" class="workbench-nav-item" data-workstations-route href="/start-stop/workstations" aria-label="02 工作站监控" title="工作站监控">
+          <span id="startStopWorkstationsNavNumber" class="workbench-nav-number">02</span>
+          <span class="workbench-nav-copy">
+            <strong>工作站监控</strong>
+            <small>六个工作站与当前材料</small>
+          </span>
+        </a>
+        <a id="startStopNavItem" class="workbench-nav-item" data-analysis-route href="/start-stop/analysis" aria-current="page" aria-label="03 启停分析" title="启停分析">
+          <span id="startStopNavNumber" class="workbench-nav-number">03</span>
+          <span class="workbench-nav-copy">
+            <strong>启停分析</strong>
+            <small>选线、高亮与交互检查</small>
+          </span>
+        </a>
+        <a id="startStopCvEisNavItem" class="workbench-nav-item" data-cv-eis-route href="/start-stop/cv-eis" aria-label="04 CV–EIS 分析" title="CV–EIS 分析">
+          <span id="startStopCvEisNavNumber" class="workbench-nav-number">04</span>
+          <span class="workbench-nav-copy">
+            <strong>CV–EIS 分析</strong>
+            <small>过电位、Rs 与 iR 补偿</small>
+          </span>
+        </a>
+        <a id="startStopMaterialsNavItem" class="workbench-nav-item" data-materials-route href="/start-stop/materials" aria-label="05 材料库" title="材料库">
+          <span id="startStopMaterialsNavNumber" class="workbench-nav-number">05</span>
+          <span class="workbench-nav-copy">
+            <strong>材料库</strong>
+            <small>全名、备注与入图范围</small>
+          </span>
+        </a>
+      </nav>
+
+      <div class="workbench-utility-dock">
+        <div class="workbench-mini-status">
+          <strong id="sidebarStartStopState">正在读取状态</strong>
+          <small>启停数据工作区</small>
+        </div>
+      </div>
+    </aside>
+
+    <div class="workbench-content">
+      <header class="topbar workbench-topbar start-stop-topbar">
+        <div class="workbench-page-heading">
+          <span class="eyebrow">Start–stop / Interactive analysis</span>
+          <h1>启停分析</h1>
+          <p>临时选择材料，检查高亮曲线、异常点与水位补偿结果</p>
+        </div>
+        <div class="top-actions start-stop-actions">
+          <a class="secondary-outline-button action-link" data-config-route href="/start-stop">返回运行配置</a>
+          <button id="printCurrentView" class="export-button" type="button">导出当前检查视图</button>
+        </div>
+      </header>
+
+      <main class="start-stop-main">
+        <section id="workspaceNotice" class="workspace-notice" role="alert" hidden></section>
+
+        <section id="liveComparisonBanner" class="live-comparison-banner" aria-labelledby="liveComparisonTitle" hidden>
+          <div>
+            <span class="eyebrow">Live comparison</span>
+            <h2 id="liveComparisonTitle">正在测试曲线已并入 03 启停分析</h2>
+            <p id="liveComparisonMeta">正在读取最近一次正式规则计算快照…</p>
+          </div>
+          <div class="live-comparison-actions">
+            <span id="liveComparisonState" class="live-comparison-state" role="status" aria-live="polite">正在读取</span>
+            <button id="refreshLiveComparison" class="secondary-outline-button" type="button">读取最新快照</button>
+            <a class="secondary-outline-button action-link" data-config-route href="/start-stop#livePreviewPanel">预览设置</a>
+          </div>
+        </section>
+
+        <section class="start-stop-workspace">
+          <aside class="panel material-panel inspection-material-panel">
+            <div class="panel-heading material-heading">
+              <div>
+                <span class="eyebrow">Inspection selection</span>
+                <h2>曲线选择与检查</h2>
+              </div>
+              <a class="panel-text-link" data-materials-route href="/start-stop/materials">编辑材料库</a>
+            </div>
+
+            <label class="search-box material-search">
+              <span class="sr-only">搜索材料</span>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+              <input id="materialSearch" type="search" placeholder="搜索完整材料名或路径">
+            </label>
+
+            <label class="start-stop-step-filter" for="startStopStepFilter">
+              <span>
+                <strong>启停工步</strong>
+                <small>一次只比较同一工步</small>
+              </span>
+              <select id="startStopStepFilter" aria-describedby="startStopStepSummary" disabled>
+                <option value="">正在读取工步…</option>
+              </select>
+            </label>
+            <p id="startStopStepSummary" class="start-stop-step-summary" role="status" aria-live="polite">正在核对启停类型、电流与阶段时长</p>
+
+            <div class="material-facet-grid" aria-label="材料属性筛选">
+              <fieldset class="material-facet-group">
+                <legend>工艺</legend>
+                <label class="material-filter-chip"><input type="checkbox" value="pulse" data-process-filter><span>脉冲</span></label>
+                <label class="material-filter-chip"><input type="checkbox" value="constant" data-process-filter><span>恒流</span></label>
+              </fieldset>
+              <fieldset class="material-facet-group">
+                <legend>元素 <small>多选为同时包含</small></legend>
+                <label class="material-filter-chip"><input type="checkbox" value="Ni" data-element-filter><span>Ni</span></label>
+                <label class="material-filter-chip"><input type="checkbox" value="Mo" data-element-filter><span>Mo</span></label>
+                <label class="material-filter-chip"><input type="checkbox" value="P" data-element-filter><span>P</span></label>
+                <label class="material-filter-chip"><input type="checkbox" value="Co" data-element-filter><span>Co</span></label>
+              </fieldset>
+            </div>
+
+            <div class="material-filter-row">
+              <select id="materialFilter" aria-label="材料筛选">
+                <option value="all">全部材料</option>
+                <option value="favorite">已收藏材料</option>
+                <option value="included">已进入图集</option>
+                <option value="excluded">未进入图集</option>
+                <option value="changed">新增或数据已更新</option>
+              </select>
+              <button id="selectIncludedForChart" type="button">检查入图材料</button>
+            </div>
+
+            <label class="material-sort-row" for="materialSort">
+              <span>列表排序</span>
+              <select id="materialSort">
+                <option value="favorites_first">收藏优先</option>
+                <option value="default">默认顺序</option>
+                <option value="updated_desc">更新日期：最新优先</option>
+                <option value="updated_asc">更新日期：最早优先</option>
+                <option value="cycles_desc">循环圈数：多到少</option>
+                <option value="cycles_asc">循环圈数：少到多</option>
+              </select>
+            </label>
+
+            <div class="material-filter-summary">
+              <span id="materialFilterSummary" role="status" aria-live="polite">正在统计筛选结果</span>
+              <button id="clearMaterialFilters" type="button">清除其他筛选</button>
+            </div>
+
+            <div class="material-selection-actions" role="group" aria-label="交互图材料选择">
+              <button id="selectAllForChart" type="button">全选检查</button>
+              <button id="clearAllForChart" type="button">清空检查</button>
+              <span id="selectedSeriesMetric" role="status">已选 0 / 0</span>
+            </div>
+
+            <div class="material-table-head" aria-hidden="true">
+              <span>检查</span>
+              <span>已保存的材料名与状态</span>
+            </div>
+            <div id="materialList" class="material-list" aria-busy="true">
+              <div class="start-stop-loading">正在读取可检查曲线…</div>
+            </div>
+            <div class="inspection-selection-note">
+              <strong id="inspectionSelectionTitle">此处选择只用于当前检查</strong>
+              <span id="inspectionSelectionCopy">“全选检查”不会改变总结图集的入图配置。</span>
+            </div>
+          </aside>
+
+          <section class="chart-column">
+            <article class="panel chart-workspace-panel">
+              <div class="chart-workspace-heading">
+                <div>
+                  <span class="eyebrow">Interactive inspection</span>
+                  <h2 id="chartTitle">阴极段稳态电位</h2>
+                  <p id="chartSubtitle">方波启停取阶段最后 1 s 中位数；ADT 取末点</p>
+                </div>
+                <div class="chart-state-actions">
+                  <button id="clearHighlights" type="button">清除高亮</button>
+                  <button id="showOnlyHighlights" type="button" aria-pressed="false">仅看高亮</button>
+                </div>
+              </div>
+
+              <div class="chart-tabs" role="group" aria-label="启停图表类型">
+                <button class="chart-tab" type="button" data-metric="cathodic" aria-pressed="true">阴极性能走势</button>
+                <button class="chart-tab" type="button" data-metric="negative_shift" aria-pressed="false">阴极电位负移</button>
+                <button class="chart-tab" type="button" data-metric="reverse" aria-pressed="false">恢复段电位</button>
+                <button class="chart-tab" type="button" data-metric="minimum_time" aria-pressed="false">异常判断</button>
+                <button class="chart-tab" type="button" data-metric="overview" aria-pressed="false">全程电位</button>
+              </div>
+
+              <div class="chart-toolbar">
+                <label>
+                  曲线
+                  <select id="compensationMode">
+                    <option value="raw">原始实测电位</option>
+                    <option value="water">水位补偿后</option>
+                    <option value="compare">原始与补偿对照</option>
+                  </select>
+                </label>
+                <label>
+                  横轴
+                  <select id="xAxisMode">
+                    <option value="cycle">循环数</option>
+                    <option value="time">累计时间</option>
+                  </select>
+                </label>
+                <label class="toolbar-checkbox">
+                  <input id="showAnomalyMarkers" type="checkbox" checked>
+                  <span>显示正常 / 异常点</span>
+                </label>
+                <div class="chart-zoom-controls" role="group" aria-label="图表缩放与平移">
+                  <button id="inspectMode" class="chart-tool-button" type="button" aria-pressed="true" title="点击曲线高亮，触摸时可正常滚动页面">检查</button>
+                  <button id="zoomSelectMode" class="chart-tool-button" type="button" aria-pressed="false" title="在图中拖拽一个区域进行放大">框选</button>
+                  <button id="panMode" class="chart-tool-button" type="button" aria-pressed="false" title="拖拽图表查看相邻区域">平移</button>
+                  <span class="chart-tool-separator" aria-hidden="true"></span>
+                  <button id="zoomOut" class="chart-tool-button chart-tool-icon" type="button" aria-label="缩小图表" title="缩小">−</button>
+                  <span id="zoomLevel" class="chart-zoom-level" role="status" aria-live="polite">100%</span>
+                  <button id="zoomIn" class="chart-tool-button chart-tool-icon" type="button" aria-label="放大图表" title="放大">＋</button>
+                  <button id="resetZoom" class="chart-tool-button" type="button" disabled>复位</button>
+                </div>
+                <span id="visibleSeriesCount" class="visible-series-count">—</span>
+              </div>
+
+              <p id="chartInteractionHint" class="chart-interaction-hint">
+                轻点图表后滚轮 / 触控板缩放 · “框选”后拖出区域放大 · “平移”后拖动查看 · 双击或按 0 复位 · 网页为下采样预览
+              </p>
+
+              <div id="chartFrame" class="start-stop-chart-frame chart-mode-inspect" role="group" tabindex="0" aria-labelledby="chartTitle" aria-describedby="chartSubtitle chartInteractionHint">
+                <svg id="startStopChart" role="img" aria-label="启停数据交互曲线图"></svg>
+                <div id="chartEmpty" class="start-stop-chart-empty">请从左侧选择要检查的材料</div>
+                <div id="chartTooltip" class="chart-tooltip" hidden></div>
+                <div id="zoomSelection" class="chart-zoom-selection" hidden aria-hidden="true"></div>
+              </div>
+              <div id="chartLegend" class="chart-legend" aria-label="曲线图例"></div>
+            </article>
+
+            <section class="inspection-grid">
+              <article class="panel rule-panel">
+                <div class="panel-heading">
+                  <div>
+                    <span class="eyebrow">Calculation rules</span>
+                    <h2>当前计算规则</h2>
+                  </div>
+                  <span class="rule-lock-chip">已锁定</span>
+                </div>
+                <dl class="rule-list">
+                  <div><dt>电位基准</dt><dd id="potentialBasisRule">原始实测电位 vs Hg/HgO（不做参比换算）</dd></div>
+                  <div><dt>阴极末端</dt><dd id="endpointRule">最后 1 s 中位数</dd></div>
+                  <div><dt>异常分界</dt><dd id="anomalyRule">最低点 &lt;15 s 异常，≥15 s 正常</dd></div>
+                  <div><dt>水位补偿</dt><dd id="waterRule">NiMo 参照尾段</dd></div>
+                </dl>
+              </article>
+
+              <article class="panel highlighted-panel">
+                <div class="panel-heading">
+                  <div>
+                    <span class="eyebrow">Highlighted lines</span>
+                    <h2>高亮检查</h2>
+                  </div>
+                  <span id="highlightCount" class="highlight-count">0 / 16</span>
+                </div>
+                <div id="highlightDetails" class="highlight-details">
+                  <p>点击曲线、图例或材料行的“高亮”即可固定检查，最多 16 条。</p>
+                </div>
+              </article>
+            </section>
+          </section>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <script src="/static/start-stop.js"></script>
+</body>
+</html>

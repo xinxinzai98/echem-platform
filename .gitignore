@@ -12,6 +12,8 @@ runtime/
 packages/
 logs/
 config.local.json
+.env
+.env.*.local
 private_data/
 private_fixtures/
 inventory/

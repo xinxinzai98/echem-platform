@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>CV–EIS 分析 · Start–stop Studio</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%2317212b'/%3E%3Cpath d='M10 38c8-24 16 20 24-8s14 16 20-10' fill='none' stroke='%237ee2d7' stroke-width='5' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/workbench.css">
+  <link rel="stylesheet" href="/static/start-stop.css">
+  <link rel="stylesheet" href="/static/start-stop-cv-eis.css">
+  <script src="/static/start-stop-shell.js"></script>
+</head>
+<body class="start-stop-app start-stop-repository-mode">
+  <div class="workbench-shell">
+    <aside id="workbenchSidebar" class="workbench-sidebar">
+      <div class="workbench-sidebar-head">
+        <a id="cvEisWorkbenchBrand" class="workbench-brand" href="/start-stop" aria-label="返回启停运行配置">
+          <div class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 48 48" role="img">
+              <path d="M8 28c5-15 10 14 16-4s11 10 16-6"/>
+              <circle cx="8" cy="28" r="3"/>
+              <circle cx="40" cy="18" r="3"/>
+            </svg>
+          </div>
+          <div>
+            <strong>Start–stop Studio</strong>
+            <span>启停数据分析</span>
+          </div>
+        </a>
+        <button id="workbenchSidebarToggle" class="workbench-sidebar-toggle" type="button" aria-controls="workbenchNavigation" aria-expanded="true" aria-label="收起侧边栏">
+          <span class="workbench-sidebar-toggle-icon" aria-hidden="true">‹</span>
+          <span class="workbench-sidebar-toggle-label">收起</span>
+        </button>
+      </div>
+
+      <div class="workbench-environment">
+        <div>
+          <strong id="cvEisEnvironmentTitle">Docker 独立程序</strong>
+          <small id="cvEisEnvironmentNote">原始字节入库 · SHA-256 可追溯</small>
+          <span id="workbenchVersion" class="workbench-version-badge" role="status">版本读取中</span>
+        </div>
+      </div>
+
+      <nav id="workbenchNavigation" class="workbench-navigation" aria-label="启停数据功能">
+        <a id="startStopConfigNavItem" class="workbench-nav-item" data-config-route href="/start-stop" aria-label="01 运行与绘图配置" title="运行与绘图配置">
+          <span id="startStopConfigNavNumber" class="workbench-nav-number">01</span>
+          <span class="workbench-nav-copy"><strong>运行与绘图配置</strong><small>数据、实验机与绘图规则</small></span>
+        </a>
+        <a id="startStopWorkstationsNavItem" class="workbench-nav-item" data-workstations-route href="/start-stop/workstations" aria-label="02 工作站监控" title="工作站监控">
+          <span id="startStopWorkstationsNavNumber" class="workbench-nav-number">02</span>
+          <span class="workbench-nav-copy"><strong>工作站监控</strong><small>六个工作站与当前材料</small></span>
+        </a>
+        <a id="startStopNavItem" class="workbench-nav-item" data-analysis-route href="/start-stop/analysis" aria-label="03 启停分析" title="启停分析">
+          <span id="startStopNavNumber" class="workbench-nav-number">03</span>
+          <span class="workbench-nav-copy"><strong>启停分析</strong><small>曲线检查、高亮与缩放</small></span>
+        </a>
+        <a id="startStopCvEisNavItem" class="workbench-nav-item" data-cv-eis-route href="/start-stop/cv-eis" aria-current="page" aria-label="04 CV–EIS 分析" title="CV–EIS 分析">
+          <span id="startStopCvEisNavNumber" class="workbench-nav-number">04</span>
+          <span class="workbench-nav-copy"><strong>CV–EIS 分析</strong><small>过电位、Rs 与 iR 补偿</small></span>
+        </a>
+        <a id="startStopMaterialsNavItem" class="workbench-nav-item" data-materials-route href="/start-stop/materials" aria-label="05 材料库" title="材料库">
+          <span id="startStopMaterialsNavNumber" class="workbench-nav-number">05</span>
+          <span class="workbench-nav-copy"><strong>材料库</strong><small>全名、备注与入图范围</small></span>
+        </a>
+      </nav>
+
+      <div class="workbench-utility-dock">
+        <div class="workbench-mini-status">
+          <strong id="sidebarCvEisState">正在检查 CV/EIS</strong>
+          <small>同材料配对与质量门槛</small>
+        </div>
+      </div>
+    </aside>
+
+    <div class="workbench-content">
+      <header class="topbar workbench-topbar start-stop-topbar">
+        <div class="workbench-page-heading">
+          <span class="eyebrow">Electrochemistry / CV–EIS</span>
+          <h1>CV–EIS 分析</h1>
+          <p>识别同材料 CV 与 EIS，提取高频 Rs，计算回扫过电位并绘制 90% iR 补偿曲线</p>
+        </div>
+        <div class="top-actions start-stop-actions">
+          <button id="reloadCvEis" class="secondary-outline-button" type="button">重新读取数据库</button>
+          <button id="printCvEis" class="export-button" type="button">导出当前视图</button>
+        </div>
+      </header>
+
+      <main class="start-stop-main cv-eis-main">
+        <section id="cvEisNotice" class="workspace-notice" role="alert" aria-live="polite" hidden></section>
+
+        <section class="cv-eis-metrics" aria-label="CV EIS 数据概览">
+          <article><span>可识别 CV</span><strong id="cvEisCvCount">—</strong><small>排除二进制、复制与扫速序列</small></article>
+          <article><span>可识别 EIS</span><strong id="cvEisEisCount">—</strong><small>文本导出且单位可确认</small></article>
+          <article><span>同材料配对</span><strong id="cvEisPairedCount">—</strong><small>目录、阶段与文件名配对</small></article>
+          <article class="ready"><span>可计算过电位</span><strong id="cvEisReadyCount">—</strong><small>回扫、Rs 与面积归一化齐全</small></article>
+          <article class="attention"><span>需要关注</span><strong id="cvEisAttentionCount">—</strong><small>缺 EIS、面积或质量门槛</small></article>
+        </section>
+
+        <section class="cv-eis-workspace">
+          <aside class="panel cv-eis-material-panel">
+            <div class="panel-heading">
+              <div>
+                <span class="eyebrow">Paired measurements</span>
+                <h2>材料与测试阶段</h2>
+              </div>
+              <span id="cvEisVisibleCount" class="cv-eis-count-chip">—</span>
+            </div>
+            <label class="search-box cv-eis-search">
+              <span class="sr-only">搜索 CV EIS 材料</span>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+              <input id="cvEisSearch" type="search" placeholder="搜索材料、CV、EIS 或逻辑路径">
+            </label>
+            <div class="cv-eis-filter-row">
+              <select id="cvEisStatusFilter" aria-label="计算状态筛选">
+                <option value="all">全部状态</option>
+                <option value="ready">可计算过电位</option>
+                <option value="area_required">缺少电极面积</option>
+                <option value="attention">需要关注</option>
+              </select>
+              <select id="cvEisSort" aria-label="CV EIS 排序">
+                <option value="favorite">收藏优先</option>
+                <option value="eta">所选 η 低到高</option>
+                <option value="rs">Rs 低到高</option>
+                <option value="name">材料名称</option>
+              </select>
+            </div>
+            <div id="cvEisMaterialList" class="cv-eis-material-list" aria-busy="true">
+              <div class="start-stop-loading">正在读取数据库中的 CV/EIS…</div>
+            </div>
+          </aside>
+
+          <section class="cv-eis-analysis-column">
+            <article class="panel cv-eis-chart-panel">
+              <div class="cv-eis-chart-heading">
+                <div>
+                  <span class="eyebrow">Return-scan polarization</span>
+                  <h2 id="cvEisChartTitle">请选择材料</h2>
+                  <p id="cvEisChartSubtitle">原始与 90% iR 补偿后的 CV 回扫</p>
+                </div>
+                <div class="cv-eis-chart-state">
+                  <span id="cvEisRsChip">Rs —</span>
+                  <span id="cvEisQualityChip">尚未选择</span>
+                </div>
+              </div>
+
+              <div class="cv-eis-toolbar">
+                <label><input id="showCvRaw" type="checkbox" checked><span>原始 CV</span></label>
+                <label><input id="showCvIr" type="checkbox" checked><span>90% iR 补偿</span></label>
+                <label class="cv-eis-target-control">
+                  目标电流
+                  <select id="cvEisTarget">
+                    <option value="10">10 mA/cm²</option>
+                    <option value="50">50 mA/cm²</option>
+                    <option value="100">100 mA/cm²</option>
+                    <option value="200">200 mA/cm²</option>
+                    <option value="300">300 mA/cm²</option>
+                    <option value="500">500 mA/cm²</option>
+                  </select>
+                </label>
+                <div class="cv-eis-zoom-controls" role="group" aria-label="CV 图缩放">
+                  <button id="cvEisZoomOut" type="button" aria-label="缩小 CV 图">−</button>
+                  <span id="cvEisZoomLevel">100%</span>
+                  <button id="cvEisZoomIn" type="button" aria-label="放大 CV 图">＋</button>
+                  <button id="cvEisAutoScale" type="button" disabled>自动缩放</button>
+                </div>
+              </div>
+
+              <p class="cv-eis-chart-hint">滚轮缩放 · 拖拽框选放大 · 双击或右键选择“自动缩放”恢复</p>
+              <div id="cvEisChartFrame" class="cv-eis-chart-frame" tabindex="0" role="group" aria-labelledby="cvEisChartTitle" aria-describedby="cvEisChartSubtitle">
+                <svg id="cvEisChart" role="img" aria-label="CV 回扫原始与 iR 补偿曲线"></svg>
+                <div id="cvEisChartEmpty" class="cv-eis-chart-empty">请从左侧选择可绘制的材料</div>
+                <div id="cvEisTooltip" class="cv-eis-tooltip" hidden></div>
+                <div id="cvEisZoomSelection" class="cv-eis-zoom-selection" hidden></div>
+                <div id="cvEisContextMenu" class="cv-eis-context-menu" role="menu" hidden>
+                  <button id="cvEisContextAutoScale" type="button" role="menuitem">自动缩放</button>
+                </div>
+              </div>
+              <div class="cv-eis-legend" aria-label="CV 曲线图例">
+                <span><i class="raw"></i>原始回扫</span>
+                <span><i class="ir"></i>90% iR 补偿</span>
+                <span><i class="target"></i>目标电流</span>
+              </div>
+            </article>
+
+            <section class="cv-eis-detail-grid">
+              <article class="panel cv-eis-overpotential-panel">
+                <div class="panel-heading">
+                  <div><span class="eyebrow">Overpotential lookup</span><h2>过电位</h2></div>
+                </div>
+                <div id="cvEisOverpotentialCards" class="cv-eis-overpotential-cards">
+                  <p>选择可计算材料后显示目标电流密度结果。</p>
+                </div>
+              </article>
+
+              <article class="panel cv-eis-evidence-panel">
+                <div class="panel-heading">
+                  <div><span class="eyebrow">Pairing evidence</span><h2>来源与质量</h2></div>
+                </div>
+                <dl id="cvEisEvidence" class="cv-eis-evidence-list">
+                  <div><dt>CV</dt><dd id="cvEisCvSource">—</dd></div>
+                  <div><dt>EIS</dt><dd id="cvEisEisSource">—</dd></div>
+                  <div><dt>配对</dt><dd id="cvEisPairing">—</dd></div>
+                  <div><dt>高频 Rs</dt><dd id="cvEisRsEvidence">—</dd></div>
+                  <div><dt>计算口径</dt><dd id="cvEisBasis">—</dd></div>
+                  <div><dt>质量提示</dt><dd id="cvEisWarnings">—</dd></div>
+                </dl>
+              </article>
+            </section>
+
+            <article class="panel cv-eis-rule-panel">
+              <span class="eyebrow">Locked calculation basis</span>
+              <h2>当前计算规则</h2>
+              <div class="cv-eis-rule-grid">
+                <div><span>CV 分支</span><strong>最后一次阴极转折后的回扫</strong></div>
+                <div><span>串联电阻</span><strong>从最高频向低频的首个 Z″=0 交点</strong></div>
+                <div><span>iR 补偿</span><strong>E<sub>corr</sub> = E<sub>meas</sub> − 0.90 × j × Rs</strong></div>
+                <div><span>过电位</span><strong>E<sub>RHE</sub> = E<sub>Hg/HgO</sub> + 0.9268 V</strong></div>
+              </div>
+            </article>
+          </section>
+        </section>
+      </main>
+    </div>
+  </div>
+  <script src="/static/start-stop-cv-eis.js"></script>
+</body>
+</html>

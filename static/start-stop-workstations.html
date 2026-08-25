@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>工作站监控 · Start–stop Studio</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%2317212b'/%3E%3Cpath d='M10 38c8-24 16 20 24-8s14 16 20-10' fill='none' stroke='%237ee2d7' stroke-width='5' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/workbench.css">
+  <link rel="stylesheet" href="/static/start-stop.css">
+  <link rel="stylesheet" href="/static/start-stop-workstations.css">
+  <script src="/static/start-stop-shell.js"></script>
+</head>
+<body class="start-stop-app start-stop-repository-mode">
+  <div class="workbench-shell">
+    <aside id="workbenchSidebar" class="workbench-sidebar">
+      <div class="workbench-sidebar-head">
+        <a id="workstationWorkbenchBrand" class="workbench-brand" href="/start-stop" aria-label="返回启停运行配置">
+          <div class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 48 48" role="img">
+              <path d="M8 28c5-15 10 14 16-4s11 10 16-6"/>
+              <circle cx="8" cy="28" r="3"/>
+              <circle cx="40" cy="18" r="3"/>
+            </svg>
+          </div>
+          <div>
+            <strong>Start–stop Studio</strong>
+            <span>启停数据分析</span>
+          </div>
+        </a>
+        <button id="workbenchSidebarToggle" class="workbench-sidebar-toggle" type="button" aria-controls="workbenchNavigation" aria-expanded="true" aria-label="收起侧边栏">
+          <span class="workbench-sidebar-toggle-icon" aria-hidden="true">‹</span>
+          <span class="workbench-sidebar-toggle-label">收起</span>
+        </button>
+      </div>
+
+      <div class="workbench-environment">
+        <div>
+          <strong>Docker 独立程序</strong>
+          <small>原始字节入库 · SHA-256 可追溯</small>
+          <span id="workbenchVersion" class="workbench-version-badge" role="status">版本读取中</span>
+        </div>
+      </div>
+
+      <nav id="workbenchNavigation" class="workbench-navigation" aria-label="启停数据功能">
+        <a class="workbench-nav-item" data-config-route href="/start-stop" aria-label="01 运行与绘图配置" title="运行与绘图配置">
+          <span class="workbench-nav-number">01</span>
+          <span class="workbench-nav-copy"><strong>运行与绘图配置</strong><small>数据、实验机与绘图规则</small></span>
+        </a>
+        <a class="workbench-nav-item" data-workstations-route href="/start-stop/workstations" aria-current="page" aria-label="02 工作站监控" title="工作站监控">
+          <span class="workbench-nav-number">02</span>
+          <span class="workbench-nav-copy"><strong>工作站监控</strong><small>六个工作站与当前材料</small></span>
+        </a>
+        <a class="workbench-nav-item" data-analysis-route href="/start-stop/analysis" aria-label="03 启停分析" title="启停分析">
+          <span class="workbench-nav-number">03</span>
+          <span class="workbench-nav-copy"><strong>启停分析</strong><small>曲线检查、高亮与缩放</small></span>
+        </a>
+        <a class="workbench-nav-item" data-cv-eis-route href="/start-stop/cv-eis" aria-label="04 CV–EIS 分析" title="CV–EIS 分析">
+          <span class="workbench-nav-number">04</span>
+          <span class="workbench-nav-copy"><strong>CV–EIS 分析</strong><small>过电位、Rs 与 iR 补偿</small></span>
+        </a>
+        <a class="workbench-nav-item" data-materials-route href="/start-stop/materials" aria-label="05 材料库" title="材料库">
+          <span class="workbench-nav-number">05</span>
+          <span class="workbench-nav-copy"><strong>材料库</strong><small>全名、备注与入图范围</small></span>
+        </a>
+      </nav>
+
+      <div class="workbench-utility-dock">
+        <div class="workbench-mini-status">
+          <strong id="workstationSidebarState">正在读取监控</strong>
+          <small>服务器只读缓存</small>
+        </div>
+      </div>
+    </aside>
+
+    <div class="workbench-content">
+      <header class="topbar workbench-topbar start-stop-topbar workstation-topbar">
+        <div class="workbench-page-heading">
+          <span class="eyebrow">Start–stop / Workstation monitor</span>
+          <h1>六台工作站运行状态</h1>
+          <p>绿色正在运行，灰色空闲，红色离线；不用翻页就能看完六台工作站</p>
+        </div>
+        <div class="top-actions start-stop-actions">
+          <span id="monitorAutoRefresh" class="monitor-auto-refresh" role="status">每 10 秒刷新显示</span>
+          <button id="refreshWorkstations" class="secondary-outline-button" type="button">刷新显示</button>
+        </div>
+      </header>
+
+      <main class="start-stop-main workstation-main">
+        <section id="workstationNotice" class="workspace-notice" role="alert" aria-live="polite" hidden></section>
+
+        <section class="station-overview" aria-labelledby="stationOverviewTitle">
+          <div class="station-overview-count">
+            <span class="eyebrow">Live now</span>
+            <div><strong id="runningStationMetric">—</strong><span> / 6 正在运行</span></div>
+          </div>
+          <div class="station-overview-meta">
+            <span id="monitorOverallState" class="monitor-state-chip loading" role="status" aria-live="polite">正在读取</span>
+            <p><span id="monitorUpdatedMetric">—</span> · <span id="monitorFreshnessDetail">读取中</span></p>
+          </div>
+          <div class="station-status-legend" aria-label="状态颜色说明">
+            <span class="running"><i aria-hidden="true"></i>运行中</span>
+            <span class="idle"><i aria-hidden="true"></i>空闲</span>
+            <span class="attention"><i aria-hidden="true"></i>需检查</span>
+            <span class="offline"><i aria-hidden="true"></i>离线</span>
+          </div>
+        </section>
+
+        <section aria-labelledby="stationOverviewTitle">
+          <h2 id="stationOverviewTitle" class="visually-hidden">六台工作站当前状态</h2>
+          <div id="workstationStationGrid" class="workstation-station-overview-grid" aria-live="polite" aria-busy="true">
+            <div class="start-stop-loading">正在读取六台工作站…</div>
+          </div>
+        </section>
+
+        <p class="station-assignment-boundary">
+          <span aria-hidden="true">i</span>
+          运行状态来自文件连续写入；同一电脑的两个任务按活动文件排序展示，尚未绑定具体 COM 口。
+        </p>
+
+        <section id="livePreviewOverview" class="live-preview-overview" aria-labelledby="livePreviewOverviewTitle">
+          <div class="live-preview-heading">
+            <div>
+              <span class="eyebrow">Five-minute snapshots</span>
+              <h2 id="livePreviewOverviewTitle">正在写入的数据预览</h2>
+              <p id="livePreviewDescription">开启后每 5 分钟抓取一次只读快照，只显示完整数据行；电位保持文件中的 Hg/HgO 原始标尺。</p>
+            </div>
+            <div class="live-preview-heading-actions">
+              <span id="livePreviewStatus" class="monitor-state-chip loading" role="status" aria-live="polite">正在读取</span>
+              <a class="secondary-outline-button" href="/start-stop#livePreviewPanel">预览设置</a>
+            </div>
+          </div>
+          <div id="livePreviewGrid" class="live-preview-grid" aria-live="polite" aria-busy="true">
+            <div class="start-stop-loading">正在读取实时预览…</div>
+          </div>
+        </section>
+
+        <details class="workstation-details-panel">
+          <summary>查看电脑、串口和最近文件详情</summary>
+          <section id="workstationMachineList" class="workstation-machine-list" aria-busy="true" aria-label="三台实验电脑详细信息">
+            <div class="start-stop-loading">正在读取详细信息…</div>
+          </section>
+        </details>
+      </main>
+    </div>
+  </div>
+  <script src="/static/start-stop-workstations.js"></script>
+</body>
+</html>

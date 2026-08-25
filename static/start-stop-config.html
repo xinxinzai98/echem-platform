@@ -1,0 +1,408 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>运行与绘图配置 · Start–stop Studio</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%2317212b'/%3E%3Cpath d='M10 38c8-24 16 20 24-8s14 16 20-10' fill='none' stroke='%237ee2d7' stroke-width='5' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/workbench.css">
+  <link rel="stylesheet" href="/static/start-stop.css">
+  <link rel="stylesheet" href="/static/start-stop-config.css">
+  <script src="/static/start-stop-shell.js"></script>
+</head>
+<body class="start-stop-app start-stop-repository-mode">
+  <div class="workbench-shell">
+    <aside id="workbenchSidebar" class="workbench-sidebar">
+      <div class="workbench-sidebar-head">
+        <a id="workbenchBrand" class="workbench-brand" href="/start-stop" aria-label="返回启停运行配置">
+          <div class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 48 48" role="img">
+              <path d="M8 28c5-15 10 14 16-4s11 10 16-6"/>
+              <circle cx="8" cy="28" r="3"/>
+              <circle cx="40" cy="18" r="3"/>
+            </svg>
+          </div>
+          <div>
+            <strong id="workbenchBrandTitle">Start–stop Studio</strong>
+            <span id="workbenchBrandSubtitle">启停数据分析</span>
+          </div>
+        </a>
+        <button id="workbenchSidebarToggle" class="workbench-sidebar-toggle" type="button" aria-controls="workbenchNavigation" aria-expanded="true" aria-label="收起侧边栏">
+          <span class="workbench-sidebar-toggle-icon" aria-hidden="true">‹</span>
+          <span class="workbench-sidebar-toggle-label">收起</span>
+        </button>
+      </div>
+
+      <div class="workbench-environment">
+        <div>
+          <strong id="workbenchEnvironmentTitle">Docker 独立程序</strong>
+          <small id="workbenchEnvironmentNote">原始字节入库 · SHA-256 可追溯</small>
+          <span id="workbenchVersion" class="workbench-version-badge" role="status">版本读取中</span>
+        </div>
+      </div>
+
+      <nav id="workbenchNavigation" class="workbench-navigation" aria-label="启停数据功能">
+        <a id="startStopConfigNavItem" class="workbench-nav-item" data-config-route href="/start-stop" aria-current="page" aria-label="01 运行与绘图配置" title="运行与绘图配置">
+          <span id="startStopConfigNavNumber" class="workbench-nav-number">01</span>
+          <span class="workbench-nav-copy"><strong>运行与绘图配置</strong><small>数据、实验机与绘图规则</small></span>
+        </a>
+        <a id="startStopWorkstationsNavItem" class="workbench-nav-item" data-workstations-route href="/start-stop/workstations" aria-label="02 工作站监控" title="工作站监控">
+          <span id="startStopWorkstationsNavNumber" class="workbench-nav-number">02</span>
+          <span class="workbench-nav-copy"><strong>工作站监控</strong><small>六个工作站与当前材料</small></span>
+        </a>
+        <a id="startStopNavItem" class="workbench-nav-item" data-analysis-route href="/start-stop/analysis" aria-label="03 启停分析" title="启停分析">
+          <span id="startStopNavNumber" class="workbench-nav-number">03</span>
+          <span class="workbench-nav-copy"><strong>启停分析</strong><small>曲线检查、高亮与缩放</small></span>
+        </a>
+        <a id="startStopCvEisNavItem" class="workbench-nav-item" data-cv-eis-route href="/start-stop/cv-eis" aria-label="04 CV–EIS 分析" title="CV–EIS 分析">
+          <span id="startStopCvEisNavNumber" class="workbench-nav-number">04</span>
+          <span class="workbench-nav-copy"><strong>CV–EIS 分析</strong><small>过电位、Rs 与 iR 补偿</small></span>
+        </a>
+        <a id="startStopMaterialsNavItem" class="workbench-nav-item" data-materials-route href="/start-stop/materials" aria-label="05 材料库" title="材料库">
+          <span id="startStopMaterialsNavNumber" class="workbench-nav-number">05</span>
+          <span class="workbench-nav-copy"><strong>材料库</strong><small>全名、备注与入图范围</small></span>
+        </a>
+      </nav>
+
+      <div class="workbench-utility-dock">
+        <div class="workbench-mini-status">
+          <strong id="sidebarConfigState">正在读取配置</strong>
+          <small>运行与绘图配置</small>
+        </div>
+      </div>
+    </aside>
+
+    <div class="workbench-content">
+      <header class="topbar workbench-topbar start-stop-topbar">
+        <div class="workbench-page-heading">
+          <span class="eyebrow">Start–stop / Runtime configuration</span>
+          <h1>运行与绘图配置</h1>
+          <p>管理数据更新、三台实验机搜索位置与绘图规则；材料重命名与入图选择已移至独立“材料库”</p>
+        </div>
+      </header>
+
+      <main class="start-stop-main config-main">
+        <section id="configNotice" class="workspace-notice" role="alert" hidden></section>
+
+        <section class="panel data-operations-panel" aria-labelledby="dataOperationsTitle">
+          <div class="data-operations-heading">
+            <div>
+              <span class="eyebrow">Data operations</span>
+              <h2 id="dataOperationsTitle">数据操作与实验机状态</h2>
+              <p>上传本地数据、从实验电脑下载更新，或按已保存配置更新平台分析。PDF 图集已移至材料库按需生成。远端文件停止写入满 5 分钟后才会安全入库。</p>
+            </div>
+            <div class="operations-status" aria-label="数据任务状态">
+              <span id="updateCapability" class="update-capability-chip checking" role="status" aria-live="polite">正在检查更新能力</span>
+              <span id="jobStatus" class="start-stop-job-chip" role="status" aria-live="polite">等待读取</span>
+            </div>
+          </div>
+
+          <div class="operations-actions" aria-label="数据操作">
+            <button id="openUpload" class="secondary-outline-button local-write-only" type="button" hidden>上传数据</button>
+            <button id="refreshData" class="secondary-outline-button local-write-only" type="button">从三台实验电脑下载并更新</button>
+            <div class="auto-update-control local-write-only" aria-label="后台自动更新">
+              <button id="toggleAutoUpdate" class="auto-update-toggle" type="button" aria-pressed="false">开启自动更新</button>
+              <label for="autoUpdateInterval">
+                周期
+                <select id="autoUpdateInterval">
+                  <option value="30">30 分钟</option>
+                  <option value="60" selected>1 小时</option>
+                  <option value="180">3 小时</option>
+                  <option value="360">6 小时</option>
+                  <option value="720">12 小时</option>
+                  <option value="1440">24 小时</option>
+                </select>
+              </label>
+            </div>
+            <div class="render-options-control local-write-only" aria-label="平台分析选项">
+              <label for="renderDataMode">
+                数据
+                <select id="renderDataMode">
+                  <option value="raw">原始数据（未补偿）</option>
+                  <option value="both" selected>原始＋水位补偿</option>
+                  <option value="water">仅水位补偿</option>
+                </select>
+              </label>
+              <label for="renderMaterialScope">
+                范围
+                <select id="renderMaterialScope">
+                  <option value="all" selected>全部材料</option>
+                  <option value="updated">仅新增／数据已更新</option>
+                </select>
+              </label>
+              <button id="renderAtlas" class="primary-button" type="button">按选择更新平台分析</button>
+            </div>
+          </div>
+
+          <section id="jobProgressPanel" class="job-progress-panel" aria-labelledby="jobProgressTitle" hidden>
+            <div class="job-progress-heading">
+              <div>
+                <span class="eyebrow">Task progress</span>
+                <h3 id="jobProgressTitle">三台实验电脑更新进度</h3>
+              </div>
+              <span id="jobProgressState" class="job-progress-state" role="status" aria-live="polite">等待开始</span>
+            </div>
+
+            <div class="job-progress-track-row">
+              <progress id="jobProgressBar" max="100" value="0" aria-labelledby="jobProgressTitle jobProgressPhase" aria-describedby="jobProgressDetail">0%</progress>
+              <strong id="jobProgressPercent" aria-hidden="true">0%</strong>
+            </div>
+
+            <ol id="jobProgressSteps" class="job-progress-steps" aria-label="重新绘图阶段" hidden></ol>
+
+            <div class="job-progress-copy">
+              <div>
+                <span>当前阶段</span>
+                <strong id="jobProgressPhase">等待任务状态</strong>
+              </div>
+              <div>
+                <span id="jobProgressCurrentLabel">当前文件</span>
+                <strong id="jobProgressCurrent">等待读取</strong>
+              </div>
+              <div>
+                <span id="jobProgressCountLabel">本阶段进度</span>
+                <strong id="jobProgressCount">尚未计数</strong>
+              </div>
+              <div>
+                <span>已用时</span>
+                <strong id="jobProgressElapsed">00:00</strong>
+              </div>
+            </div>
+
+            <p id="jobProgressDetail" class="job-progress-detail">任务开始后将显示正在扫描、计算或生成的内容。</p>
+            <div id="jobProgressSummary" class="job-progress-summary" aria-label="任务结果统计" hidden></div>
+            <div id="jobProgressMachines" class="job-progress-machines" aria-label="各实验机任务进度" hidden></div>
+            <span id="jobProgressAnnouncement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></span>
+          </section>
+
+          <section id="autoUpdatePanel" class="auto-update-panel local-write-only" aria-labelledby="autoUpdateTitle">
+            <div>
+              <span class="eyebrow">Background update</span>
+              <h3 id="autoUpdateTitle">自动更新</h3>
+              <p>默认关闭。开启后按设定周期执行增量下载并刷新材料表；不会自动重新绘图，也不会把新材料自动加入图集。</p>
+            </div>
+            <dl class="auto-update-status-grid">
+              <div><dt>当前状态</dt><dd id="autoUpdateState" role="status" aria-live="polite">正在读取</dd></div>
+              <div><dt>下次检查</dt><dd id="autoUpdateNextRun">—</dd></div>
+              <div><dt>上次结果</dt><dd id="autoUpdateLastResult">尚未自动更新</dd></div>
+            </dl>
+          </section>
+
+          <section id="livePreviewPanel" class="auto-update-panel live-preview-panel local-write-only" aria-labelledby="livePreviewTitle">
+            <div>
+              <span class="eyebrow">Live data preview</span>
+              <h3 id="livePreviewTitle">实时数据预览</h3>
+              <p>开启后立即执行一次，之后每 5 分钟识别正在写入的启停文件、抓取只读快照，并按正式启停规则识别完整循环、计算末端电位与异常、接续累计时间。结果只临时叠加到 03 启停分析，不写入正式数据库。</p>
+              <div class="live-preview-actions">
+                <button id="toggleLivePreview" class="auto-update-toggle live-preview-toggle" type="button" aria-pressed="false">开启实时预览</button>
+                <button id="plotLivePreview" class="primary-button live-preview-plot-button" type="button" aria-describedby="livePreviewPlotHint" disabled>在 03 页叠加正在测试数据</button>
+              </div>
+              <p id="livePreviewPlotHint" class="live-preview-plot-hint" role="status" aria-live="polite">等待第一份正式规则计算快照后即可叠加绘图。</p>
+            </div>
+            <dl class="auto-update-status-grid">
+              <div><dt>当前状态</dt><dd id="livePreviewState" role="status" aria-live="polite">正在读取</dd></div>
+              <div><dt>下次刷新</dt><dd id="livePreviewNextRun">—</dd></div>
+              <div><dt>最近结果</dt><dd id="livePreviewLastResult">尚未生成预览</dd></div>
+            </dl>
+          </section>
+
+          <section class="machine-connectivity" aria-labelledby="machineConnectivityTitle">
+            <div class="machine-connectivity-heading">
+              <div>
+                <h3 id="machineConnectivityTitle">三台实验机连接状态</h3>
+                <p id="machineConnectivitySummary" role="status" aria-live="polite">正在读取实验机列表…</p>
+              </div>
+              <button id="checkAllMachines" class="secondary-outline-button local-write-only" type="button">检查全部连通性</button>
+            </div>
+            <div id="machineConnectivityList" class="machine-connectivity-list" aria-live="polite" aria-busy="true">
+              <article class="machine-status-row" data-machine-id="01_测试室1_AGHID-G_192.168.110.153">
+                <div class="machine-identity"><strong>测试室 1</strong><span>AGHID-G · 192.168.110.153</span></div>
+                <span class="machine-status-pill unchecked">未检查</span>
+                <p>等待读取连接状态</p>
+                <button class="machine-check-button secondary-outline-button local-write-only" type="button" data-machine-id="01_测试室1_AGHID-G_192.168.110.153">检查连通性</button>
+              </article>
+              <article class="machine-status-row" data-machine-id="02_测试室2_AGHID-H_192.168.110.155">
+                <div class="machine-identity"><strong>测试室 2</strong><span>AGHID-H · 192.168.110.155</span></div>
+                <span class="machine-status-pill unchecked">未检查</span>
+                <p>等待读取连接状态</p>
+                <button class="machine-check-button secondary-outline-button local-write-only" type="button" data-machine-id="02_测试室2_AGHID-H_192.168.110.155">检查连通性</button>
+              </article>
+              <article class="machine-status-row" data-machine-id="03_制备室_A-9_192.168.110.164">
+                <div class="machine-identity"><strong>制备室</strong><span>A-9 · 192.168.110.164</span></div>
+                <span class="machine-status-pill unchecked">未检查</span>
+                <p>等待读取连接状态</p>
+                <button class="machine-check-button secondary-outline-button local-write-only" type="button" data-machine-id="03_制备室_A-9_192.168.110.164">检查连通性</button>
+              </article>
+            </div>
+          </section>
+
+          <span id="configAccessState" hidden>正在读取权限</span>
+        </section>
+
+        <section class="panel safety-version-panel" aria-labelledby="safetyVersionTitle">
+          <div class="safety-version-heading">
+            <div>
+              <span class="eyebrow">Data safety and provenance</span>
+              <h2 id="safetyVersionTitle">数据安全与版本</h2>
+              <p>核对当前磁盘余量、可用备份和图集封存信息；本区域只显示状态，不会更改或删除数据。</p>
+            </div>
+            <span id="safetyOverallState" class="safety-overall-state neutral" role="status" aria-live="polite" aria-atomic="true">正在读取</span>
+          </div>
+
+          <div id="safetyStatusGrid" class="safety-status-grid" aria-busy="true">
+            <article id="safetyStorageCard" class="safety-status-card" data-safety-state="neutral" aria-labelledby="safetyStorageTitle">
+              <header class="safety-status-card-heading">
+                <div>
+                  <span class="safety-card-kicker">存储</span>
+                  <h3 id="safetyStorageTitle">磁盘余量</h3>
+                </div>
+                <span id="safetyStorageState" class="safety-state-badge neutral">尚未启用</span>
+              </header>
+              <strong id="safetyStoragePrimary" class="safety-card-primary">尚未启用</strong>
+              <p id="safetyStorageDetail" class="safety-card-detail">服务器尚未提供存储安全状态。</p>
+              <p id="safetyStorageWarning" class="safety-inline-warning" hidden></p>
+            </article>
+
+            <article id="safetyBackupCard" class="safety-status-card" data-safety-state="neutral" aria-labelledby="safetyBackupTitle">
+              <header class="safety-status-card-heading">
+                <div>
+                  <span class="safety-card-kicker">备份</span>
+                  <h3 id="safetyBackupTitle">分级备份策略</h3>
+                </div>
+                <span id="safetyBackupState" class="safety-state-badge neutral">尚未启用</span>
+              </header>
+              <strong id="safetyBackupPrimary" class="safety-card-primary">尚未启用</strong>
+              <p id="safetyBackupDetail" class="safety-card-detail">服务器尚未提供备份状态。</p>
+              <p id="safetyBackupWarning" class="safety-inline-warning" hidden></p>
+            </article>
+
+            <article id="safetyProvenanceCard" class="safety-status-card" data-safety-state="neutral" aria-labelledby="safetyProvenanceTitle">
+              <header class="safety-status-card-heading">
+                <div>
+                  <span class="safety-card-kicker">版本</span>
+                  <h3 id="safetyProvenanceTitle">当前图集</h3>
+                </div>
+                <span id="safetyProvenanceState" class="safety-state-badge neutral">尚未启用</span>
+              </header>
+              <strong id="safetyProvenancePrimary" class="safety-card-primary">尚未启用</strong>
+              <p id="safetyProvenanceDetail" class="safety-card-detail">服务器尚未提供图集封存状态。</p>
+              <dl class="safety-provenance-grid" aria-label="当前图集追溯信息">
+                <div><dt>分析运行</dt><dd id="safetyAnalysisRun">尚未启用</dd></div>
+                <div><dt>数据快照</dt><dd id="safetySnapshot">尚未启用</dd></div>
+                <div><dt>配置版本</dt><dd id="safetyConfigRevision">尚未启用</dd></div>
+                <div><dt>图集世代</dt><dd id="safetyArtifactGeneration">尚未启用</dd></div>
+                <div><dt>清单校验</dt><dd id="safetyManifestHash">尚未启用</dd></div>
+                <div><dt>分析脚本</dt><dd id="safetyScriptHash">尚未启用</dd></div>
+                <div class="safety-provenance-wide"><dt>运行镜像</dt><dd id="safetyImageReference">尚未启用</dd></div>
+              </dl>
+            </article>
+          </div>
+        </section>
+
+        <section class="panel collection-config-panel" aria-labelledby="collectionConfigTitle">
+          <div class="config-editor-heading">
+            <div>
+              <span class="eyebrow">Remote search locations</span>
+              <h2 id="collectionConfigTitle">实验电脑搜索位置</h2>
+              <p>固定实验机身份不可修改；可为每台电脑添加、停用或删除多个数据目录。保存后，下次“下载并更新”将按这些位置扫描。修改或删除位置只影响以后扫描，不会删除已入库历史数据；要将历史材料移出图集，请前往材料库。</p>
+            </div>
+            <div class="config-editor-state">
+              <span class="config-meta-chip">采集配置 <strong id="collectionConfigRevision">—</strong><small id="collectionConfigUpdatedAt">正在读取</small></span>
+              <span id="collectionConfigDirtyBadge" class="dirty-badge" hidden>搜索位置未保存</span>
+            </div>
+          </div>
+          <div id="collectionConfigNotice" class="inline-config-notice" role="status" aria-live="polite" hidden></div>
+          <div id="collectionMachineList" class="collection-machine-list" aria-live="polite" aria-busy="true">
+            <div class="start-stop-loading">正在读取实验机搜索位置…</div>
+          </div>
+          <footer class="config-save-bar collection-save-bar">
+            <div>
+              <strong id="collectionConfigSaveState">搜索位置已保存</strong>
+              <span>保存只修改下次远程扫描范围，不会立即连接实验机或下载文件。</span>
+            </div>
+            <div class="config-save-actions local-write-only">
+              <button id="reloadCollectionConfig" class="secondary-outline-button" type="button">放弃修改</button>
+              <button id="saveCollectionConfig" class="primary-button" type="button">保存搜索位置</button>
+            </div>
+          </footer>
+        </section>
+
+        <section class="panel plotting-rules-panel" aria-labelledby="plottingRulesTitle">
+          <div class="config-editor-heading">
+            <div>
+              <span class="eyebrow">Plotting rules</span>
+              <h2 id="plottingRulesTitle">当前绘图规则</h2>
+              <p>以下规则应用于所有材料，点击页面上方“按已保存配置重新绘图”时生效。</p>
+            </div>
+            <a class="panel-text-link" href="/start-stop/materials">打开材料库</a>
+          </div>
+          <div class="plotting-rule-grid">
+            <article><span>电位基准</span><strong>原始实测电位 vs Hg/HgO（不做参比换算）</strong></article>
+            <article><span>阴极段偏移</span><strong>取每个阴极段最后 1 s</strong></article>
+            <article><span>异常判断</span><strong>最低点 &lt; 15 s 异常，≥ 15 s 正常</strong></article>
+            <article><span>叠加图样式</span><strong>高对比颜色，同色最多两种线形</strong></article>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <dialog id="uploadDialog" class="upload-dialog" aria-labelledby="uploadDialogTitle">
+    <div class="upload-dialog-shell">
+      <header class="upload-dialog-heading">
+        <div>
+          <span class="eyebrow">Local upload</span>
+          <h2 id="uploadDialogTitle">上传启停 / ADT 数据</h2>
+          <p>文件原始字节将写入 Docker 独立数据库，不会覆盖已有版本。</p>
+        </div>
+        <button id="closeUpload" class="dialog-close" type="button" aria-label="关闭上传窗口">×</button>
+      </header>
+
+      <div class="upload-group-field">
+        <label for="uploadGroupName">材料 / 分组文件夹名</label>
+        <input id="uploadGroupName" type="text" maxlength="120" autocomplete="off" placeholder="例如：NiFeMo-新宝石来-20260803">
+        <small>同一组中的启停文件默认按时间接续；特殊文件名仍按现有分段规则处理。</small>
+      </div>
+
+      <div id="uploadDropZone" class="upload-drop-zone" role="group" aria-label="拖放数据文件" aria-describedby="uploadDropHint">
+        <strong>将多个文件或整个文件夹拖到这里</strong>
+        <span id="uploadDropHint">也可以使用下方按钮选择；目录层级会被保留</span>
+        <div class="upload-source-actions">
+          <button id="chooseUploadFiles" class="upload-picker-button" type="button">选择多个文件</button>
+          <button id="chooseUploadFolder" class="upload-picker-button" type="button">选择整个文件夹</button>
+        </div>
+        <input id="uploadFiles" class="visually-hidden-file" type="file" multiple>
+        <input id="uploadFolder" class="visually-hidden-file" type="file" multiple webkitdirectory directory>
+      </div>
+
+      <section class="upload-queue-section" aria-labelledby="uploadQueueTitle">
+        <div class="upload-queue-heading">
+          <div>
+            <h3 id="uploadQueueTitle">待上传文件</h3>
+            <span id="uploadQueueSummary">0 个文件</span>
+          </div>
+          <button id="clearUploadQueue" type="button">清空</button>
+        </div>
+        <div id="uploadQueue" class="upload-queue" aria-live="polite"><p>尚未选择文件。</p></div>
+      </section>
+
+      <div id="uploadProgressArea" class="upload-progress-area" hidden>
+        <div>
+          <strong id="uploadProgressLabel">正在上传…</strong>
+          <span id="uploadProgressValue">0%</span>
+        </div>
+        <progress id="uploadProgress" max="100" value="0" aria-labelledby="uploadProgressLabel">0%</progress>
+      </div>
+      <div id="uploadResult" class="upload-result" role="status" aria-live="polite" hidden></div>
+
+      <footer class="upload-dialog-actions">
+        <button id="cancelUpload" class="secondary-outline-button" type="button">取消</button>
+        <button id="startUpload" class="primary-button" type="button" disabled>上传并更新材料表</button>
+      </footer>
+    </div>
+  </dialog>
+  <script src="/static/start-stop-config.js"></script>
+</body>
+</html>

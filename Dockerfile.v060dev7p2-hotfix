@@ -1,0 +1,29 @@
+FROM start-stop-analysis:0.6.0-dev.7.1-windows
+
+ARG APP_VERSION=0.6.0-dev.7.2
+ARG VCS_REF=manual-20260825
+ARG BUILD_STATE=verified-tiered-backup-policy
+
+LABEL org.opencontainers.image.version=${APP_VERSION} \
+      org.opencontainers.image.revision=${VCS_REF} \
+      io.start-stop-analysis.git-state=${BUILD_STATE}
+
+USER root
+
+COPY --chown=501:20 start_stop_service.py /app/start_stop_service.py
+COPY --chown=501:20 \
+    echem_platform/start_stop.py \
+    echem_platform/start_stop_backup.py \
+    echem_platform/start_stop_database.py \
+    /app/echem_platform/
+COPY --chown=501:20 \
+    scripts/create_start_stop_backup.py \
+    scripts/run_start_stop_backup_scheduler.py \
+    scripts/write_start_stop_backup_status.py \
+    /app/scripts/
+COPY --chown=501:20 \
+    static/start-stop-config.html \
+    static/start-stop-config.js \
+    /app/static/
+
+USER 501:20

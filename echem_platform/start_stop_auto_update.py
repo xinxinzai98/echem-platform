@@ -4,7 +4,7 @@ import datetime as dt
 import threading
 from typing import Any, Callable
 
-from .start_stop import StartStopWorkspaceError
+from .start_stop_contracts import StartStopWorkspaceError
 
 
 AUTO_UPDATE_BUSY_RETRY_MINUTES = 5

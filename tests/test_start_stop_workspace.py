@@ -3,6 +3,7 @@ from __future__ import annotations
 import concurrent.futures
 import csv
 import datetime as dt
+import hashlib
 import io
 import json
 import sys
@@ -242,6 +243,82 @@ class StartStopWorkspaceTests(unittest.TestCase):
             "print('fixture')\n",
             encoding="utf-8",
         )
+
+    def _install_raw_export_fixture(self) -> None:
+        sources = (
+            (
+                "lab/A/启停.txt",
+                "ID_GalSquareWave\n"
+                "instrument=fixture-1\n"
+                "E(V)\ti(A/cm²)\tT(s)\tComment\n"
+                "-0.500\t-0.300\t10.0\tfirst\n"
+                "-0.510\t0.030\t10.5\tsecond\n"
+                "=SUM(1,2)\tbad\tbad\tformula-like\n",
+                3,
+                2,
+            ),
+            (
+                "lab/A/启停2.txt",
+                "ID_GalSquareWave\n"
+                "instrument=fixture-2\n"
+                "E(V)\ti(A/cm²)\tT(s)\tComment\n"
+                "-0.520\t-0.300\t3.0\tthird\n"
+                "-0.530\t0.030\t3.5\tfourth\n",
+                2,
+                2,
+            ),
+        )
+        snapshot_path = self.analysis / "material_config_snapshot.json"
+        snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        snapshot["files"] = [
+            row
+            for row in snapshot["files"]
+            if row["relative_path"] != "lab/A/启停.txt"
+        ]
+        ordered_paths = []
+        for segment_index, (logical_path, text, raw_rows, valid_rows) in enumerate(
+            sources,
+            start=1,
+        ):
+            staged = self.root / f"raw-source-{segment_index}.txt"
+            content = text.encode("utf-8")
+            staged.write_bytes(content)
+            imported = self.database.import_source_path(
+                staged,
+                {
+                    "logical_path": logical_path,
+                    "last_write_ticks": segment_index,
+                    "last_write_utc": f"2026-08-02T09:3{segment_index}:00Z",
+                },
+            )
+            self.assertEqual(imported["sha256"], hashlib.sha256(content).hexdigest())
+            snapshot["files"].append(
+                {
+                    "relative_path": logical_path,
+                    "file_mtime": f"2026-08-02T09:3{segment_index}:00+08:00",
+                    "file_size_bytes": len(content),
+                    "sha256": imported["sha256"],
+                    "raw_row_count": raw_rows,
+                    "valid_row_count": valid_rows,
+                    "included_in_analysis": True,
+                    "analysis_series_id": "M01-main",
+                    "segment_index": segment_index,
+                }
+            )
+            ordered_paths.append(logical_path)
+        for material in snapshot["materials"]:
+            if material["key"] == "lab/A":
+                material["ordered_source_files"] = ordered_paths
+        write_json(snapshot_path, snapshot)
+
+        series_path = self.analysis / "series_summary_raw.csv"
+        with series_path.open("r", encoding="utf-8", newline="") as handle:
+            series_rows = list(csv.DictReader(handle))
+        for row in series_rows:
+            if row["series_id"] == "M01-main":
+                row["source_files"] = json.dumps(ordered_paths, ensure_ascii=False)
+                row["segment_count"] = 2
+        write_csv(series_path, series_rows)
 
     def test_reads_current_materials_status_and_pdf_without_exposing_paths(self):
         status = self.workspace.status()
@@ -491,6 +568,241 @@ class StartStopWorkspaceTests(unittest.TestCase):
 
         self.assertEqual(caught.exception.status, 400)
         self.assertIn("不同启停工步不能合并比较", str(caught.exception))
+
+    def test_current_highlight_exports_full_processed_excel_and_matching_pdf(self):
+        from openpyxl import load_workbook
+
+        self._install_raw_export_fixture()
+
+        arguments = {
+            "series_ids": ["M01-main"],
+            "metric": "cathodic",
+            "x_axis": "cycle",
+            "mode": "compare",
+        }
+        excel, excel_name, excel_type = self.workspace.chart_export(
+            **arguments,
+            export_format="xlsx",
+        )
+
+        self.assertFalse(
+            any(
+                path.name.startswith(".start-stop-excel-")
+                for path in self.workspace.scratch_dir.iterdir()
+            )
+        )
+
+        self.assertTrue(excel.startswith(b"PK"))
+        self.assertTrue(excel_name.endswith(".xlsx"))
+        self.assertIn("原始与处理数据", excel_name)
+        self.assertIn("spreadsheetml", excel_type)
+        workbook = load_workbook(io.BytesIO(excel), read_only=True, data_only=True)
+        self.assertEqual(
+            workbook.sheetnames,
+            [
+                "导出说明",
+                "曲线索引",
+                "原始文件索引",
+                "01_端点原始",
+                "02_端点补偿",
+                "R01_全量接续",
+            ],
+        )
+        index_rows = list(workbook["曲线索引"].iter_rows(values_only=True))
+        self.assertEqual(index_rows[1][2], "材料 A 完整名称")
+        self.assertEqual(index_rows[1][5], 2)
+        raw_rows = list(workbook["01_端点原始"].iter_rows(values_only=True))
+        water_rows = list(workbook["02_端点补偿"].iter_rows(values_only=True))
+        self.assertEqual([row[2] for row in raw_rows[1:]], [-0.51, -0.52])
+        self.assertEqual([row[2] for row in water_rows[1:]], [-0.509, -0.519])
+        self.assertEqual([row[4] for row in raw_rows[1:]], ["正常", "异常"])
+        full_raw_rows = list(
+            workbook["R01_全量接续"].iter_rows(values_only=True)
+        )
+        self.assertEqual(len(full_raw_rows), 6)
+        valid_rows = [row for row in full_raw_rows[1:] if row[11] == "有效原始点"]
+        self.assertEqual(
+            [row[7] for row in valid_rows],
+            [-0.5, -0.51, -0.52, -0.53],
+        )
+        self.assertEqual(
+            [row[9] for row in valid_rows],
+            [10.0, 10.5, 3.0, 3.5],
+        )
+        self.assertEqual(
+            [row[1] for row in valid_rows],
+            [0.0, 0.5, 1.0, 1.5],
+        )
+        self.assertEqual([row[4] for row in valid_rows], [1, 1, 2, 2])
+        self.assertEqual(full_raw_rows[3][1], None)
+        self.assertEqual(full_raw_rows[3][10], "=SUM(1,2)\tbad\tbad\tformula-like")
+        raw_file_index = list(
+            workbook["原始文件索引"].iter_rows(values_only=True)
+        )
+        self.assertEqual(len(raw_file_index), 3)
+        self.assertEqual([row[6] for row in raw_file_index[1:]], [1, 2])
+        self.assertEqual([row[22] for row in raw_file_index[1:]], [0.0, 1.0])
+        self.assertEqual([row[23] for row in raw_file_index[1:]], [0.5, 1.5])
+        workbook.close()
+
+        pdf, pdf_name, pdf_type = self.workspace.chart_export(
+            **arguments,
+            export_format="pdf",
+            show_anomaly_markers=True,
+        )
+        self.assertTrue(pdf.startswith(b"%PDF-"))
+        self.assertTrue(pdf_name.endswith(".pdf"))
+        self.assertEqual(pdf_type, "application/pdf")
+
+    def test_excel_temp_scope_closes_workbook_and_removes_private_files(self):
+        class FakeWorkbook:
+            closed = False
+
+            def close(self):
+                self.closed = True
+
+        raw_context = {
+            "series": [
+                {"files": [{"snapshot_raw_row_count": 10}]},
+            ]
+        }
+        fake = FakeWorkbook()
+        original_tempdir = tempfile.tempdir
+        private_temp = None
+
+        with self.assertRaisesRegex(RuntimeError, "simulated export failure"):
+            with self.workspace._highlight_excel_temp_scope(
+                raw_context,
+                2,
+            ) as lifecycle:
+                lifecycle.append(fake)
+                private_temp = Path(tempfile.gettempdir())
+                (private_temp / "openpyxl.test").write_bytes(b"temporary")
+                raise RuntimeError("simulated export failure")
+
+        self.assertTrue(fake.closed)
+        self.assertIsNotNone(private_temp)
+        self.assertFalse(private_temp.exists())
+        self.assertEqual(tempfile.tempdir, original_tempdir)
+
+    def test_excel_temp_scope_rejects_insufficient_space_before_build(self):
+        raw_context = {
+            "series": [
+                {"files": [{"snapshot_raw_row_count": 1_000_000}]},
+            ]
+        }
+        disk_usage = types.SimpleNamespace(total=1, used=1, free=1)
+
+        with mock.patch(
+            "echem_platform.start_stop.shutil.disk_usage",
+            return_value=disk_usage,
+        ):
+            with self.assertRaises(APP.StartStopWorkspaceError) as caught:
+                with self.workspace._highlight_excel_temp_scope(
+                    raw_context,
+                    10,
+                ):
+                    self.fail("insufficient-space scope must not open")
+
+        self.assertEqual(caught.exception.status, 507)
+        self.assertIn("临时空间不足", str(caught.exception))
+
+    def test_highlight_export_rejects_unknown_format_and_formula_text_is_safe(self):
+        self.assertEqual(self.workspace._excel_safe_text("=SUM(A1:A2)"), "'=SUM(A1:A2)")
+        with self.assertRaises(APP.StartStopWorkspaceError) as caught:
+            self.workspace.chart_export(
+                series_ids=["M01-main"],
+                metric="cathodic",
+                x_axis="cycle",
+                mode="raw",
+                export_format="csv",
+            )
+        self.assertIn("xlsx 或 pdf", str(caught.exception))
+
+    def test_excel_export_keeps_full_processed_points_beyond_web_preview_limit(self):
+        from openpyxl import load_workbook
+
+        self._install_raw_export_fixture()
+
+        rows = []
+        for cycle in range(1, 251):
+            rows.append(
+                {
+                    "series_id": "M01-main",
+                    "series_display_name": "材料 A 完整名称",
+                    "cycle": cycle,
+                    "continuous_time_h": cycle / 60,
+                    "cathodic_last1s_median_raw_v": -0.5 - cycle / 10000,
+                    "cathodic_negative_shift_mv": cycle / 10,
+                    "reverse_last1s_median_raw_v": 1.5 + cycle / 10000,
+                    "cathodic_phase_min_time_s": 20,
+                    "cathodic_shift_status": "normal",
+                    "source_file": "lab/A/启停.txt",
+                    "segment_index": 1,
+                }
+            )
+        write_csv(self.analysis / "cycle_summary_raw.csv", rows)
+
+        preview = self.workspace.chart_data(
+            series_ids=["M01-main"],
+            metric="cathodic",
+            x_axis="cycle",
+            mode="raw",
+            max_points=200,
+        )
+        self.assertEqual(len(preview["series"][0]["points"]), 200)
+
+        excel, _, _ = self.workspace.chart_export(
+            series_ids=["M01-main"],
+            metric="cathodic",
+            x_axis="cycle",
+            mode="raw",
+            export_format="xlsx",
+        )
+        workbook = load_workbook(io.BytesIO(excel), read_only=True, data_only=True)
+        self.assertEqual(workbook["曲线索引"]["F2"].value, 250)
+        self.assertEqual(
+            sum(
+                1
+                for _ in workbook["01_端点原始"].iter_rows(values_only=True)
+            ),
+            251,
+        )
+        workbook.close()
+
+    def test_excel_raw_export_splits_sheets_without_breaking_continuation(self):
+        from openpyxl import load_workbook
+
+        self._install_raw_export_fixture()
+        self.workspace.MAX_EXCEL_DATA_ROWS_PER_SHEET = 3
+
+        excel, _, _ = self.workspace.chart_export(
+            series_ids=["M01-main"],
+            metric="cathodic",
+            x_axis="cycle",
+            mode="raw",
+            export_format="xlsx",
+        )
+        workbook = load_workbook(io.BytesIO(excel), read_only=True, data_only=True)
+        self.assertIn("R01_全量接续", workbook.sheetnames)
+        self.assertIn("R01_接续02", workbook.sheetnames)
+        first_rows = list(
+            workbook["R01_全量接续"].iter_rows(values_only=True)
+        )
+        second_rows = list(
+            workbook["R01_接续02"].iter_rows(values_only=True)
+        )
+        self.assertEqual(len(first_rows), 4)
+        self.assertEqual(len(second_rows), 3)
+        self.assertEqual([row[1] for row in second_rows[1:]], [1.0, 1.5])
+        file_index = list(
+            workbook["原始文件索引"].iter_rows(values_only=True)
+        )
+        self.assertEqual(
+            [row[1] for row in file_index[1:]],
+            ["R01_全量接续", "R01_接续02"],
+        )
+        workbook.close()
 
     def test_render_options_capture_changed_materials_and_cli_arguments(self):
         payload = {

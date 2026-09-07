@@ -843,6 +843,77 @@ class CollectorTestCase(unittest.TestCase):
         self.assertIn("-EncodedCommand", command)
         self.assertNotIn(str(machine["roots"][0]["remote_path"]), command)
 
+    def test_long_read_only_probe_streams_script_on_stdin_not_command_line(self):
+        key_path = self.root / "id_ed25519"
+        known_hosts = self.root / "known_hosts"
+        key_path.write_text("not-used", encoding="utf-8")
+        known_hosts.write_text("host key", encoding="utf-8")
+        machine = dict(self.machine)
+        machine["identity_file"] = str(key_path)
+        payload = base64.b64encode(
+            json.dumps({"ok": True, "channels": []}).encode("utf-8")
+        ) + b"\n"
+        completed = subprocess.CompletedProcess([], 0, stdout=payload, stderr=b"")
+        transport = SSHWindowsTransport(known_hosts_file=known_hosts)
+        script = "$dataRoot='D:\\LANBTS\\Data'\nWrite-Output 'fixed-probe'\n"
+
+        with mock.patch(
+            "echem_platform.start_stop_collection.subprocess.run",
+            return_value=completed,
+        ) as run:
+            result = transport.run_stdin_payload(machine, script, timeout=45)
+
+        command = run.call_args.args[0]
+        self.assertTrue(result["ok"])
+        self.assertEqual(run.call_args.kwargs["input"], script.encode("utf-8"))
+        self.assertIn("-EncodedCommand", command)
+        self.assertNotIn(script, command)
+        self.assertNotIn("D:\\LANBTS\\Data", " ".join(command))
+        self.assertEqual(run.call_args.kwargs["timeout"], 45)
+        loader = base64.b64decode(
+            command[command.index("-EncodedCommand") + 1]
+        ).decode("utf-16le")
+        self.assertIn("[Environment]::Exit($exitCode)", loader)
+        self.assertIn("[Console]::Out.Flush()", loader)
+        self.assertIn("__START_STOP_REMOTE_PID__", loader)
+        self.assertIn("__START_STOP_CHILD_PID__", loader)
+        self.assertIn("Start-Process powershell.exe", loader)
+        self.assertIn("Start-Sleep -Seconds 40", loader)
+
+    def test_stdin_probe_timeout_kills_exact_reported_remote_pids(self):
+        key_path = self.root / "id_ed25519"
+        known_hosts = self.root / "known_hosts"
+        key_path.write_text("not-used", encoding="utf-8")
+        known_hosts.write_text("host key", encoding="utf-8")
+        machine = dict(self.machine)
+        machine["identity_file"] = str(key_path)
+        timeout = subprocess.TimeoutExpired(
+            cmd=[],
+            timeout=45,
+            stderr=(
+                b"__START_STOP_REMOTE_PID__12345\n"
+                b"__START_STOP_CHILD_PID__23456\n"
+            ),
+        )
+        completed = subprocess.CompletedProcess([], 0, stdout=b"", stderr=b"")
+        transport = SSHWindowsTransport(known_hosts_file=known_hosts)
+
+        with mock.patch(
+            "echem_platform.start_stop_collection.subprocess.run",
+            side_effect=[timeout, completed],
+        ) as run:
+            with self.assertRaises(RemoteRootError):
+                transport.run_stdin_payload(machine, "Write-Output test", timeout=45)
+
+        self.assertEqual(run.call_count, 2)
+        cleanup_command = run.call_args_list[1].args[0]
+        cleanup_script = base64.b64decode(
+            cleanup_command[cleanup_command.index("-EncodedCommand") + 1]
+        ).decode("utf-16le")
+        self.assertIn("$targets=@(12345,23456)", cleanup_script)
+        self.assertIn("taskkill.exe", cleanup_script)
+        self.assertIn("/PID $id /T /F", cleanup_script)
+
     def test_verified_ssh_download_streams_and_checks_metadata_in_one_session(self):
         key_path = self.root / "id_ed25519"
         known_hosts = self.root / "known_hosts"

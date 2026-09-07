@@ -22,6 +22,7 @@ RENDER_PROGRESS_PATH: Path | None = None
 _FIGURE_PROGRESS: dict = {}
 EXPORT_STATIC_FIGURES = False
 ANALYSIS_WORKFLOW_VERSION = "start-stop-analysis/3"
+_TABLE_SCHEMAS = {}
 
 
 def configure_render_progress(path: Path | None) -> None:
@@ -174,7 +175,9 @@ CONFIG_SNAPSHOT_JSON = OUTPUT_DIR / "material_config_snapshot.json"
 CONFIG_READBACK_JSON = OUTPUT_DIR / ".material_config_readback.json"
 WORKBOOK_BUILDER_SETTING = os.environ.get(
     "START_STOP_WORKBOOK_BUILDER",
-    "material_config_workbook.mjs",
+    str(Path(__file__).resolve().with_name("material_config_workbook.py"))
+    if Path(__file__).resolve().with_name("material_config_workbook.py").is_file()
+    else "material_config_workbook.mjs",
 )
 WORKBOOK_BUILDER = Path(WORKBOOK_BUILDER_SETTING).expanduser()
 if not WORKBOOK_BUILDER.is_absolute():
@@ -203,6 +206,12 @@ os.environ.setdefault("MPLCONFIGDIR", str(MPL_CONFIG_DIR))
 
 import numpy as np
 import pandas as pd
+
+if str(Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+from material_result_cache import MaterialResultCache, algorithm_fingerprint, verified_profile_records, prune_computed_cache
+from water_result_cache import compensate_with_cache
+from export_existing import export_existing_analysis
 
 MATPLOTLIB_VERSION = importlib.metadata.version("matplotlib")
 mpl = None
@@ -1642,6 +1651,7 @@ def linear_fit(x: np.ndarray, y: np.ndarray) -> Tuple[float, float, float]:
 def analyze_all_series(
     series_specs: List[dict],
     data_cache: Dict[str, pd.DataFrame],
+    *, report_progress: bool = True,
 ) -> Tuple[
     pd.DataFrame,
     pd.DataFrame,
@@ -1657,6 +1667,7 @@ def analyze_all_series(
     boundary_rows: List[dict] = []
     series_rows: List[dict] = []
     pairs_cache: Dict[Tuple[str, int], List[Tuple[int, int, int, int]]] = {}
+    progress = report_render_progress if report_progress else lambda **_kwargs: None
 
     series_total = len(series_specs)
     for series_index, spec in enumerate(series_specs, start=1):
@@ -1665,7 +1676,7 @@ def analyze_all_series(
             or spec.get("material_display_name")
             or "未命名材料"
         )
-        report_render_progress(
+        progress(
             phase="analyzing_series",
             phase_label="计算启停循环",
             phase_index=3,
@@ -2250,7 +2261,7 @@ def analyze_all_series(
             )
             all_representative.append(representative)
 
-        report_render_progress(
+        progress(
             phase="analyzing_series",
             phase_label="计算启停循环",
             phase_index=3,
@@ -2290,6 +2301,59 @@ def analyze_all_series(
         segment_summary,
         boundaries,
     )
+
+
+def calculation_cache_version():
+    directory = Path(__file__).resolve().parent
+    return algorithm_fingerprint(
+        directory / "analyze_and_plot_start_stop.py", directory / "material_result_cache.py",
+        directory / "water_result_cache.py",
+        parameters={"reference_key": WATER_COMP_REFERENCE_KEY,
+                    "tail_start": WATER_COMP_REFERENCE_TAIL_START_CYCLE,
+                    "sensitivity_starts": WATER_COMP_SENSITIVITY_START_CYCLES},
+    )
+
+
+def analyze_with_material_cache(series_specs, data_cache, cache_root):
+    cache = MaterialResultCache(Path(cache_root), calculation_cache_version())
+    partitions = [[] for _ in range(6)]
+    calculated = set()
+    all_materials = {spec["material_relative_path"] for spec in series_specs}
+    reused_series = 0
+    for index, spec in enumerate(series_specs):
+        report_render_progress(
+            phase="analyzing_series", phase_label="增量计算与结果复用", phase_index=3,
+            percent=24 + 28 * index / max(len(series_specs), 1), completed=index,
+            total=len(series_specs), unit="materials", current_item=spec["series_display_name"],
+            detail="按源文件哈希和算法版本复用未变化材料，保留完整对比结果",
+        )
+        frames = cache.load(spec)
+        if frames is None:
+            for record in spec["records"]:
+                key = record["absolute_path"]
+                if key not in data_cache:
+                    frame, raw_rows, parse_errors = read_square_wave_table(Path(key))
+                    if len(frame) != record["valid_row_count"] or parse_errors != record["parse_error_rows"]:
+                        raise RuntimeError("原始数据与已固定材料快照不一致，请更新后重试")
+                    data_cache[key] = frame
+            frames = analyze_all_series([spec], data_cache, report_progress=False)
+            calculated.add(spec["material_relative_path"])
+            cache.store(spec, frames)
+            prune_computed_cache(cache_root)
+        else:
+            reused_series += 1
+        for bucket, frame in zip(partitions, frames):
+            bucket.append(frame)
+        for record in spec["records"]:
+            data_cache.pop(record["absolute_path"], None)
+    combined = [pd.concat(parts, ignore_index=True) for parts in partitions]
+    combined[3] = combined[3].sort_values("series_order")
+    combined[4] = combined[4].sort_values(["series_id", "segment_index"])
+    return tuple(combined), {
+        "materials_analyzed": len(calculated),
+        "materials_skipped_unchanged": len(all_materials - calculated),
+        "series_cache_hits": reused_series,
+    }
 
 
 def make_material_summary(
@@ -4600,6 +4664,8 @@ def render_water_compensation_outputs(
     segment_summary: pd.DataFrame,
     *,
     export_pdf: bool = True,
+    series_specs=None,
+    cache_root=None,
 ) -> dict:
     figure_total = 4 + len(selected_series_summary)
     report_render_progress(
@@ -4628,19 +4694,16 @@ def render_water_compensation_outputs(
             if path.suffix.lower() in {".png", ".svg"}:
                 path.unlink()
 
-    model = fit_water_compensation_model(cycles, series_summary)
-    (
-        compensated_cycles,
-        compensated_overview,
-        compensated_representative,
-        compensated_series,
-    ) = apply_water_compensation(
-        cycles,
-        overview,
-        representative,
-        series_summary,
-        model,
-    )
+    water_cache_stats = {}
+    if cache_root and series_specs:
+        model, compensated, water_cache_stats = compensate_with_cache(
+            sys.modules[__name__], series_specs, (cycles, overview, representative, series_summary),
+            cache_root, calculation_cache_version(),
+        )
+    else:
+        model = fit_water_compensation_model(cycles, series_summary)
+        compensated = apply_water_compensation(cycles, overview, representative, series_summary, model)
+    compensated_cycles, compensated_overview, compensated_representative, compensated_series = compensated
     validation = validate_water_compensation(
         cycles,
         compensated_cycles,
@@ -4784,6 +4847,7 @@ def render_water_compensation_outputs(
     _FIGURE_PROGRESS.clear()
     return {
         "model": model,
+        "incremental_cache": water_cache_stats,
         "pdf": str(pdf_path) if export_pdf else "",
         "selected_series": int(len(selected_series)),
         "selected_cycles": int(len(selected_cycles)),
@@ -4794,6 +4858,7 @@ def render_water_compensation_outputs(
 
 def csv_write(frame: pd.DataFrame, path: Path) -> None:
     frame.to_csv(path, index=False, encoding="utf-8-sig")
+    _TABLE_SCHEMAS[path.relative_to(OUTPUT_DIR).as_posix()] = {str(name):str(dtype) for name,dtype in frame.dtypes.items()}
 
 
 def write_requirements() -> None:
@@ -5394,6 +5459,12 @@ def render_from_config(
         raise RuntimeError("绘图数据只支持 raw、water 或 both")
     if material_scope not in {"all", "updated"}:
         raise RuntimeError("绘图范围只支持 all 或 updated")
+    requested_scope = material_scope
+    cache_root = os.environ.get("START_STOP_COMPUTED_CACHE_DIR", "").strip()
+    # Platform incremental runs recompute misses and retain the complete catalog.
+    # The standalone legacy workflow without a cache keeps its explicit subset mode.
+    if cache_root and material_scope == "updated":
+        material_scope = "all"
     if export_static_figures and not export_pdf:
         raise RuntimeError("PNG/SVG 导出必须同时启用 PDF 导出")
     configure_static_figure_export(export_static_figures)
@@ -5515,7 +5586,16 @@ def render_from_config(
         snapshot = baseline_snapshot
         configured_material_count = len(material_order)
     else:
-        records, data_cache = discover_and_profile()
+        prepared_profiles = None
+        if cache_root and CONFIG_SNAPSHOT_JSON.is_file():
+            prepared_profiles = verified_profile_records(
+                SOURCE_ROOT, json.loads(CONFIG_SNAPSHOT_JSON.read_text(encoding="utf-8")),
+                trusted_snapshot_manifest_files(),
+            )
+        if prepared_profiles is not None:
+            records, data_cache = prepared_profiles, {}
+        else:
+            records, data_cache = discover_and_profile()
         if not records:
             raise RuntimeError("没有识别到任何方波候选 .txt 文件")
         materials, series_specs = build_series_specs(records)
@@ -5555,6 +5635,11 @@ def render_from_config(
         current_item="配置校验完成",
         detail="数据文件与材料配置一致，开始计算启停循环",
     )
+    cache_stats = {"materials_analyzed": len(materials), "materials_skipped_unchanged": configured_material_count - len(materials)}
+    if cache_root:
+        analyzed_frames, cache_stats = analyze_with_material_cache(series_specs, data_cache, cache_root)
+    else:
+        analyzed_frames = analyze_all_series(series_specs, data_cache)
     (
         cycle_summary,
         overview,
@@ -5562,7 +5647,7 @@ def render_from_config(
         series_summary,
         segment_summary,
         boundaries,
-    ) = analyze_all_series(series_specs, data_cache)
+    ) = analyzed_frames
     material_summary = make_material_summary(materials, series_summary)
     annotate_config_fields(
         [
@@ -5736,6 +5821,8 @@ def render_from_config(
             selected_series_summary,
             segment_summary,
             export_pdf=export_pdf,
+            series_specs=series_specs,
+            cache_root=cache_root,
         )
         water_compensation["enabled"] = True
         water_compensation["skipped"] = False
@@ -5755,6 +5842,7 @@ def render_from_config(
         detail="正在生成分析摘要并核对全部输出文件",
     )
 
+    (OUTPUT_DIR / "analysis_table_schema.json").write_text(json.dumps(_TABLE_SCHEMAS,ensure_ascii=False,indent=2),encoding="utf-8")
     special_series = series_summary[series_summary["is_special_series"]]
     summary = {
         "analysis_name": "CorrTest all-material start-stop raw-potential analysis",
@@ -5763,7 +5851,8 @@ def render_from_config(
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "render_options": {
             "data_mode": data_mode,
-            "material_scope": material_scope,
+            "material_scope": requested_scope,
+            "incremental_cache": cache_stats,
             "export_pdf": export_pdf,
             "export_static_figures": export_static_figures,
             "updated_material_keys": sorted(
@@ -5949,12 +6038,10 @@ def render_from_config(
         "pdf_exported": export_pdf,
         "static_figures_exported": export_static_figures,
         "render_data_mode": data_mode,
-        "render_material_scope": material_scope,
+        "render_material_scope": requested_scope,
         "materials_available": configured_material_count,
-        "materials_skipped_unchanged": int(
-            configured_material_count - len(material_summary)
-        ),
-        "materials_analyzed": len(material_summary),
+        "materials_skipped_unchanged": cache_stats["materials_skipped_unchanged"],
+        "materials_analyzed": cache_stats["materials_analyzed"],
         "materials_in_atlas": len(selected_material_summary),
         "materials_excluded_from_atlas": int(
             len(material_summary) - len(selected_material_summary)
@@ -5987,6 +6074,7 @@ def main() -> None:
         action="store_true",
         help="读取已保存的材料配置并发布网页分析；默认不生成 PDF",
     )
+    mode.add_argument("--export-existing", action="store_true", help="仅从已完成分析表生成 PDF，不重新计算")
     parser.add_argument(
         "--export-pdf",
         action="store_true",
@@ -6029,7 +6117,9 @@ def main() -> None:
     configure_render_progress(arguments.progress_json)
     collection_lock = acquire_collection_snapshot_lock()
     try:
-        if arguments.render:
+        if arguments.export_existing:
+            result = export_existing_analysis(sys.modules[__name__], arguments.data_mode)
+        elif arguments.render:
             if arguments.material_config_json:
                 apply_material_config_json(
                     arguments.material_config_json.resolve()

@@ -57,9 +57,31 @@ class FakeWorkspace:
     def series(self):
         return {"series": [], "count": 0}
 
+    def stability_catalog(self):
+        return {
+            "status": "ready",
+            "counts": {"total": 2, "start_stop": 1, "constant_current": 1},
+            "series": [],
+        }
+
+    def stability_chart(self, **kwargs):
+        self.calls.append(("stability_chart", kwargs))
+        return {"analysis_mode": kwargs["analysis_mode"], "series": []}
+
     def chart_data(self, **kwargs):
         self.calls.append(("chart", kwargs))
         return {"series": [], **kwargs}
+
+    def chart_export(self, **kwargs):
+        self.calls.append(("chart_export", kwargs))
+        export_format = kwargs["export_format"]
+        if export_format == "pdf":
+            return b"%PDF-export", "高亮曲线.pdf", "application/pdf"
+        return (
+            b"PK-export",
+            "高亮数据.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
 
     def pdf(self, kind):
         self.calls.append(("pdf", kind))
@@ -87,6 +109,29 @@ class FakeCvEisAnalyzer:
         return {"analysis_id": analysis_id, "points": [{"current": -10}]}
 
 
+class FakeLanbtsMonitor:
+    active_probe = True
+    config_store = object()
+
+    def __init__(self):
+        self.calls = []
+
+    def snapshot(self):
+        return {
+            "schema_version": 1,
+            "status": "ready",
+            "configuration": {"revision": 3},
+            "channels": [
+                {"channel": channel, "run_id": "a" * 64 if channel == 2 else ""}
+                for channel in range(1, 9)
+            ],
+        }
+
+    def save_config(self, **kwargs):
+        self.calls.append(kwargs)
+        return {"revision": 4, "channels": kwargs["channels"]}
+
+
 class LiveServer:
     def __init__(
         self,
@@ -96,6 +141,7 @@ class LiveServer:
         public_host: str = "127.0.0.1",
         trusted_container_proxy: bool = False,
         cv_eis_analyzer=None,
+        lanbts_monitor=None,
     ):
         self.lan_read_only = lan_read_only
         self.handler_type = SERVICE.create_handler(
@@ -105,6 +151,7 @@ class LiveServer:
             public_host=public_host,
             trusted_container_proxy=trusted_container_proxy,
             cv_eis_analyzer=cv_eis_analyzer or FakeCvEisAnalyzer(),
+            lanbts_monitor=lanbts_monitor,
         )
         self.port = 18787 if not lan_read_only else 18788
 
@@ -164,6 +211,13 @@ class LiveServer:
                 {"content-type": "application/pdf"},
             )
         )
+        handler.send_bytes_download = lambda data, filename, content_type: responses.append(
+            (
+                200,
+                {"data": data, "filename": filename},
+                {"content-type": content_type},
+            )
+        )
         getattr(handler, f"do_{method}")()
         if len(responses) != 1:
             raise AssertionError(f"expected one response, received {responses!r}")
@@ -171,6 +225,16 @@ class LiveServer:
 
 
 class MinimalServiceImportTests(unittest.TestCase):
+    def test_snapshot_mismatch_has_actionable_message_without_private_paths(self):
+        for lan_read_only in (False, True):
+            payload = SERVICE._sanitize_job({"job": {
+                "status": "failed", "failure_code": "job_failed",
+                "message": "RuntimeError: 网页配置对应的数据快照已过期 /private/secret/config.json"
+            }}, lan_read_only=lan_read_only)
+            self.assertEqual(payload["job"]["failure_code"], "material_snapshot_mismatch")
+            self.assertIn("刷新材料库", payload["job"]["message"])
+            self.assertNotIn("/private", payload["job"]["message"])
+
     def test_entrypoint_does_not_import_general_platform_modules(self):
         source = (ROOT / "start_stop_service.py").read_text(encoding="utf-8")
         tree = ast.parse(source)
@@ -193,6 +257,7 @@ class MinimalServiceImportTests(unittest.TestCase):
         self.assertEqual(
             echem_imports,
             [
+                "echem_platform.start_stop_runtime_status",
                 "echem_platform.start_stop",
                 "echem_platform.start_stop_auto_update",
                 "echem_platform.start_stop_collection",
@@ -200,6 +265,7 @@ class MinimalServiceImportTests(unittest.TestCase):
                 "echem_platform.start_stop_cv_eis",
                 "echem_platform.start_stop_database",
                 "echem_platform.start_stop_live_preview",
+                "echem_platform.start_stop_lanbts",
                 "echem_platform.start_stop_workstations",
             ],
         )
@@ -213,12 +279,17 @@ class MinimalServiceImportTests(unittest.TestCase):
         for option in (
             "--database",
             "--cv-eis-database",
+            "--source-database",
             "--analysis-dir",
             "--analysis-script",
             "--collection-config",
             "--workstation-state-file",
             "--workstation-poll-seconds",
             "--workstation-discovery-seconds",
+            "--lanbts-config",
+            "--lanbts-state-file",
+            "--lanbts-channel-config",
+            "--lanbts-poll-seconds",
             "--scratch-dir",
             "--backup-dir",
             "--estimated-output-bytes",
@@ -251,6 +322,13 @@ class MinimalServiceImportTests(unittest.TestCase):
         self.assertIn("--workstation-state-file", lan)
         self.assertIn("/app/state/published-cache/workstation-monitor.json", local)
         self.assertIn("/app/state/published-cache/workstation-monitor.json", lan)
+        self.assertIn("--lanbts-config", local)
+        self.assertIn("--lanbts-state-file", local)
+        self.assertIn("--lanbts-state-file", lan)
+        self.assertIn("/app/state/published-cache/lanbts-monitor.json", local)
+        self.assertIn("/app/state/published-cache/lanbts-monitor.json", lan)
+        self.assertIn("--source-database", lan)
+        self.assertIn("/app/state/database-readonly/start-stop.sqlite3", lan)
 
 
 class MinimalServiceRouteTests(unittest.TestCase):
@@ -275,6 +353,9 @@ class MinimalServiceRouteTests(unittest.TestCase):
             status, body, _ = server.request("GET", "/start-stop/workstations")
             self.assertEqual(status, 200)
             self.assertEqual(body, {"static": "start-stop-workstations.html"})
+            status, body, _ = server.request("GET", "/start-stop/lanbts")
+            self.assertEqual(status, 200)
+            self.assertEqual(body, {"static": "start-stop-lanbts.html"})
             status, body, _ = server.request("GET", "/start-stop/materials")
             self.assertEqual(status, 200)
             self.assertEqual(body, {"static": "start-stop-materials.html"})
@@ -287,6 +368,7 @@ class MinimalServiceRouteTests(unittest.TestCase):
                 "/start-stop/config/",
                 "/start-stop/analysis/",
                 "/start-stop/workstations/",
+                "/start-stop/lanbts/",
                 "/start-stop/cv-eis/",
                 "/start-stop/materials/",
                 "/analysis",
@@ -305,8 +387,10 @@ class MinimalServiceRouteTests(unittest.TestCase):
                 "/api/start-stop/status",
                 "/api/start-stop/materials",
                 "/api/start-stop/series",
+                "/api/start-stop/stability/catalog",
                 "/api/start-stop/connectivity",
                 "/api/start-stop/workstations",
+                "/api/start-stop/lanbts",
                 "/api/start-stop/cv-eis",
             ):
                 with self.subTest(path=path):
@@ -317,6 +401,60 @@ class MinimalServiceRouteTests(unittest.TestCase):
             )
             self.assertEqual(status, 200)
             self.assertEqual(chart["series_ids"], ["A"])
+            status, stability, _ = server.request(
+                "GET",
+                "/api/start-stop/stability/chart?series=L1,L2&analysis_mode=start_stop&metric=overview&max_points=1000",
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(stability["analysis_mode"], "start_stop")
+            self.assertEqual(
+                self.workspace.calls[-1],
+                (
+                    "stability_chart",
+                    {
+                        "series_ids": ["L1", "L2"],
+                        "analysis_mode": "start_stop",
+                        "metric": "overview",
+                        "max_points": 1000,
+                    },
+                ),
+            )
+            self.assertEqual(
+                server.request(
+                    "GET",
+                    "/api/start-stop/stability/chart?series=L1&unexpected=1",
+                )[0],
+                400,
+            )
+            status, exported, headers = server.request(
+                "GET",
+                "/api/start-stop/chart-export?series=A&metric=cathodic&x=cycle&mode=raw&format=xlsx&markers=1",
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(exported["data"], b"PK-export")
+            self.assertEqual(exported["filename"], "高亮数据.xlsx")
+            self.assertIn("spreadsheetml", headers["content-type"])
+            self.assertEqual(
+                self.workspace.calls[-1],
+                (
+                    "chart_export",
+                    {
+                        "series_ids": ["A"],
+                        "metric": "cathodic",
+                        "x_axis": "cycle",
+                        "mode": "raw",
+                        "export_format": "xlsx",
+                        "show_anomaly_markers": True,
+                    },
+                ),
+            )
+            self.assertEqual(
+                server.request(
+                    "GET",
+                    "/api/start-stop/chart-export?series=A&format=xlsx&unexpected=1",
+                )[0],
+                400,
+            )
             status, curve, _ = server.request(
                 "GET",
                 f"/api/start-stop/cv-eis/curve?analysis_id={'a' * 20}",
@@ -345,6 +483,34 @@ class MinimalServiceRouteTests(unittest.TestCase):
                 with self.subTest(path=path):
                     self.assertEqual(server.request("GET", path)[0], 404)
 
+    def test_lanbts_get_and_local_per_run_area_save_use_the_narrow_api(self):
+        monitor = FakeLanbtsMonitor()
+        rows = [
+            {
+                "channel": channel,
+                "run_id": "a" * 64 if channel == 2 else "",
+                "material_name": "材料 A" if channel == 2 else "",
+                "electrode_area_cm2": 2.5 if channel == 2 else None,
+                "notes": "" if channel != 2 else "参照待确认",
+            }
+            for channel in range(1, 9)
+        ]
+        with LiveServer(self.workspace, lanbts_monitor=monitor) as server:
+            status, payload, _ = server.request("GET", "/api/start-stop/lanbts")
+            self.assertEqual(status, 200)
+            self.assertTrue(payload["can_edit"])
+            status, saved, _ = server.request(
+                "PUT",
+                "/api/start-stop/lanbts",
+                body={"expected_revision": 3, "channels": rows},
+                content_type="application/json",
+                origin=f"http://127.0.0.1:{server.port}",
+            )
+        self.assertEqual(status, 200)
+        self.assertEqual(saved["revision"], 4)
+        self.assertEqual(monitor.calls[0]["expected_revision"], 3)
+        self.assertEqual(monitor.calls[0]["channels"][1]["electrode_area_cm2"], 2.5)
+
     def test_static_allowlist_excludes_the_general_application(self):
         with LiveServer(self.workspace) as server:
             for path in (
@@ -362,6 +528,11 @@ class MinimalServiceRouteTests(unittest.TestCase):
                 "/static/start-stop-workstations.css",
                 "/static/start-stop-workstations.html",
                 "/static/start-stop-workstations.js",
+                "/static/start-stop-lanbts.css",
+                "/static/start-stop-lanbts.html",
+                "/static/start-stop-lanbts.js",
+                "/static/start-stop-stability.css",
+                "/static/start-stop-stability.js",
                 "/static/icons/gear.svg",
             ):
                 with self.subTest(path=path):
@@ -616,6 +787,7 @@ class MinimalServiceRouteTests(unittest.TestCase):
             for method in ("POST", "PUT", "PATCH", "DELETE"):
                 for path in (
                     "/api/start-stop/materials",
+                    "/api/start-stop/lanbts",
                     "/api/start-stop/jobs",
                     "/api/control/runs",
                     "/anything",
@@ -708,6 +880,38 @@ class RepositoryStartupTests(unittest.TestCase):
         self.assertFalse(any(call[0] == "restore" for call in calls))
         self.assertFalse(any(call[0] == "ensure" for call in calls))
         self.assertEqual(calls[0][0], "workspace")
+
+    def test_lan_startup_uses_narrow_read_only_source_database_adapter(self):
+        captured: list[dict] = []
+
+        class Database:
+            def __init__(self, path):
+                self.path = path
+
+        class Workspace:
+            def __init__(self, _database, _analysis_dir, **kwargs):
+                captured.append(kwargs)
+
+            def ensure_published_cache(self):
+                raise AssertionError("LAN must not publish artifacts")
+
+        args = self.args(lan_read_only=True)
+        args.source_database = str(self.root / "database-readonly.sqlite3")
+        SERVICE.build_workspace(
+            args,
+            database_type=Database,
+            workspace_type=Workspace,
+        )
+
+        adapter = captured[0]["source_database"]
+        self.assertEqual(
+            adapter.__class__.__name__,
+            "ReadOnlyStartStopSourceDatabase",
+        )
+        self.assertEqual(
+            adapter.path,
+            (self.root / "database-readonly.sqlite3").resolve(),
+        )
 
     def test_backup_safety_inputs_are_local_only(self):
         calls: list[dict] = []

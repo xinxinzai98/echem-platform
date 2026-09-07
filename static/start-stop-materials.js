@@ -30,19 +30,7 @@ class MaterialsRequestError extends Error {
 }
 
 async function materialsRequest(url, options = {}) {
-  const response = await fetch(url, {
-    cache: "no-store",
-    ...options,
-    headers: options.body
-      ? { "Content-Type": "application/json", ...(options.headers || {}) }
-      : options.headers,
-  });
-  const contentType = response.headers.get("content-type") || "";
-  const payload = contentType.includes("application/json") ? await response.json() : null;
-  if (!response.ok) {
-    throw new MaterialsRequestError(payload?.error || `请求失败（${response.status}）`, response.status);
-  }
-  return payload;
+  return StartStopClient.request(url, options, MaterialsRequestError);
 }
 
 function materialsElement(tag, className = "", text = "") {
@@ -87,7 +75,7 @@ function formatMaterialsInteger(value) {
 }
 
 function formatMaterialsTime(value) {
-  if (!value) return "尚未保存";
+  if (!value) return "保存时间未提供";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return String(value);
   return date.toLocaleString("zh-CN", { hour12: false });
@@ -150,11 +138,7 @@ function setMaterialsNotice(message = "", type = "warning") {
 function applyMaterialsDeploymentProfile(payload) {
   const repositoryMode = payload?.deployment_profile === "start_stop_repository"
     || payload?.repository?.storage_mode === "sqlite_blob_repository";
-  document.querySelectorAll("[data-config-route]").forEach((link) => { link.href = "/start-stop"; });
-  document.querySelectorAll("[data-workstations-route]").forEach((link) => { link.href = "/start-stop/workstations"; });
-  document.querySelectorAll("[data-analysis-route]").forEach((link) => { link.href = "/start-stop/analysis"; });
-  document.querySelectorAll("[data-cv-eis-route]").forEach((link) => { link.href = "/start-stop/cv-eis"; });
-  document.querySelectorAll("[data-materials-route]").forEach((link) => { link.href = "/start-stop/materials"; });
+  StartStopClient.applyRoutes();
   materialsElements.materialsWorkbenchBrand.href = "/start-stop";
   const serviceVersion = payload?.service?.version;
   materialsElements.workbenchVersion.textContent = serviceVersion && serviceVersion !== "unknown"
@@ -280,6 +264,10 @@ function visibleMaterials() {
 
 function renderMaterials() {
   const visible = visibleMaterials();
+  const readOnly = materialsReadOnly();
+  document.body.classList.toggle("material-library-read-only", readOnly);
+  document.querySelector(".config-table-head > span").textContent = readOnly
+    ? "完整材料名 / 来源与接续" : "收藏 / 数据来源与接续顺序";
   const locked = materialsReadOnly() || materialsJobBusy() || !canSaveMaterials();
   const fragment = document.createDocumentFragment();
   for (const material of visible) {
@@ -290,21 +278,23 @@ function renderMaterials() {
     const sourceCell = materialsElement("div", "config-source-cell");
     const sourceHeading = materialsElement("div", "config-source-heading");
     const favoriteButton = materialsElement(
-      "button",
+      readOnly ? "span" : "button",
       "config-favorite-button",
       material.favorite ? "★" : "☆",
     );
     favoriteButton.type = "button";
     favoriteButton.disabled = locked;
-    favoriteButton.setAttribute("aria-pressed", String(Boolean(material.favorite)));
+    if (readOnly) favoriteButton.setAttribute("role", "img");
+    else favoriteButton.setAttribute("aria-pressed", String(Boolean(material.favorite)));
     const updateFavoriteButtonLabel = () => {
       const materialName = material.plot_name || material.auto_name || material.key;
-      const action = material.favorite ? "取消收藏" : "收藏";
+      const action = readOnly ? (material.favorite ? "已收藏" : "未收藏") : material.favorite ? "取消收藏" : "收藏";
       favoriteButton.setAttribute("aria-label", `${action} ${materialName}`);
       favoriteButton.title = `${action} ${materialName}`;
     };
     updateFavoriteButtonLabel();
     favoriteButton.addEventListener("click", () => {
+      if (locked) return;
       material.favorite = !material.favorite;
       setMaterialsDirty(true);
       renderMaterials();
@@ -314,8 +304,9 @@ function renderMaterials() {
         updatedRow?.querySelector(".config-favorite-button")?.focus();
       });
     });
-    const autoName = materialsElement("strong", "", material.auto_name || material.key);
-    autoName.title = material.auto_name || material.key;
+    const displayedName = readOnly ? material.plot_name || material.auto_name || material.key : material.auto_name || material.key;
+    const autoName = materialsElement("strong", "", displayedName);
+    autoName.title = displayedName;
     sourceHeading.append(favoriteButton, autoName);
     const sourceMeta = materialsElement("div", "config-source-meta");
     sourceMeta.append(
@@ -325,9 +316,6 @@ function renderMaterials() {
     const orderedSources = material.ordered_source_files?.length
       ? material.ordered_source_files
       : [material.key];
-    const sourceOrder = orderedSources.join(" → ");
-    const sourceFiles = materialsElement("div", "config-source-files", sourceOrder);
-    sourceFiles.title = orderedSources.join("\n");
     const sourceActions = materialsElement("div", "config-source-actions");
     const sourceDetails = materialsElement("details", "config-source-details");
     const sourceSummary = materialsElement(
@@ -342,14 +330,18 @@ function renderMaterials() {
       sourceList.append(item);
     });
     sourceDetails.append(sourceSummary, sourceList);
+    if (readOnly && material.auto_name && material.auto_name !== material.plot_name) {
+      sourceDetails.append(materialsElement("p", "", `源目录名：${material.auto_name}`));
+    }
     const copySources = materialsElement("button", "config-copy-source", "复制来源");
     copySources.type = "button";
     copySources.setAttribute("aria-label", `复制 ${material.auto_name || material.key} 的完整来源与接续顺序`);
     copySources.addEventListener("click", () => copyMaterialsText(orderedSources.join("\n"), copySources));
     sourceActions.append(sourceDetails, copySources);
-    sourceCell.append(sourceHeading, sourceMeta, sourceFiles, sourceActions);
+    sourceCell.append(sourceHeading, sourceMeta, sourceActions);
 
-    const nameCell = materialsElement("label", "config-field-cell");
+    const nameCell = materialsElement(readOnly ? "div" : "label", "config-field-cell");
+    nameCell.hidden = readOnly;
     nameCell.append(materialsElement("span", "sr-only", `绘图名称：${material.auto_name || material.key}`));
     const nameInput = document.createElement("input");
     nameInput.className = "config-name-input";
@@ -364,9 +356,9 @@ function renderMaterials() {
       clearMaterialFieldValidation(nameInput, row);
       setMaterialsDirty(true);
     });
-    nameCell.append(nameInput);
+    if (!readOnly) nameCell.append(nameInput);
 
-    const notesCell = materialsElement("label", "config-field-cell");
+    const notesCell = materialsElement(readOnly ? "div" : "label", "config-field-cell");
     notesCell.append(materialsElement("span", "sr-only", `备注：${material.plot_name || material.auto_name}`));
     const notesInput = document.createElement("textarea");
     notesInput.className = "config-notes-input";
@@ -379,9 +371,10 @@ function renderMaterials() {
       material.notes = notesInput.value;
       setMaterialsDirty(true);
     });
-    notesCell.append(notesInput);
+    if (readOnly) notesCell.append(materialsElement("p", "config-readonly-notes", material.notes || "—"));
+    else notesCell.append(notesInput);
 
-    const includeCell = materialsElement("label", "config-include-cell");
+    const includeCell = materialsElement(readOnly ? "div" : "label", "config-include-cell");
     const includeInput = document.createElement("input");
     includeInput.type = "checkbox";
     includeInput.checked = Boolean(material.include_in_summary_atlas);
@@ -393,7 +386,8 @@ function renderMaterials() {
       setMaterialsDirty(true);
       updateMaterialsMetrics();
     });
-    includeCell.append(includeInput, materialsElement("span", "", "进入图集"));
+    if (readOnly) includeCell.append(materialsElement("span", "config-readonly-inclusion", material.include_in_summary_atlas ? "已入图" : "未入图"));
+    else includeCell.append(includeInput, materialsElement("span", "", "进入图集"));
     row.append(sourceCell, nameCell, notesCell, includeCell);
     fragment.append(row);
   }
@@ -454,7 +448,7 @@ function updateMaterialsPdfActions() {
   } else {
     materialsElements.materialsExportPdf.disabled = materialsState.saving || !canExportMaterialsPdf();
     materialsElements.materialsExportPdf.textContent = "生成 PDF 图集";
-    materialsElements.materialsExportPdf.title = "按当前材料配置生成原始数据和水位补偿 PDF 图集";
+    materialsElements.materialsExportPdf.title = "从已完成分析结果生成 PDF，不重新计算原始数据";
     closeMaterialsExportMenu();
   }
 }
@@ -564,7 +558,7 @@ async function saveMaterialLibrary() {
     materialsState.materials = payload.materials || [];
     materialsState.dirty = false;
     materialsElements.materialsDirtyBadge.hidden = true;
-    materialsElements.materialsSaveState.textContent = "材料配置已保存";
+    materialsElements.materialsSaveState.textContent = Number(payload.revision) > 0 ? "材料配置已保存" : "当前为默认材料配置";
     renderMaterials();
     setMaterialsNotice("材料配置已保存到独立数据库。", "success");
     return true;
@@ -627,7 +621,10 @@ function openMaterialsExportMenu() {
 
 async function startMaterialsPdfExport() {
   if (materialsJobBusy() || materialsReadOnly()) return;
-  if (!(await saveMaterialLibrary())) return;
+  if (materialsState.dirty) {
+    setMaterialsNotice("材料配置尚未保存，请先保存并更新平台分析，再导出 PDF。", "error");
+    return;
+  }
   if (!canExportMaterialsPdf()) {
     setMaterialsNotice("当前分析环境尚未就绪，暂时不能生成 PDF 图集。", "error");
     return;
@@ -637,7 +634,7 @@ async function startMaterialsPdfExport() {
       method: "POST",
       body: JSON.stringify({
         action: "render",
-        render_data_mode: "both",
+        render_data_mode: materialsState.status?.analyzed_data_mode || "both",
         render_material_scope: "all",
         export_pdf: true,
       }),
@@ -645,7 +642,7 @@ async function startMaterialsPdfExport() {
     materialsState.pendingPdfExportId = job.id || "";
     materialsState.status = { ...(materialsState.status || {}), job };
     closeMaterialsExportMenu();
-    setMaterialsNotice("正在生成原始数据和水位补偿 PDF 图集。");
+    setMaterialsNotice("正在从已完成分析结果导出 PDF，不重新计算原始数据。");
     scheduleMaterialsPoll();
     updateMaterialsActions();
   } catch (error) {
@@ -663,8 +660,8 @@ function handleMaterialsPdfButton() {
 }
 
 function scheduleMaterialsPoll() {
-  window.clearTimeout(materialsState.pollTimer);
-  materialsState.pollTimer = window.setTimeout(async () => {
+  StartStopClient.clearVisibleTimeout(materialsState.pollTimer);
+  materialsState.pollTimer = StartStopClient.visibleTimeout(async () => {
     try {
       materialsState.status = await materialsRequest("/api/start-stop/status");
       updateMaterialsStatus();
@@ -702,7 +699,7 @@ async function loadMaterialLibrary({ discardDraft = false } = {}) {
     materialsState.materials = payload.materials || [];
     materialsState.dirty = false;
     materialsElements.materialsDirtyBadge.hidden = true;
-    materialsElements.materialsSaveState.textContent = "材料配置已保存";
+    materialsElements.materialsSaveState.textContent = Number(payload.revision) > 0 ? "材料配置已保存" : "当前为默认材料配置";
     updateMaterialsStatus();
     renderMaterials();
     if (materialsJobBusy()) scheduleMaterialsPoll();

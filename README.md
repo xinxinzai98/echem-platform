@@ -1,210 +1,70 @@
-# 电化学测试平台 V0.2 + V0.3 阶段 C
+# Start–stop Studio
 
-数据工作台版本：0.2.0-dev.3
+独立的电化学稳定性分析程序。默认 Docker 发布只包含数据采集、材料管理、启停/恒流分析、CV–EIS 分析和只读监控，不包含旧平台的仪器控制入口。
 
-网页 Dry-run 版本：0.3.0-dev.2
+旧电化学平台的源码仍保留，但不进入此镜像。其历史说明见 [旧平台文档](docs/legacy-echem-platform.md) 和 [旧安全说明](docs/legacy-echem-security.md)。
 
-CHI 离线协议编译器版本：0.3.0-dev.1
+## 当前工作流
 
-桌面工作台、数据文件夹视图、方法分析与 60 秒 OCP 安全门版本：0.3.0-dev.11
+1. 在服务器本机配置实验电脑的搜索位置，下载稳定文件或上传本地数据。
+2. 在材料库保存完整名称、收藏、备注和入图选择。
+3. 更新平台分析，选择原始数据或水位补偿。首次建立计算缓存后，未变化材料复用结果；参照模型更新会使相关补偿结果重新计算。
+4. 在稳定性分析中按工步选线、高亮、缩放或检查异常。工作站与蓝博的电压标尺分开，未知工步不能混合比较。
+5. PDF 按需生成，不是分析的必经步骤。材料库从已完成分析导出图集；高亮导出提供 Excel 完整记录和处理数据，以及 PDF 图。
 
-这是一个默认只读的本地电化学数据工作台。V0.2 提供真实数据接入和解析溯源基础；V0.3 阶段 A 增加 CHI 协议的离线校验、宏编译和静态复核；阶段 B 增加浏览器中的连续工步编辑、草稿保存、校验报告和宏预览；阶段 C 增加一套默认关闭、只允许 60 秒 OCP 的 Windows 本机安全门。公开配置不会启动仪器，平台始终不直接访问 COM3 / COM4。
+CV–EIS 不跨测试阶段借用 EIS。模糊配对和未知在线 iR 状态须在管理端确认；未知或已在线补偿时不再次离线补偿。启停分析不进行 RHE 换算。
 
-## 当前能做什么
+## 访问方式
 
-- 监听指定数据目录并建立文件索引
-- 识别常见 CHI 文本导出、CorrTest `.cor` / `.z60` 文本数据
-- 对 CHI `.bin` 文件只登记元数据和 SHA-256，不尝试逆向修改
-- 展示 CV、LSV、EIS、OCP、CA/CP 等二维曲线
-- 在同一棵“数据文件夹 → 子文件夹 → 实验文件”树中浏览 CHI 与 CorrTest 数据，无需选择工作站
-- 每类文本数据先显示原始曲线，再按测试方法提供专用分析
-- 对 EIS 数据按频率顺序筛查实轴交点；无可靠交点时不外推，也不把结果标成正式 Rct
-- 对 CV 数据按预设溶液自动带出 25 ℃名义 pH，并按“参比电极＋内部填充液”自动带出名义参比电势
-- 允许把名义 pH 改为实测值；填充液或标定条件不在预设中时使用自定义参比值
-- 按反应、补偿因子、溶液电阻、几何面积、目标电流密度和稳定数据段计算表观过电位
-- 在线补偿状态默认“不确定”、离线补偿默认 0%；只有确认未在线补偿后才允许设置非零 iR 补偿
-- 确认未在线补偿但仍未执行 iR 修正时，结果只标为筛查值，不进入可定量等级
-- CV 数据段以 `segment_N`、起止电位、递增/递减方向和源行范围追溯，不再混用“正扫/回扫”
-- EIS 与 CV 结果分为“可定量 / 仅筛查 / 不可计算”；不可计算结果只允许预览，不允许保存
-- 对常见电流密度单位做显式换算；反应方向不一致或补偿参数不安全时拒绝生成误导结果
-- 预览分析不落库；确认保存后记录不可变的参数、结果、算法版本和源文件 SHA-256
-- 工作台首页只显示仪器当前活动、系统指标和最近活动
-- 用统一左侧导航在工作台、工步设置和数据分析之间切换
-- 把环境检测与阶段 C 安全设置收进左下角齿轮入口
-- 记录导入、更新和人工编辑审计日志
-- 为每条记录保存明确的解析器标识，便于后续按仪器版本复核
-- 动态标记源文件是否仍可访问；源文件移动后仍保留缓存曲线和已保存分析记录
-- 默认只监听 `127.0.0.1`，仅供 Windows 本机浏览器访问
-- 在 Mac 或 Windows 上把经过校验的 JSON 协议离线编译为 CHI `.mcr`
-- 对编译结果重新做文件头、ASCII、命令白名单、工步顺序和输出路径静态复核
-- 在 `/steps` 设置 CV、OCP、LSV 和 EIS 连续工步
-- 在平台自己的 SQLite 中保存尚未完成或尚未通过校验的协议草稿
-- 在内存中显示规范化工步、预计时长、人工复核警告、目标文件和 CHI 宏预览
-- 在 `/analysis` 独立查看数据文件树、原始曲线和方法分析
-- 在 `/environment` 只读显示数据目录、CHI 实例、可执行文件哈希和活动任务预检
-- 仅在未跟踪的本机配置显式启用后，创建不可变的 60 秒 OCP 运行快照
-- 用参数指纹、现场确认和一次性令牌约束唯一的阶段 C 启动路径
-- 观察 CHI 返回码和稳定的 `.bin/.txt` 文件，并验证扫描前后源文件未变化
-- 用仓库内的 Windows 桌面启动器验证平台与 Explorer 位于同一非零会话
+| 入口 | 默认位置 | 权限 |
+| --- | --- | --- |
+| 服务器管理端 | 服务器上的 `http://127.0.0.1:18787/start-stop` | 上传、采集、配置、计算、确认 |
+| 局域网查看端 | `http://<服务器局域网IP>:18788/start-stop` | 查看、选线、高亮、导出 |
+| 健康检查 | 同入口的 `/healthz` | 仅表示 HTTP 服务存活 |
 
-## 安全边界
+当前实验室主机为 192.168.110.225。Windows 部署的局域网入口按既有设置无登录，只适用于受信任的实验室网络。不要直接映射到公网。完整边界见 [SECURITY.md](SECURITY.md)。
 
-- 不打开 COM3 / COM4
-- 不启动 CHI，不执行 CHI 宏
-- 不调用 CorrTest SDK
-- 不向被监控目录写入任何文件
-- 文件仍在写入时会暂缓导入，等待下一轮扫描
-- 原始文件以 SHA-256 指纹标识，平台元数据保存在自己的 SQLite 数据库中
-- 公开基础配置中的 `instrument_control_enabled` 必须为 `false`
-- 控制关闭时，创建、确认和启动接口返回 404
-- 启用只允许来自被 Git 忽略的 Windows 本机覆盖配置
-- 阶段 C 只接受一个 60 秒 OCP，拒绝其他技术、多工步和参数指纹变化
-- 启动前后都检查现有 CHI 实例，任何实例都会阻止启动
-- 拒绝从 OpenSSH、Windows 服务等 Session 0 后台会话启动 CHI；实机运行必须来自当前 Windows 桌面会话
-- 网页停止只记录人工停止请求，不强制结束 CHI 进程
-- 网页 Dry-run 不写出 `.mcr` 文件；预览结果只保留在浏览器当前页面
+## Docker 构建与运行
 
-## V0.3 阶段 A：Mac 离线编译
+使用唯一的正式构建入口 `Dockerfile`。基础镜像固定为官方 Python 3.12.13 slim-bookworm 的 SHA-256；运行依赖版本由 `requirements.docker.txt` 固定。历史 hotfix Dockerfile 不作为新发布基础。
 
-公开示例只用于展示字段格式，示例数值不是实验建议，也不能直接作为上机参数。先在 Mac 上运行：
+Windows 在手动打开 Docker Desktop 后，用现有部署的 `.env` 保留数据卷、SSH 目录、缓存目录、端口和备份配置，再更新镜像版本：
+
+```powershell
+.\scripts\docker-compose.ps1 build local
+.\scripts\docker-compose.ps1 up -d --no-build
+```
+
+macOS/Linux 使用 `scripts/docker-compose.sh`。脚本不会安装或自动启动 Docker Desktop。
+
+正式发布应从已提交源码打包，记录 commit、每个文件的 SHA-256、测试结果和最终镜像摘要。不能把未提交的临时补丁当作可复现发布。详见 [发布与回退](docs/start-stop-release.md)。
+
+## 数据与恢复
+
+- 原始字节、文件版本、材料配置、任务、分析来源及派生产物保存在独立 SQLite 仓库中。Windows 使用 Docker 原生 Linux 数据卷，避免把 SQLite 放在 NTFS 共享绑定目录上。
+- 网页缓存可以由数据库恢复；不要把缓存当成唯一数据副本。运行状态投影有有效期，过期或缺失时显示“未提供”，不推断为零。
+- 计算缓存可丢弃，按源哈希、算法和数值库版本复用；不替代原始数据或封存结果。
+- 普通下载、绘图和代码更新不强制全量备份。数据库结构迁移或修复前必须完成校验备份；定期备份按现有低频策略运行。
+- 历史产物清理必须先做只读保留计划。当前结果、指定回退版本和原始来源受保护；逻辑字节数不等于可直接回收空间，禁止绕过不可变引用删除。
 
 ```sh
-python3 scripts/compile_chi_protocol.py \
-  docs/chi-protocol.example.json \
-  --output-folder D:/EchemPlatform/Runs/RUN-DEMO-001 \
-  --allowed-run-root D:/EchemPlatform/Runs \
-  --macro-output /tmp/RUN-DEMO-001.mcr
+python scripts/plan_start_stop_retention.py --database /path/to/start-stop.sqlite3
 ```
 
-编译器会独占创建 `.mcr`，目标文件已经存在时拒绝覆盖。省略
-`--macro-output` 可以只做协议校验和内存编译，不写文件。无论哪种方式，它都不会
-连接 Windows、启动 CHI 或执行生成的宏。
+## 开发与验收
 
-进入任何 Windows dry-run 或真实仪器测试前，必须逐项核对电位基准、范围、扫描
-方向、量程、时间、频率和保存目录，并另行获得执行确认。详细说明见
-`docs/v0.3-offline-control.md`。
-
-## V0.3 阶段 B：网页 Dry-run
-
-启动平台后打开 `http://127.0.0.1:8787/steps`。网页支持：
-
-- 添加、复制、删除、启用、禁用和调整连续工步顺序
-- 自动保存或手动保存一份本地 SQLite 草稿
-- 仅校验，不返回宏正文
-- 生成内存中的 Dry-run 宏预览，不写文件、不启动 CHI
-- 显示输出文件名、静态复核结果、已知预计时长和无法精确估时的工步
-
-公开默认草稿只展示字段格式，其中的电位、频率、扫速和时间不是实验建议。EIS
-Points/Decade 仍要求在未来的 Windows 设备参数页人工复核，EIS 预计时长不会显示
-虚假的精确值。阶段 B 的接口与安全边界见 `docs/v0.3-web-dry-run.md`。
-
-## V0.3 阶段 C：60 秒 OCP 安全门
-
-打开 `http://127.0.0.1:8787/environment` 查看环境检测与只读预检。默认部署仍锁定控制，不创建
-运行目录，也不启动 CHI。只有专门的 Windows 本机 `config.local.json` 同时锁定
-CHI 可执行文件 SHA-256 和已复核 OCP 参数指纹后，才可能启用运行接口。
-
-候选协议必须只有一个 60 秒 OCP。可以先离线计算参数指纹：
+Python 环境安装 `requirements.docker.txt` 后运行：
 
 ```sh
-python3 scripts/inspect_stage_c_protocol.py path/to/protocol.json
+python -m unittest discover -s tests -b
 ```
 
-真实运行还需要现场逐项确认、手工输入运行编号和一次性令牌。详细设计、恢复语义和
-实机验收门见 `docs/v0.3-stage-c-ocp-preflight.md`。
+正式验收还需 Node.js 执行真实 JavaScript 行为测试，并完成浏览器的上传、配置、计算、只读读取、选线及导出流程。跳过的测试不能记为通过。
 
-## Windows 本机使用
+整改状态和仍待验证的项目记录在 [审计执行记录](docs/platform-audit-execution.md)。隔离浏览器样例、截图和生成的导出文件仅用于测试，不是实验数据。
 
-双击 `start-windows.cmd`。平台会在本机后台启动，并自动打开 Windows 默认浏览器。
-数据工作台和协议 Dry-run 均在这台 Windows 电脑本机使用，不依赖 Mac 常驻。
+## 模块边界
 
-停止平台时双击 `stop-windows.cmd`。
+`start_stop_service.py` 负责固定 HTTP 路由和权限边界。`echem_platform/start_stop.py` 组合材料、查询、任务运行、发布、导出等独立模块。科学计算脚本位于 `docker/start_stop_analysis/`；原始记录统计和显示抽样分离。
 
-服务仍然只监听 `127.0.0.1:8787`，不需要 Mac、SSH 隧道或局域网开放端口。
-
-阶段 C 旁路验收使用 `start-stage-c-desktop.cmd`，默认监听
-`127.0.0.1:8788` 并打开锁定的工作台首页。启动器必须由当前已登录用户在
-Windows 桌面双击；从 OpenSSH、Windows Service 或 Session 0 调用时会在启动平台
-前拒绝。普通双击入口还会拒绝任何已经启用仪器控制的配置，因此打开监控页本身不
-构成实机授权。
-
-停止锁定的阶段 C 旁路平台时双击 `stop-stage-c-desktop.cmd`。停止器只会结束当前
-部署目录内、占用指定端口的平台 Python 进程；无法验证状态或存在活动仪器任务时
-会拒绝停止，不会结束 CHI。
-
-## 本地开发试运行
-
-需要 Python 3.9 或更高版本，不需要安装第三方包。
-
-```sh
-python3 app.py
-```
-
-浏览器打开 `http://127.0.0.1:8787`。
-
-工步设置打开 `http://127.0.0.1:8787/steps`。
-
-数据分析打开 `http://127.0.0.1:8787/analysis`。选择数据文件后，原始曲线始终在前；
-EIS 与 CV 文件会在下方出现对应的电阻或过电位分析面板。
-
-环境检测与设置打开 `http://127.0.0.1:8787/environment`。
-
-只扫描一次并退出：
-
-```sh
-python3 app.py --scan-once
-```
-
-运行测试：
-
-```sh
-python3 -m unittest discover -s tests -v
-```
-
-## 配置实际数据目录
-
-不要把实际实验路径直接写入公开仓库中的 `config.json`。复制
-`config.local.example.json` 为 `config.local.json`，然后只修改本地文件中的
-`watch_roots`。程序会先读取 `config.json`，再用 `config.local.json` 覆盖本机配置。
-
-`config.local.json` 已被 Git 忽略。路径可以使用绝对路径；相对路径以平台目录为基准。
-
-Windows 示例：
-
-```json
-{
-  "watch_roots": [
-    "D:\\data\\yx"
-  ]
-}
-```
-
-同一目录及其子目录中的 CHI 与 CorrTest 文件会按扩展名和文件头自动识别，不需要把
-两套工作站拆成不同入口。
-
-部署到 Windows 前会生成独立的便携运行环境，避免改动系统 Python、PATH 和注册表。
-
-## 私有数据隔离
-
-- `config.local.json`、`private_data/`、`private_fixtures/` 和 `inventory/` 不进入 Git
-- 真实实验数据默认只保留在 Windows 本机；经单独确认的最小样例只能进入 Mac 上被 Git 忽略的私有目录
-- 公开测试样例必须先脱敏并经过人工确认
-- CHI/CorrTest 帮助文件、SDK 和安装文件不进入公开仓库
-
-## 私有真实样例回归
-
-真实样例复制到 Mac 前必须先获得确认。获准后，把样例放入被 Git 忽略的
-`private_fixtures/`，并复制示例清单：
-
-```sh
-mkdir -p private_fixtures/chi private_fixtures/corrtest
-cp docs/private-fixture-manifest.example.json private_fixtures/manifest.local.json
-python3 scripts/validate_private_fixtures.py
-```
-
-清单中的文件路径只能相对于清单目录，不能使用绝对路径或 `..`。`id` 应使用
-匿名编号，不要写样品名。验证器只读文件，检查解析状态、仪器、方法、解析器、
-点数和可选 SHA-256；输出不包含绝对路径、文件名或原始数据，也不会自动生成
-或提交报告。
-
-详细边界见 `SECURITY.md`，本地验收结果见 `VALIDATION.md`。
+监控仅反映软件、串口枚举和文件写入证据。六个活动任务槽位未绑定具体 COM 口时，不代表六台物理仪器的可靠身份映射；它不能代替现场巡视、仪器保护或急停。

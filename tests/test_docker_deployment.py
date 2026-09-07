@@ -70,7 +70,7 @@ class DockerDeploymentTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn("python:3.12-slim-bookworm", dockerfile)
+        self.assertRegex(dockerfile, r"^FROM python:3\.12\.\d+-slim-bookworm@sha256:[0-9a-f]{64}")
         self.assertIn("openssh-client", dockerfile)
         self.assertIn("fonts-noto-cjk", dockerfile)
         self.assertIn("USER ${APP_UID}:${APP_GID}", dockerfile)
@@ -94,6 +94,12 @@ class DockerDeploymentTests(unittest.TestCase):
         self.assertIn("static/start-stop-workstations.html", dockerfile)
         self.assertIn("static/start-stop-workstations.js", dockerfile)
         self.assertIn("static/start-stop-workstations.css", dockerfile)
+        self.assertIn("static/start-stop-lanbts.html", dockerfile)
+        self.assertIn("static/start-stop-lanbts.js", dockerfile)
+        self.assertIn("static/start-stop-lanbts.css", dockerfile)
+        self.assertIn("static/start-stop-stability.js", dockerfile)
+        self.assertIn("static/start-stop-stability.css", dockerfile)
+        self.assertIn("docker/lanbts-config.json", dockerfile)
         self.assertIn("static/icons/gear.svg", dockerfile)
         self.assertNotIn("COPY --chown=${APP_UID}:${APP_GID} app.py", dockerfile)
         self.assertNotIn(" app.py config.json ", dockerfile)
@@ -111,10 +117,10 @@ class DockerDeploymentTests(unittest.TestCase):
         self.assertIn("name: start-stop-analysis", compose)
         self.assertIn(
             "image: ${ECHEM_IMAGE_REPOSITORY:-start-stop-analysis}:"
-            "${ECHEM_IMAGE_TAG:-0.6.0-dev.7.2}",
+            "${ECHEM_IMAGE_TAG:-0.7.0-dev.1}",
             compose,
         )
-        self.assertIn("APP_VERSION: ${ECHEM_IMAGE_VERSION:-0.6.0-dev.7.2}", common)
+        self.assertIn("APP_VERSION: ${ECHEM_IMAGE_VERSION:-0.7.0-dev.1}", common)
         self.assertIn("VCS_REF: ${ECHEM_GIT_SHA:-unknown}", common)
         self.assertIn("BUILD_STATE: ${ECHEM_GIT_STATE:-unknown}", common)
         self.assertIn("container_name: start-stop-analysis-local", local)
@@ -158,13 +164,17 @@ class DockerDeploymentTests(unittest.TestCase):
         self.assertIn("create_host_path: false", local)
         self.assertIn("/app/start_stop_analysis/analyze_and_plot_start_stop.py", local)
         self.assertIn("/app/docker/collection-config.json", local)
-        self.assertEqual(local.count("target: /Users/hive/.ssh/"), 4)
-        self.assertEqual(local.count("${ECHEM_SSH_DIR:-/Users/hive/.ssh}/"), 4)
-        self.assertEqual(local.count("create_host_path: false"), 5)
+        self.assertEqual(local.count("target: /Users/hive/.ssh/"), 5)
+        self.assertEqual(local.count("${ECHEM_SSH_DIR:-/Users/hive/.ssh}/"), 5)
+        self.assertEqual(local.count("create_host_path: false"), 6)
+        self.assertIn("windows_192_168_110_144_ed25519", local)
+        self.assertIn("--lanbts-config", local)
+        self.assertIn("--lanbts-channel-config", local)
+        self.assertIn("--lanbts-state-file", local)
 
         self.assertIn("--lan-read-only", lan)
         self.assertIn("cpus: ${ECHEM_LAN_CPU_LIMIT:-1.0}", lan)
-        self.assertIn("mem_limit: ${ECHEM_LAN_MEMORY_LIMIT:-1g}", lan)
+        self.assertIn("mem_limit: ${ECHEM_LAN_MEMORY_LIMIT:-2g}", lan)
         self.assertIn("pids_limit: ${ECHEM_LAN_PIDS_LIMIT:-128}", lan)
         self.assertIn("${ECHEM_LAN_PORT:-18788}:8787", lan)
         self.assertIn("${ECHEM_LAN_BIND:-0.0.0.0}", lan)
@@ -175,7 +185,10 @@ class DockerDeploymentTests(unittest.TestCase):
         )
         self.assertIn("/app/state/published-cache/current", lan)
         self.assertIn("/app/docker/collection-config.json", lan)
+        self.assertIn("--lanbts-state-file", lan)
+        self.assertNotIn("--lanbts-channel-config", lan)
         self.assertIn("--cv-eis-database", lan)
+        self.assertIn("--source-database", lan)
         self.assertIn("/app/state/database-readonly/start-stop.sqlite3", lan)
         self.assertIn("./state/docker/database:/app/state/database-readonly:ro", lan)
         self.assertNotIn("./state/docker/database:/app/state/database:rw", lan)
@@ -254,6 +267,7 @@ class DockerDeploymentTests(unittest.TestCase):
         self.assertIn("target: /app/state/database-readonly", override)
         self.assertIn("read_only: true", override)
         self.assertIn("--cv-eis-database", override)
+        self.assertIn("--source-database", override)
         self.assertIn("ECHEM_DATABASE_VOLUME_NAME", override)
         self.assertIn("- --lan-no-auth", override)
         self.assertNotIn("cp /run/start-stop-secrets/lan-basic-auth.txt", override)
@@ -263,6 +277,13 @@ class DockerDeploymentTests(unittest.TestCase):
             "/tmp/start-stop-ssh/",
             override,
         )
+        self.assertIn(
+            "cp /Users/hive/.ssh/windows_192_168_110_144_ed25519 "
+            "/tmp/start-stop-ssh/",
+            override,
+        )
+        self.assertIn("/tmp/lanbts-config.windows.json", override)
+        self.assertIn("/app/docker/lanbts-config.json", override)
 
         self.assertIn('$ComposeArguments[0] -eq "backup"', wrapper)
         self.assertIn("ECHEM_DATABASE_VOLUME_NAME", wrapper)
@@ -288,8 +309,8 @@ class DockerDeploymentTests(unittest.TestCase):
         self.assertIn("- /tmp/collection-config.windows.json", override)
         self.assertNotIn("chmod 600 /Users/hive/.ssh/", override)
         self.assertIn("ECHEM_LAN_IP=192.168.110.225", environment)
-        self.assertIn("ECHEM_IMAGE_VERSION=0.6.0-dev.7.2", environment)
-        self.assertIn("ECHEM_IMAGE_TAG=0.6.0-dev.7.2-windows", environment)
+        self.assertIn("ECHEM_IMAGE_VERSION=0.7.0-dev.1", environment)
+        self.assertIn("ECHEM_IMAGE_TAG=0.7.0-dev.1-windows", environment)
         self.assertIn("ECHEM_BACKUP_CPU_LIMIT=1.0", environment)
         self.assertIn("ECHEM_BACKUP_STATUS_VOLUME_NAME=", environment)
         self.assertIn("ECHEM_BACKUP_SCHEDULE_ENABLED=1", environment)
@@ -372,6 +393,12 @@ class DockerDeploymentTests(unittest.TestCase):
         self.assertIn("!static/start-stop-workstations.html", rules)
         self.assertIn("!static/start-stop-workstations.js", rules)
         self.assertIn("!static/start-stop-workstations.css", rules)
+        self.assertIn("!static/start-stop-lanbts.html", rules)
+        self.assertIn("!static/start-stop-lanbts.js", rules)
+        self.assertIn("!static/start-stop-lanbts.css", rules)
+        self.assertIn("!static/start-stop-stability.js", rules)
+        self.assertIn("!static/start-stop-stability.css", rules)
+        self.assertIn("!docker/lanbts-config.json", rules)
         self.assertIn("!static/styles.css", rules)
         self.assertIn("!static/workbench.css", rules)
         self.assertIn("!static/icons/gear.svg", rules)

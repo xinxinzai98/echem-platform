@@ -4,12 +4,15 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
-  <title>启停分析 · Start–stop Studio</title>
+  <title>稳定性分析 · Start–stop Studio</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%2317212b'/%3E%3Cpath d='M10 38c8-24 16 20 24-8s14 16 20-10' fill='none' stroke='%237ee2d7' stroke-width='5' stroke-linecap='round'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/static/styles.css">
   <link rel="stylesheet" href="/static/workbench.css">
   <link rel="stylesheet" href="/static/start-stop.css">
+  <link rel="stylesheet" href="/static/start-stop-stability.css">
   <script src="/static/start-stop-shell.js"></script>
+  <script src="/static/start-stop-client.js"></script>
+  <script src="/static/start-stop-plot-interaction.js"></script>
 </head>
 <body class="start-stop-app start-stop-repository-mode">
   <div class="workbench-shell">
@@ -25,7 +28,7 @@
           </div>
           <div>
             <strong id="workbenchBrandTitle">Start–stop Studio</strong>
-            <span id="workbenchBrandSubtitle">启停数据分析</span>
+            <span id="workbenchBrandSubtitle">稳定性数据分析</span>
           </div>
         </a>
         <button id="workbenchSidebarToggle" class="workbench-sidebar-toggle" type="button" aria-controls="workbenchNavigation" aria-expanded="true" aria-label="收起侧边栏">
@@ -58,22 +61,29 @@
             <small>六个工作站与当前材料</small>
           </span>
         </a>
-        <a id="startStopNavItem" class="workbench-nav-item" data-analysis-route href="/start-stop/analysis" aria-current="page" aria-label="03 启停分析" title="启停分析">
-          <span id="startStopNavNumber" class="workbench-nav-number">03</span>
+        <a id="startStopLanbtsNavItem" class="workbench-nav-item" data-lanbts-route href="/start-stop/lanbts" aria-label="03 蓝博八通道" title="蓝博八通道">
+          <span id="startStopLanbtsNavNumber" class="workbench-nav-number">03</span>
           <span class="workbench-nav-copy">
-            <strong>启停分析</strong>
-            <small>选线、高亮与交互检查</small>
+            <strong>蓝博八通道</strong>
+            <small>状态、工步、材料与面积</small>
           </span>
         </a>
-        <a id="startStopCvEisNavItem" class="workbench-nav-item" data-cv-eis-route href="/start-stop/cv-eis" aria-label="04 CV–EIS 分析" title="CV–EIS 分析">
-          <span id="startStopCvEisNavNumber" class="workbench-nav-number">04</span>
+        <a id="startStopNavItem" class="workbench-nav-item" data-analysis-route href="/start-stop/analysis" aria-current="page" aria-label="04 稳定性分析" title="稳定性分析">
+          <span id="startStopNavNumber" class="workbench-nav-number">04</span>
+          <span class="workbench-nav-copy">
+            <strong>稳定性分析</strong>
+            <small>启停与恒流稳定性</small>
+          </span>
+        </a>
+        <a id="startStopCvEisNavItem" class="workbench-nav-item" data-cv-eis-route href="/start-stop/cv-eis" aria-label="05 CV–EIS 分析" title="CV–EIS 分析">
+          <span id="startStopCvEisNavNumber" class="workbench-nav-number">05</span>
           <span class="workbench-nav-copy">
             <strong>CV–EIS 分析</strong>
             <small>过电位、Rs 与 iR 补偿</small>
           </span>
         </a>
-        <a id="startStopMaterialsNavItem" class="workbench-nav-item" data-materials-route href="/start-stop/materials" aria-label="05 材料库" title="材料库">
-          <span id="startStopMaterialsNavNumber" class="workbench-nav-number">05</span>
+        <a id="startStopMaterialsNavItem" class="workbench-nav-item" data-materials-route href="/start-stop/materials" aria-label="06 材料库" title="材料库">
+          <span id="startStopMaterialsNavNumber" class="workbench-nav-number">06</span>
           <span class="workbench-nav-copy">
             <strong>材料库</strong>
             <small>全名、备注与入图范围</small>
@@ -84,7 +94,7 @@
       <div class="workbench-utility-dock">
         <div class="workbench-mini-status">
           <strong id="sidebarStartStopState">正在读取状态</strong>
-          <small>启停数据工作区</small>
+          <small>稳定性数据工作区</small>
         </div>
       </div>
     </aside>
@@ -92,9 +102,9 @@
     <div class="workbench-content">
       <header class="topbar workbench-topbar start-stop-topbar">
         <div class="workbench-page-heading">
-          <span class="eyebrow">Start–stop / Interactive analysis</span>
-          <h1>启停分析</h1>
-          <p>临时选择材料，检查高亮曲线、异常点与水位补偿结果</p>
+          <span class="eyebrow">Stability analysis</span>
+          <h1>稳定性分析</h1>
+          <p>按实测电流模式分别检查启停循环与恒流长期稳定性</p>
         </div>
         <div class="top-actions start-stop-actions">
           <a class="secondary-outline-button action-link" data-config-route href="/start-stop">返回运行配置</a>
@@ -105,10 +115,29 @@
       <main class="start-stop-main">
         <section id="workspaceNotice" class="workspace-notice" role="alert" hidden></section>
 
+        <nav class="stability-mode-tabs" role="tablist" aria-label="稳定性分析模式">
+          <button id="startStopAnalysisTab" class="stability-mode-tab active" type="button" role="tab" aria-selected="true" aria-controls="startStopAnalysisView" data-stability-view="start_stop">
+            <span>启停分析</span>
+            <strong id="stabilityStartStopCount">—</strong>
+          </button>
+          <button id="constantCurrentAnalysisTab" class="stability-mode-tab" type="button" role="tab" aria-selected="false" aria-controls="constantCurrentAnalysisView" data-stability-view="constant_current">
+            <span>恒流分析</span>
+            <strong id="stabilityConstantCurrentCount">—</strong>
+          </button>
+        </nav>
+
+        <section id="startStopAnalysisView" class="stability-analysis-view" role="tabpanel" aria-labelledby="startStopAnalysisTab">
+          <div class="stability-source-tabs" role="group" aria-label="启停数据来源">
+            <button class="active" type="button" aria-pressed="true" data-stability-source="workstation">电化学工作站</button>
+            <button type="button" aria-pressed="false" data-stability-source="lanbts">蓝博八通道</button>
+          </div>
+
+          <section id="workstationStartStopSource" class="stability-source-view">
+
         <section id="liveComparisonBanner" class="live-comparison-banner" aria-labelledby="liveComparisonTitle" hidden>
           <div>
             <span class="eyebrow">Live comparison</span>
-            <h2 id="liveComparisonTitle">正在测试曲线已并入 03 启停分析</h2>
+            <h2 id="liveComparisonTitle">正在测试曲线已并入 04 稳定性分析</h2>
             <p id="liveComparisonMeta">正在读取最近一次正式规则计算快照…</p>
           </div>
           <div class="live-comparison-actions">
@@ -303,14 +332,135 @@
                 <div id="highlightDetails" class="highlight-details">
                   <p>点击曲线、图例或材料行的“高亮”即可固定检查，最多 16 条。</p>
                 </div>
+                <div class="highlight-export-card" aria-labelledby="highlightExportTitle">
+                  <div class="highlight-export-copy">
+                    <strong id="highlightExportTitle">导出当前高亮</strong>
+                    <span id="highlightExportStatus" role="status" aria-live="polite">请先高亮要导出的材料曲线</span>
+                  </div>
+                  <div class="highlight-export-actions" role="group" aria-label="导出当前高亮曲线">
+                    <button id="exportHighlightedExcel" class="secondary-outline-button" type="button" aria-describedby="highlightExportStatus" disabled>导出原始与处理数据 Excel</button>
+                    <button id="exportHighlightedPdf" class="export-button" type="button" aria-describedby="highlightExportStatus" disabled>导出高亮 PDF 图</button>
+                  </div>
+                </div>
               </article>
             </section>
           </section>
+        </section>
+          </section>
+
+          <section id="lanbtsStartStopSource" class="stability-source-view" data-stability-explorer="start_stop" hidden>
+            <div class="stability-explorer-heading">
+              <div>
+                <h2>蓝博电流波动数据</h2>
+                <p>内嵌工步优先；实测出现两个持续且明显不同的电流档时也自动归入这里。</p>
+              </div>
+              <span class="stability-reference-chip">LANBTS 电压参照待确认</span>
+            </div>
+            <div class="stability-explorer-layout">
+              <aside class="panel stability-series-panel">
+                <label class="search-box">
+                  <span class="sr-only">搜索蓝博启停曲线</span>
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+                  <input type="search" placeholder="搜索材料、文件或工步" data-stability-search>
+                </label>
+                <label class="stability-protocol-filter">同工步对比
+                  <select data-stability-protocol aria-label="蓝博启停工步筛选"></select>
+                </label>
+                <div class="stability-selection-row">
+                  <span data-stability-selection>已选 0 / 0</span>
+                  <button type="button" data-stability-select-all>选择当前工步（最多 16 条）</button>
+                  <button type="button" data-stability-clear>清空</button>
+                </div>
+                <div class="stability-series-list" data-stability-series-list aria-busy="true">
+                  <div class="start-stop-loading">正在读取蓝博启停数据…</div>
+                </div>
+              </aside>
+              <article class="panel stability-chart-panel">
+                <div class="stability-chart-heading">
+                  <div>
+                    <h2 data-stability-chart-title>蓝博启停曲线</h2>
+                    <p data-stability-chart-description>请选择要比较的数据</p>
+                  </div>
+                  <label>指标
+                    <select data-stability-metric>
+                      <option value="stress_endpoint">高负载段末端电压</option>
+                      <option value="recovery_endpoint">低负载段末端电压</option>
+                      <option value="negative_shift">高负载电压负移</option>
+                      <option value="minimum_time">异常判断</option>
+                      <option value="overview">全程电压</option>
+                      <option value="current">实测电流</option>
+                      <option value="current_density">实测电流密度（需面积）</option>
+                    </select>
+                  </label>
+                </div>
+                <p class="stability-measurement-boundary" data-stability-boundary>蓝博电压参照尚未确认，不与 Hg/HgO 曲线共用纵轴。</p>
+                <div class="stability-chart-frame">
+                  <svg data-stability-chart role="img" aria-label="蓝博启停稳定性曲线"></svg>
+                  <div class="start-stop-chart-empty" data-stability-empty>请选择左侧曲线</div>
+                </div>
+                <div class="stability-chart-legend" data-stability-legend></div>
+                <div class="stability-summary-grid" data-stability-summary></div>
+              </article>
+            </div>
+          </section>
+        </section>
+
+        <section id="constantCurrentAnalysisView" class="stability-analysis-view" role="tabpanel" aria-labelledby="constantCurrentAnalysisTab" data-stability-explorer="constant_current" hidden>
+          <div class="stability-explorer-heading">
+            <div>
+              <h2>恒流长期稳定性</h2>
+              <p>单一电流档且没有持续重复切换的数据进入这里，计算原始电压变化与线性漂移。</p>
+            </div>
+            <span class="stability-reference-chip">LANBTS 电压参照待确认</span>
+          </div>
+          <div class="stability-explorer-layout">
+            <aside class="panel stability-series-panel">
+              <label class="search-box">
+                <span class="sr-only">搜索蓝博恒流曲线</span>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+                <input type="search" placeholder="搜索材料、文件或工步" data-stability-search>
+              </label>
+              <label class="stability-protocol-filter">同工步对比
+                <select data-stability-protocol aria-label="蓝博恒流工步筛选"></select>
+              </label>
+              <div class="stability-selection-row">
+                <span data-stability-selection>已选 0 / 0</span>
+                <button type="button" data-stability-select-all>选择当前工步（最多 16 条）</button>
+                <button type="button" data-stability-clear>清空</button>
+              </div>
+              <div class="stability-series-list" data-stability-series-list aria-busy="true">
+                <div class="start-stop-loading">正在读取恒流数据…</div>
+              </div>
+            </aside>
+            <article class="panel stability-chart-panel">
+              <div class="stability-chart-heading">
+                <div>
+                  <h2 data-stability-chart-title>恒流电压走势</h2>
+                  <p data-stability-chart-description>请选择要比较的数据</p>
+                </div>
+                <label>指标
+                  <select data-stability-metric>
+                    <option value="overview">恒流电压走势</option>
+                    <option value="current">实测电流</option>
+                    <option value="current_density">实测电流密度（需面积）</option>
+                  </select>
+                </label>
+              </div>
+              <p class="stability-measurement-boundary" data-stability-boundary>蓝博电压参照尚未确认，不与 Hg/HgO 曲线共用纵轴。</p>
+              <div class="stability-chart-frame">
+                <svg data-stability-chart role="img" aria-label="蓝博恒流稳定性曲线"></svg>
+                <div class="start-stop-chart-empty" data-stability-empty>请选择左侧曲线</div>
+              </div>
+              <div class="stability-chart-legend" data-stability-legend></div>
+              <div class="stability-summary-grid" data-stability-summary></div>
+            </article>
+          </div>
         </section>
       </main>
     </div>
   </div>
 
   <script src="/static/start-stop.js"></script>
+  <script src="/static/start-stop-stability.js"></script>
 </body>
 </html>

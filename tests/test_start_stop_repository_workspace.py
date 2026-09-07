@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import copy
+import errno
 import hashlib
 import json
+import os
 import shutil
 import sqlite3
 import subprocess
@@ -31,6 +33,8 @@ class FakeRepositoryDatabase:
             "created_utc": "2026-08-03T05:00:00+00:00",
         }
         self.generation: Path | None = None
+        self.generations: dict[str, Path] = {}
+        self.generation_ids: dict[str, int] = {}
         self.publish_calls: list[tuple[object, int, str]] = []
         self.audit_rows: list[tuple[str, str, str]] = []
         self.recovery_calls: list[dict] = []
@@ -45,7 +49,7 @@ class FakeRepositoryDatabase:
         return dict(self.snapshot)
 
     def materialize_snapshot(self, snapshot_id, source_root):
-        assert snapshot_id == 7
+        assert snapshot_id == self.snapshot["id"]
         path = Path(source_root) / "machine" / "root" / "sample" / "启停.txt"
         path.parent.mkdir(parents=True)
         path.write_bytes(b"fixture")
@@ -61,15 +65,43 @@ class FakeRepositoryDatabase:
         destination = self.path.parent / f"generation-{len(self.publish_calls) + 1}"
         shutil.copytree(output_dir, destination)
         self.generation = destination
+        generation_id = len(self.publish_calls) + 1
+        self.generations[kind] = destination
+        self.generation_ids[kind] = generation_id
         self.publish_calls.append((snapshot_id, config_revision, kind))
-        return {"id": len(self.publish_calls), "generation_id": f"g{len(self.publish_calls)}"}
+        return {"id": generation_id, "generation_id": generation_id}
 
     def restore_current_artifacts(self, target, kind=None):
-        del kind
-        if self.generation is None:
-            raise FileNotFoundError("no current generation")
-        shutil.copytree(self.generation, target)
-        return {"restored": True}
+        selected = self.generations.get(kind) if kind else self.generation
+        if selected is None:
+            return None
+        shutil.copytree(selected, target)
+        selected_kind = kind or next(
+            (key for key, value in self.generations.items() if value == selected),
+            "",
+        )
+        generation_id = self.generation_ids.get(selected_kind, 0)
+        (Path(target) / ".start-stop-artifacts.json").write_text(
+            json.dumps(
+                {
+                    "generation_id": generation_id,
+                    "kind": selected_kind,
+                }
+            ),
+            encoding="utf-8",
+        )
+        return {"restored": True, "generation_id": generation_id}
+
+    def current_analysis_run(self, kind="render"):
+        generation_id = self.generation_ids.get(kind)
+        if generation_id is None:
+            return {"state": "none"}
+        return {
+            "state": "sealed",
+            "artifact_generation_id": generation_id,
+            "snapshot_id": self.snapshot["id"],
+            "config_revision": 0,
+        }
 
     def repository_status(self):
         if self.status_override is not None:
@@ -245,6 +277,11 @@ class SimulatedRepositoryWorkspace(StartStopWorkspace):
         if "--render" in command and self.fail_render:
             (output_dir / "partial.txt").write_text("must not publish", encoding="utf-8")
             return subprocess.CompletedProcess(command, 1, "", "render failed")
+        if "--render" in command:
+            fixed = json.loads(Path(command[command.index("--material-config-json") + 1]).read_text())
+            seeded = json.loads((output_dir / "material_config_snapshot.json").read_text())
+            if fixed["dataset_fingerprint"] != seeded["dataset_fingerprint"]:
+                return subprocess.CompletedProcess(command, 1, "", "网页配置对应的数据快照已过期")
 
         material = {
             "key": "machine/root/sample",
@@ -744,6 +781,79 @@ class StartStopRepositoryWorkspaceTests(unittest.TestCase):
         self.assertIsNot(self.database.generation, previous_generation)
         assert self.database.generation is not None
         validate_sealed_artifact_directory(self.database.generation)
+
+    def test_scan_after_render_preserves_current_render_cache(self):
+        self.workspace.start_job("scan")
+        self.assertEqual(self.wait_for_job()["status"], "completed")
+        self.workspace.start_job("render")
+        self.assertEqual(self.wait_for_job()["status"], "completed")
+        (self.workspace.analysis_dir / self.workspace.SERIES_NAME).write_text(
+            "series_id\nM01-main\n", encoding="utf-8"
+        )
+        render_sentinel = self.workspace.analysis_dir / "render-only.txt"
+        render_sentinel.write_bytes(b"keep-readable-render-cache")
+
+        self.database.snapshot.update(
+            id=8,
+            dataset_fingerprint="repository-dataset-2",
+            created_utc="2026-08-03T06:00:00+00:00",
+        )
+        self.workspace.start_job("scan")
+        self.assertEqual(self.wait_for_job()["status"], "completed")
+
+        marker = json.loads(
+            (self.workspace.analysis_dir / ".start-stop-artifacts.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(marker["kind"], "render")
+        self.assertEqual(
+            render_sentinel.read_bytes(), b"keep-readable-render-cache"
+        )
+
+        # The scan advances the catalog while the readable chart cache stays old.
+        latest_path = self.database.generation / "material_config_snapshot.json"
+        latest = json.loads(latest_path.read_text())
+        latest["dataset_fingerprint"] = "analysis-dataset-2"
+        latest_path.write_text(json.dumps(latest))
+        self.database.current_material_catalog = lambda: {"snapshot": latest}
+        (self.workspace.analysis_dir / self.workspace.SUMMARY_NAME).write_text(
+            json.dumps({"material_config": {"dataset_fingerprint": "analysis-dataset-1"}})
+        )
+        self.assertEqual(self.workspace.materials()["dataset_fingerprint"], "analysis-dataset-2")
+        self.assertTrue(self.workspace.status()["data_stale"])
+        self.assertFalse(self.workspace.status()["analysis_ready"])
+        self.assertEqual(self.workspace._snapshot()["dataset_fingerprint"], "analysis-dataset-1")
+        self.workspace.start_job("render")
+        self.assertEqual(self.wait_for_job()["status"], "completed")
+
+    def test_cache_path_swap_retries_transient_windows_share_lock(self):
+        source = self.root / "swap-source"
+        target = self.root / "swap-target"
+        source.mkdir()
+        (source / "payload.txt").write_text("ready", encoding="utf-8")
+        real_replace = os.replace
+        attempts = 0
+
+        def transient_replace(left, right):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise PermissionError(errno.EACCES, "shared directory busy")
+            return real_replace(left, right)
+
+        with mock.patch(
+            "echem_platform.start_stop.os.replace",
+            side_effect=transient_replace,
+        ), mock.patch("echem_platform.start_stop.time.sleep") as sleep:
+            self.workspace._replace_cache_path_with_retry(source, target)
+
+        self.assertEqual(attempts, 2)
+        sleep.assert_called_once_with(0.5)
+        self.assertEqual(
+            (target / "payload.txt").read_text(encoding="utf-8"),
+            "ready",
+        )
 
     def test_post_publish_audit_failure_is_a_warning_not_failed(self):
         self.workspace.start_job("scan")

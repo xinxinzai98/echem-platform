@@ -39,6 +39,14 @@ class FakeWorkspace:
     def materials():
         return {"materials": []}
 
+    @staticmethod
+    def chart_export(**_kwargs):
+        return (
+            b"PK-highlight-export",
+            "启停高亮数据.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
 
 class HandlerHarness:
     def __init__(
@@ -152,6 +160,18 @@ class TransportPerformanceTests(unittest.TestCase):
         self.assertEqual(second_payload, b"")
         self.assertEqual(second_headers["etag"], headers["etag"])
         self.assertEqual(second_headers["content-length"], "0")
+
+    def test_highlight_export_is_a_read_only_binary_download(self):
+        status, headers, payload = HandlerHarness(lan_no_auth=True).request(
+            "GET",
+            "/api/start-stop/chart-export?series=M01-main&metric=cathodic&x=cycle&mode=raw&format=xlsx&markers=1",
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload, b"PK-highlight-export")
+        self.assertIn("spreadsheetml", headers["content-type"])
+        self.assertEqual(headers["cache-control"], "no-store")
+        self.assertIn("filename*=UTF-8''", headers["content-disposition"])
 
 
 class LanAuthFileTests(unittest.TestCase):
@@ -353,6 +373,12 @@ class LanAuthLaunchTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "仅可"):
             SERVICE._validated_launch(local_no_auth)
 
+        local_source_database = parser.parse_args(
+            required + ["--source-database", "/tmp/source.sqlite3"]
+        )
+        with self.assertRaisesRegex(ValueError, "仅用于 LAN"):
+            SERVICE._validated_launch(local_source_database)
+
         lan_both = parser.parse_args(
             required
             + [
@@ -403,6 +429,8 @@ class LanAuthDeploymentTests(unittest.TestCase):
         self.assertIn("/healthz", lan)
         self.assertNotIn("/api/start-stop/status", local)
         self.assertNotIn("/api/start-stop/status", lan)
+        self.assertNotIn("--source-database", local)
+        self.assertIn("--source-database", lan)
 
         dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text(
             encoding="utf-8"

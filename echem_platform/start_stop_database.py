@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import datetime as dt
 import hashlib
+import io
 import json
 import os
 import re
@@ -16,6 +17,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterator, Mapping
 
 from .start_stop_backup import operational_check_database
+from .start_stop_repository_state import RepositoryStateReader
 
 
 SCHEMA_VERSION = 5
@@ -71,6 +73,40 @@ class AutoUpdateConfigConflict(ValueError):
 
 def _utc_now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+
+
+def _current_material_catalog(connection: sqlite3.Connection) -> dict[str, Any]:
+    """Read catalog inputs from one committed generation, independent of charts."""
+    generation = connection.execute(
+        """SELECT ag.id FROM artifact_current ac
+        JOIN artifact_selections s ON s.id=ac.selection_id
+        JOIN artifact_generations ag ON ag.id=s.generation_id
+        WHERE ac.kind IN ('scan','prepare_upload','render')
+        ORDER BY s.id DESC LIMIT 1"""
+    ).fetchone()
+    if generation is None:
+        return {}
+    result: dict[str, Any] = {"generation_id": int(generation[0])}
+    for key, path in (("snapshot", "material_config_snapshot.json"),
+                      ("readback", ".material_config_readback.json")):
+        row = connection.execute(
+            """SELECT blob_id,sha256,size_bytes FROM artifact_entries
+            WHERE generation_id=? AND relative_path=?""", (generation[0], path)
+        ).fetchone()
+        if row is None:
+            continue
+        if not 0 <= int(row[2]) <= 32 * 1024 * 1024:
+            raise ValueError("Material catalog exceeds JSON size limit")
+        content = connection.execute(
+            "SELECT content FROM content_blobs WHERE id=?", (row[0],)
+        ).fetchone()[0]
+        if len(content) != row[2] or hashlib.sha256(content).hexdigest() != row[1]:
+            raise ValueError("Material catalog checksum mismatch")
+        payload = json.loads(content)
+        if not isinstance(payload, dict):
+            raise ValueError("Material catalog must be a JSON object")
+        result[key] = payload
+    return result
 
 
 def _json(value: Any) -> str:
@@ -335,7 +371,196 @@ def _modified_ns(value: Any) -> int:
         return 0
 
 
-class StartStopDatabase:
+def _source_export_identities(
+    identities: Any,
+    *,
+    maximum_files: int,
+) -> list[tuple[str, str, int]]:
+    if not isinstance(identities, (list, tuple)):
+        raise ValueError("source export identities must be an array")
+    if not identities or len(identities) > int(maximum_files):
+        raise ValueError(
+            f"source export requires 1 to {int(maximum_files)} files"
+        )
+    normalized: list[tuple[str, str, int]] = []
+    seen: set[tuple[str, str, int]] = set()
+    for item in identities:
+        if not isinstance(item, Mapping):
+            raise ValueError("source export identity is invalid")
+        repository_path = _relative_path(
+            item.get("repository_path"),
+            label="source export repository_path",
+        )
+        sha256 = str(item.get("sha256") or "").strip().casefold()
+        if re.fullmatch(r"[0-9a-f]{64}", sha256) is None:
+            raise ValueError("source export SHA-256 is invalid")
+        try:
+            size_bytes = int(item.get("size_bytes"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("source export size is invalid") from exc
+        if size_bytes < 0:
+            raise ValueError("source export size is invalid")
+        key = (repository_path, sha256, size_bytes)
+        if key in seen:
+            raise ValueError("source export identity is duplicated")
+        seen.add(key)
+        normalized.append(key)
+    return normalized
+
+
+def _source_export_manifest(
+    connection: sqlite3.Connection,
+    identities: Any,
+    *,
+    maximum_files: int,
+    maximum_total_bytes: int,
+) -> list[dict[str, Any]]:
+    normalized = _source_export_identities(
+        identities,
+        maximum_files=maximum_files,
+    )
+    records: list[dict[str, Any]] = []
+    total_bytes = 0
+    for repository_path, sha256, size_bytes in normalized:
+        row = connection.execute(
+            """SELECT sv.id AS source_version_id,sv.version_number,
+                      sv.repository_path,sv.size_bytes,sv.source_modified_utc,
+                      sv.modified_ns,sv.created_utc,b.sha256
+               FROM source_versions sv
+               JOIN content_blobs b ON b.id=sv.blob_id
+               WHERE sv.repository_path=? AND b.sha256=? AND sv.size_bytes=?
+               ORDER BY sv.id DESC
+               LIMIT 1""",
+            (repository_path, sha256, size_bytes),
+        ).fetchone()
+        if row is None:
+            raise KeyError(repository_path)
+        total_bytes += int(row["size_bytes"])
+        if total_bytes > int(maximum_total_bytes):
+            raise OverflowError("source export exceeds the byte limit")
+        records.append(
+            {
+                "source_version_id": int(row["source_version_id"]),
+                "version_number": int(row["version_number"]),
+                "repository_path": str(row["repository_path"]),
+                "size_bytes": int(row["size_bytes"]),
+                "sha256": str(row["sha256"]),
+                "source_modified_utc": str(row["source_modified_utc"]),
+                "modified_ns": int(row["modified_ns"]),
+                "created_utc": str(row["created_utc"]),
+            }
+        )
+    return records
+
+
+def _read_source_export_content(
+    connection: sqlite3.Connection,
+    *,
+    source_version_id: int,
+    expected_sha256: str,
+    expected_size_bytes: int,
+    maximum_file_bytes: int,
+) -> bytes:
+    expected_sha256 = str(expected_sha256 or "").strip().casefold()
+    expected_size_bytes = int(expected_size_bytes)
+    if (
+        re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is None
+        or expected_size_bytes < 0
+        or expected_size_bytes > int(maximum_file_bytes)
+    ):
+        raise ValueError("source export content expectation is invalid")
+    row = connection.execute(
+        """SELECT sv.blob_id,sv.size_bytes,b.sha256
+           FROM source_versions sv
+           JOIN content_blobs b ON b.id=sv.blob_id
+           WHERE sv.id=?""",
+        (int(source_version_id),),
+    ).fetchone()
+    if row is None:
+        raise KeyError(int(source_version_id))
+    if (
+        int(row["size_bytes"]) != expected_size_bytes
+        or str(row["sha256"]) != expected_sha256
+    ):
+        raise sqlite3.DatabaseError("source export version identity changed")
+    digest = hashlib.sha256()
+    copied = 0
+    output = io.BytesIO()
+    with connection.blobopen(
+        "content_blobs",
+        "content",
+        int(row["blob_id"]),
+        readonly=True,
+    ) as source:
+        while True:
+            chunk = source.read(_CHUNK_SIZE)
+            if not chunk:
+                break
+            output.write(chunk)
+            digest.update(chunk)
+            copied += len(chunk)
+    if copied != expected_size_bytes or digest.hexdigest() != expected_sha256:
+        raise sqlite3.DatabaseError("source export BLOB verification failed")
+    return output.getvalue()
+
+
+_STABILITY_CANDIDATE_KINDS = (
+    "lanbts_start_stop",
+    "lanbts_constant_current",
+)
+
+
+def _current_stability_sources(
+    connection: sqlite3.Connection,
+) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        """SELECT sv.id AS source_version_id,sv.version_number,
+                   sv.repository_path,sv.size_bytes,sv.source_modified_utc,
+                   sv.modified_ns,sv.created_utc,sv.metadata_json,b.sha256,
+                   s.machine_id,s.root_label,s.remote_path,
+                   COALESCE(cm.candidate_kind,sv.candidate_kind) AS candidate_kind
+            FROM source_current sc
+            JOIN source_selections ss ON ss.id=sc.selection_id
+            JOIN source_versions sv ON sv.id=ss.source_version_id
+            JOIN sources s ON s.id=sv.source_id
+            JOIN content_blobs b ON b.id=sv.blob_id
+            LEFT JOIN candidate_current cc ON cc.source_version_id=sv.id
+            LEFT JOIN candidate_marks cm ON cm.id=cc.mark_id
+            WHERE COALESCE(cm.is_candidate,sv.is_candidate)=1
+              AND COALESCE(cm.candidate_kind,sv.candidate_kind) IN (?,?)
+            ORDER BY sv.source_modified_utc,sv.repository_path COLLATE NOCASE""",
+        _STABILITY_CANDIDATE_KINDS,
+    ).fetchall()
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            metadata = json.loads(str(row["metadata_json"] or "{}"))
+        except json.JSONDecodeError:
+            metadata = {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        result.append(
+            {
+                "source_version_id": int(row["source_version_id"]),
+                "version_number": int(row["version_number"]),
+                "repository_path": str(row["repository_path"]),
+                "size_bytes": int(row["size_bytes"]),
+                "sha256": str(row["sha256"]),
+                "source_modified_utc": str(row["source_modified_utc"]),
+                "modified_ns": int(row["modified_ns"]),
+                "created_utc": str(row["created_utc"]),
+                "machine_id": str(row["machine_id"]),
+                "root_label": str(row["root_label"]),
+                "remote_path": str(row["remote_path"]),
+                "candidate_kind": str(row["candidate_kind"]),
+                "metadata": metadata,
+            }
+        )
+    return result
+
+
+class StartStopDatabase(RepositoryStateReader):
+    schema_version = SCHEMA_VERSION
     """Content-addressed repository for start-stop source data and artifacts."""
 
     def __init__(
@@ -1012,37 +1237,7 @@ class StartStopDatabase:
             raise
         StartStopDatabase._validate_live_preview_v5(connection)
 
-    @staticmethod
-    def _row_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
-        return dict(row) if row is not None else None
 
-    @staticmethod
-    def _job_from_row(
-        connection: sqlite3.Connection,
-        row: sqlite3.Row | None,
-    ) -> dict[str, Any] | None:
-        if row is None:
-            return None
-        payload = dict(row)
-        for stored, public in (
-            ("progress_json", "progress"),
-            ("result_json", "result"),
-        ):
-            try:
-                value = json.loads(str(payload.pop(stored)))
-            except (TypeError, ValueError, json.JSONDecodeError):
-                value = {}
-            payload[public] = value if isinstance(value, dict) else {}
-        cursor = connection.execute(
-            "SELECT COALESCE(MAX(id),0) FROM job_events WHERE job_id=?",
-            (str(payload["id"]),),
-        ).fetchone()
-        payload["event_cursor"] = int(cursor[0]) if cursor is not None else 0
-        payload["can_retry"] = str(payload.get("status") or "") in {
-            "failed",
-            "interrupted",
-        }
-        return payload
 
     @staticmethod
     def _insert_job_event(
@@ -1161,12 +1356,6 @@ class StartStopDatabase:
             ).fetchone()
             return self._job_from_row(connection, row)
 
-    def latest_job(self) -> dict[str, Any] | None:
-        with self.session() as connection:
-            row = connection.execute(
-                "SELECT * FROM jobs ORDER BY created_utc DESC,rowid DESC LIMIT 1"
-            ).fetchone()
-            return self._job_from_row(connection, row)
 
     def claim_job(
         self,
@@ -1547,57 +1736,6 @@ class StartStopDatabase:
                 raise
         return recovered
 
-    def current_analysis_run(self, kind: str = "render") -> dict[str, Any]:
-        normalized_kind = str(kind or "render").strip()
-        if not _SAFE_TOKEN.fullmatch(normalized_kind):
-            raise ValueError("invalid artifact kind")
-        with self.session() as connection:
-            row = connection.execute(
-                """SELECT ag.id AS generation_id,ag.snapshot_id,
-                          ag.config_revision,ag.created_utc AS generation_created_utc,
-                          ar.*
-                   FROM artifact_current ac
-                   JOIN artifact_selections ase ON ase.id=ac.selection_id
-                   JOIN artifact_generations ag ON ag.id=ase.generation_id
-                   LEFT JOIN analysis_runs ar ON ar.artifact_generation_id=ag.id
-                   WHERE ac.kind=?""",
-                (normalized_kind,),
-            ).fetchone()
-        if row is None:
-            return {"state": "none"}
-        payload = dict(row)
-        if payload.get("id") is None:
-            return {
-                "state": "legacy_unverified",
-                "artifact_generation_id": int(payload["generation_id"]),
-                "snapshot_id": int(payload["snapshot_id"]),
-                "config_revision": int(payload["config_revision"]),
-                "created_utc": str(payload["generation_created_utc"]),
-            }
-        result = {
-            "state": "sealed",
-            "analysis_run_id": int(payload["id"]),
-            "job_id": str(payload["job_id"]),
-            "snapshot_id": int(payload["snapshot_id"]),
-            "config_revision": int(payload["config_revision"]),
-            "artifact_generation_id": int(payload["artifact_generation_id"]),
-            "dataset_fingerprint": str(payload["dataset_fingerprint"]),
-            "artifact_manifest_sha256": str(payload["artifact_manifest_sha256"]),
-            "analysis_script_sha256": str(payload["analysis_script_sha256"]),
-            "material_config_sha256": str(payload["material_config_sha256"]),
-            "analysis_summary_sha256": str(payload["analysis_summary_sha256"]),
-            "created_utc": str(payload["created_utc"]),
-        }
-        for stored, public in (
-            ("rules_json", "rules"),
-            ("runtime_json", "runtime"),
-        ):
-            try:
-                value = json.loads(str(payload[stored]))
-            except (TypeError, ValueError, json.JSONDecodeError):
-                value = {}
-            result[public] = value if isinstance(value, dict) else {}
-        return result
 
     def audit(self, action: str, target: str, detail: Any) -> int:
         detail_json = _json(detail)
@@ -1762,6 +1900,49 @@ class StartStopDatabase:
             connection.commit()
             return int(cursor.lastrowid)
 
+    def collection_issues_for_source(
+        self,
+        machine_id: str,
+        root_label: str,
+        remote_path: str,
+        *,
+        code: str = "",
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Return recent immutable issues for one exact collected source."""
+
+        machine_id, root_label, remote_path = self._source_identity(
+            machine_id, root_label, remote_path
+        )
+        bounded_limit = max(1, min(int(limit), 100))
+        arguments: list[Any] = [machine_id, root_label, remote_path]
+        code_clause = ""
+        normalized_code = str(code or "").strip()
+        if normalized_code:
+            code_clause = " AND code=?"
+            arguments.append(normalized_code)
+        arguments.append(bounded_limit)
+        with self.session() as connection:
+            rows = connection.execute(
+                """SELECT id,batch_id,severity,code,message,detail_json,created_utc
+                   FROM collection_issues
+                   WHERE machine_id=? AND root_label=?
+                     AND remote_path COLLATE NOCASE=?"""
+                + code_clause
+                + " ORDER BY id DESC LIMIT ?",
+                tuple(arguments),
+            ).fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            try:
+                detail = json.loads(str(item.pop("detail_json") or "{}"))
+            except json.JSONDecodeError:
+                detail = {}
+            item["detail"] = detail if isinstance(detail, dict) else {}
+            result.append(item)
+        return result
+
     def _source_identity(self, machine_id: Any, root_label: Any, remote_path: Any) -> tuple[str, str, str]:
         return (
             _relative_path(machine_id, label="machine_id"),
@@ -1783,6 +1964,48 @@ class StartStopDatabase:
                 (machine_id, root_label, remote_path),
             ).fetchone()
         return row is None or int(row["size_bytes"]) != int(size) or int(row["last_write_ticks"]) != int(ticks)
+
+    def current_source_version(
+        self,
+        machine_id: str,
+        root_label: str,
+        remote_path: str,
+    ) -> dict[str, Any] | None:
+        """Return one current immutable source version without reading its BLOB."""
+
+        machine_id, root_label, remote_path = self._source_identity(
+            machine_id,
+            root_label,
+            remote_path,
+        )
+        with self.session() as connection:
+            row = connection.execute(
+                """SELECT sv.*,b.sha256,
+                          COALESCE(cm.is_candidate,sv.is_candidate) AS effective_candidate,
+                          COALESCE(cm.candidate_kind,sv.candidate_kind) AS effective_candidate_kind
+                   FROM sources s
+                   JOIN source_current sc ON sc.source_id=s.id
+                   JOIN source_selections ss ON ss.id=sc.selection_id
+                   JOIN source_versions sv ON sv.id=ss.source_version_id
+                   JOIN content_blobs b ON b.id=sv.blob_id
+                   LEFT JOIN candidate_current cc ON cc.source_version_id=sv.id
+                   LEFT JOIN candidate_marks cm ON cm.id=cc.mark_id
+                   WHERE s.machine_id=? AND s.root_label=? AND s.remote_path=?""",
+                (machine_id, root_label, remote_path),
+            ).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        try:
+            metadata = json.loads(str(result.pop("metadata_json") or "{}"))
+        except json.JSONDecodeError:
+            metadata = {}
+        result["metadata"] = metadata if isinstance(metadata, dict) else {}
+        result["is_candidate"] = bool(result.pop("effective_candidate"))
+        result["candidate_kind"] = str(
+            result.pop("effective_candidate_kind") or ""
+        )
+        return result
 
     def _ensure_blob_from_path(
         self, connection: sqlite3.Connection, path: Path, sha256: str, size_bytes: int
@@ -1843,6 +2066,7 @@ class StartStopDatabase:
         if staged.is_symlink() or not staged.is_file():
             raise ValueError("staged path must be a regular file")
         meta = dict(metadata)
+        force_metadata_version = meta.pop("_force_metadata_version", False) is True
         machine_id, root_label, remote_path = self._source_identity(
             meta.get("machine_id"), meta.get("root_label"), meta.get("remote_path")
         )
@@ -1893,7 +2117,14 @@ class StartStopDatabase:
                     JOIN source_versions sv ON sv.id=ss.source_version_id
                     WHERE sc.source_id=?""", (source_id,),
                 ).fetchone()
-                unchanged = current is not None and int(current["blob_id"]) == blob_id and int(current["size_bytes"]) == size_bytes and int(current["last_write_ticks"]) == ticks and current["repository_path"] == repository_path
+                unchanged = (
+                    not force_metadata_version
+                    and current is not None
+                    and int(current["blob_id"]) == blob_id
+                    and int(current["size_bytes"]) == size_bytes
+                    and int(current["last_write_ticks"]) == ticks
+                    and current["repository_path"] == repository_path
+                )
                 if unchanged:
                     connection.commit()
                     return {
@@ -1963,6 +2194,48 @@ class StartStopDatabase:
             )
             connection.commit()
         return {"mark_id": mark_id, "source_version_id": int(source_version_id), "is_candidate": bool(is_candidate), "candidate_kind": str(candidate_kind)}
+
+    def source_export_manifest(
+        self,
+        identities: Any,
+        *,
+        maximum_files: int,
+        maximum_total_bytes: int,
+    ) -> list[dict[str, Any]]:
+        """Resolve immutable source versions for a bounded export request."""
+
+        with self.session() as connection:
+            return _source_export_manifest(
+                connection,
+                identities,
+                maximum_files=maximum_files,
+                maximum_total_bytes=maximum_total_bytes,
+            )
+
+    def stability_sources(self) -> list[dict[str, Any]]:
+        """List current normalized LANBTS stability sources and provenance."""
+
+        with self.session() as connection:
+            return _current_stability_sources(connection)
+
+    def read_source_export_content(
+        self,
+        *,
+        source_version_id: int,
+        expected_sha256: str,
+        expected_size_bytes: int,
+        maximum_file_bytes: int,
+    ) -> bytes:
+        """Read and verify one immutable raw source BLOB without changing state."""
+
+        with self.session() as connection:
+            return _read_source_export_content(
+                connection,
+                source_version_id=source_version_id,
+                expected_sha256=expected_sha256,
+                expected_size_bytes=expected_size_bytes,
+                maximum_file_bytes=maximum_file_bytes,
+            )
 
     def _current_source_rows(self, connection: sqlite3.Connection) -> list[sqlite3.Row]:
         return connection.execute(
@@ -2379,6 +2652,10 @@ class StartStopDatabase:
             job_id=job_id,
             analysis_run=analysis_run,
         )
+
+    def current_material_catalog(self) -> dict[str, Any]:
+        with self.session() as connection:
+            return _current_material_catalog(connection)
 
     def restore_current_artifact_files(
         self,
@@ -3147,21 +3424,6 @@ class StartStopDatabase:
             connection.commit()
         return self._get_live_preview_state()
 
-    def get_start_stop_config(self) -> dict[str, Any]:
-        with self.session() as connection:
-            row = connection.execute(
-                """SELECT r.* FROM material_config_current c
-                JOIN material_config_revisions r ON r.revision=c.revision WHERE c.id=1"""
-            ).fetchone()
-        if row is None:
-            return {"dataset_fingerprint": "", "revision": 0, "updated_utc": "", "materials": []}
-        materials = json.loads(row["materials_json"])
-        for item in materials:
-            item.setdefault("updated_utc", row["created_utc"])
-            if "include_in_summary_atlas" in item:
-                item["include_in_summary_atlas"] = bool(item["include_in_summary_atlas"])
-            item["favorite"] = bool(item.get("favorite", False))
-        return {"dataset_fingerprint": row["dataset_fingerprint"], "revision": int(row["revision"]), "updated_utc": row["created_utc"], "materials": materials}
 
     def save_start_stop_config(
         self, *, dataset_fingerprint: str, expected_revision: int,
@@ -3245,61 +3507,6 @@ class StartStopDatabase:
             connection.commit()
         return self.get_start_stop_config()
 
-    def repository_status(self) -> dict[str, Any]:
-        with self.session() as connection:
-            scalar = lambda sql: connection.execute(sql).fetchone()[0]
-            stored_blob_count = int(scalar("SELECT COUNT(*) FROM content_blobs"))
-            stored_blob_bytes = int(scalar("SELECT COALESCE(SUM(size_bytes),0) FROM content_blobs"))
-            raw_blob_row = connection.execute(
-                """SELECT COUNT(*),COALESCE(SUM(size_bytes),0) FROM content_blobs
-                WHERE id IN (SELECT DISTINCT blob_id FROM source_versions)"""
-            ).fetchone()
-            blob_count = int(raw_blob_row[0])
-            blob_bytes = int(raw_blob_row[1])
-            source_count = int(scalar("SELECT COUNT(*) FROM sources"))
-            version_count = int(scalar("SELECT COUNT(*) FROM source_versions"))
-            current_count = int(scalar("SELECT COUNT(*) FROM source_current"))
-            current_bytes = int(scalar("SELECT COALESCE(SUM(sv.size_bytes),0) FROM source_current sc JOIN source_selections ss ON ss.id=sc.selection_id JOIN source_versions sv ON sv.id=ss.source_version_id"))
-            candidate_count = int(scalar("SELECT COUNT(*) FROM source_current sc JOIN source_selections ss ON ss.id=sc.selection_id JOIN source_versions sv ON sv.id=ss.source_version_id LEFT JOIN candidate_current cc ON cc.source_version_id=sv.id LEFT JOIN candidate_marks cm ON cm.id=cc.mark_id WHERE COALESCE(cm.is_candidate,sv.is_candidate)=1"))
-            batch_count = int(scalar("SELECT COUNT(*) FROM collection_batches"))
-            issue_count = int(scalar("SELECT COUNT(*) FROM collection_issues"))
-            snapshot_count = int(scalar("SELECT COUNT(*) FROM dataset_snapshots"))
-            generation_count = int(scalar("SELECT COUNT(*) FROM artifact_generations"))
-            audit_count = int(scalar("SELECT COUNT(*) FROM audit_log"))
-            latest_batch = self._row_dict(connection.execute("SELECT * FROM collection_batches ORDER BY started_utc DESC,id DESC LIMIT 1").fetchone())
-            latest_snapshot_row = self._row_dict(connection.execute("SELECT id,dataset_fingerprint,file_count,total_bytes,created_utc FROM dataset_snapshots ORDER BY id DESC LIMIT 1").fetchone())
-            current_artifacts = [dict(row) for row in connection.execute("""SELECT ac.kind,ag.id AS generation_id,ag.snapshot_id,ag.config_revision,ag.file_count,ag.total_bytes,ag.created_utc FROM artifact_current ac JOIN artifact_selections ase ON ase.id=ac.selection_id JOIN artifact_generations ag ON ag.id=ase.generation_id ORDER BY ac.kind""").fetchall()]
-            config = self.get_start_stop_config()
-            time_range = connection.execute("SELECT MIN(NULLIF(source_modified_utc,'')),MAX(NULLIF(source_modified_utc,'')) FROM source_versions").fetchone()
-            pragmas = {
-                "journal_mode": str(connection.execute("PRAGMA journal_mode").fetchone()[0]),
-                "synchronous": int(connection.execute("PRAGMA synchronous").fetchone()[0]),
-                "foreign_keys": bool(connection.execute("PRAGMA foreign_keys").fetchone()[0]),
-                "busy_timeout_ms": int(connection.execute("PRAGMA busy_timeout").fetchone()[0]),
-            }
-        if latest_batch:
-            latest_batch["metadata"] = json.loads(latest_batch.pop("metadata_json"))
-            latest_batch["totals"] = json.loads(latest_batch.pop("totals_json"))
-        latest_collection_utc = (latest_batch or {}).get("finished_utc") or (latest_batch or {}).get("started_utc") or ""
-        result = {
-            "schema_version": SCHEMA_VERSION, "database_path": str(self.path),
-            "database_size_bytes": self.path.stat().st_size if self.path.exists() else 0,
-            **pragmas,
-            "blobs": {"count": blob_count, "total_bytes": blob_bytes, "stored_count": stored_blob_count, "stored_bytes": stored_blob_bytes},
-            "sources": {"count": source_count, "version_count": version_count, "current_count": current_count, "current_bytes": current_bytes, "candidate_count": candidate_count},
-            "collections": {"batch_count": batch_count, "issue_count": issue_count, "latest": latest_batch},
-            "snapshots": {"count": snapshot_count, "latest": latest_snapshot_row},
-            "artifacts": {"generation_count": generation_count, "current": current_artifacts},
-            "config": {"revision": config["revision"], "dataset_fingerprint": config["dataset_fingerprint"], "updated_utc": config["updated_utc"]},
-            "audit_count": audit_count, "source_first_modified_utc": time_range[0] or "",
-            "source_last_modified_utc": time_range[1] or "", "latest_collection_utc": latest_collection_utc,
-            "source_count": source_count, "current_source_count": current_count,
-            "current_file_count": current_count, "current_bytes": current_bytes,
-            "blob_count": blob_count, "blob_bytes": blob_bytes, "snapshot_count": snapshot_count,
-            "stored_blob_count": stored_blob_count, "stored_blob_bytes": stored_blob_bytes,
-            "artifact_generation_count": generation_count,
-        }
-        return result
 
     def operational_check(self) -> dict[str, Any]:
         """Fast routine-operation gate; never copies or hashes BLOB content."""
@@ -3342,8 +3549,71 @@ class StartStopDatabase:
         return {"ok": not errors, "schema_version": SCHEMA_VERSION, "checked_blobs": checked_blobs, "errors": errors}
 
 
+class ReadOnlyStartStopSourceDatabase(RepositoryStateReader):
+    schema_version = SCHEMA_VERSION
+    """Narrow query-only adapter used by the LAN raw-data Excel export."""
+
+    def __init__(self, path: str | Path):
+        self.path = Path(path).expanduser().resolve()
+
+    def current_material_catalog(self) -> dict[str, Any]:
+        with self.session() as connection:
+            return _current_material_catalog(connection)
+
+    @contextlib.contextmanager
+    def session(self) -> Iterator[sqlite3.Connection]:
+        connection = sqlite3.connect(
+            f"file:{self.path}?mode=ro",
+            uri=True,
+            timeout=60,
+        )
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA query_only=ON")
+        try:
+            yield connection
+        finally:
+            connection.close()
+
+    def source_export_manifest(
+        self,
+        identities: Any,
+        *,
+        maximum_files: int,
+        maximum_total_bytes: int,
+    ) -> list[dict[str, Any]]:
+        with self.session() as connection:
+            return _source_export_manifest(
+                connection,
+                identities,
+                maximum_files=maximum_files,
+                maximum_total_bytes=maximum_total_bytes,
+            )
+
+    def stability_sources(self) -> list[dict[str, Any]]:
+        with self.session() as connection:
+            return _current_stability_sources(connection)
+
+    def read_source_export_content(
+        self,
+        *,
+        source_version_id: int,
+        expected_sha256: str,
+        expected_size_bytes: int,
+        maximum_file_bytes: int,
+    ) -> bytes:
+        with self.session() as connection:
+            return _read_source_export_content(
+                connection,
+                source_version_id=source_version_id,
+                expected_sha256=expected_sha256,
+                expected_size_bytes=expected_size_bytes,
+                maximum_file_bytes=maximum_file_bytes,
+            )
+
+
 __all__ = [
     "OPERATIONAL_REQUIRED_TABLES",
+    "ReadOnlyStartStopSourceDatabase",
     "SCHEMA_VERSION",
     "StartStopDatabase",
 ]

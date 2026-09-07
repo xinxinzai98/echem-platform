@@ -11,6 +11,7 @@
   <link rel="stylesheet" href="/static/start-stop.css">
   <link rel="stylesheet" href="/static/start-stop-cv-eis.css">
   <script src="/static/start-stop-shell.js"></script>
+  <script src="/static/start-stop-client.js"></script>
 </head>
 <body class="start-stop-app start-stop-repository-mode">
   <div class="workbench-shell">
@@ -52,16 +53,20 @@
           <span id="startStopWorkstationsNavNumber" class="workbench-nav-number">02</span>
           <span class="workbench-nav-copy"><strong>工作站监控</strong><small>六个工作站与当前材料</small></span>
         </a>
-        <a id="startStopNavItem" class="workbench-nav-item" data-analysis-route href="/start-stop/analysis" aria-label="03 启停分析" title="启停分析">
-          <span id="startStopNavNumber" class="workbench-nav-number">03</span>
-          <span class="workbench-nav-copy"><strong>启停分析</strong><small>曲线检查、高亮与缩放</small></span>
+        <a id="startStopLanbtsNavItem" class="workbench-nav-item" data-lanbts-route href="/start-stop/lanbts" aria-label="03 蓝博八通道" title="蓝博八通道">
+          <span id="startStopLanbtsNavNumber" class="workbench-nav-number">03</span>
+          <span class="workbench-nav-copy"><strong>蓝博八通道</strong><small>状态、工步、材料与面积</small></span>
         </a>
-        <a id="startStopCvEisNavItem" class="workbench-nav-item" data-cv-eis-route href="/start-stop/cv-eis" aria-current="page" aria-label="04 CV–EIS 分析" title="CV–EIS 分析">
-          <span id="startStopCvEisNavNumber" class="workbench-nav-number">04</span>
+        <a id="startStopNavItem" class="workbench-nav-item" data-analysis-route href="/start-stop/analysis" aria-label="04 稳定性分析" title="稳定性分析">
+          <span id="startStopNavNumber" class="workbench-nav-number">04</span>
+          <span class="workbench-nav-copy"><strong>稳定性分析</strong><small>启停与恒流稳定性</small></span>
+        </a>
+        <a id="startStopCvEisNavItem" class="workbench-nav-item" data-cv-eis-route href="/start-stop/cv-eis" aria-current="page" aria-label="05 CV–EIS 分析" title="CV–EIS 分析">
+          <span id="startStopCvEisNavNumber" class="workbench-nav-number">05</span>
           <span class="workbench-nav-copy"><strong>CV–EIS 分析</strong><small>过电位、Rs 与 iR 补偿</small></span>
         </a>
-        <a id="startStopMaterialsNavItem" class="workbench-nav-item" data-materials-route href="/start-stop/materials" aria-label="05 材料库" title="材料库">
-          <span id="startStopMaterialsNavNumber" class="workbench-nav-number">05</span>
+        <a id="startStopMaterialsNavItem" class="workbench-nav-item" data-materials-route href="/start-stop/materials" aria-label="06 材料库" title="材料库">
+          <span id="startStopMaterialsNavNumber" class="workbench-nav-number">06</span>
           <span class="workbench-nav-copy"><strong>材料库</strong><small>全名、备注与入图范围</small></span>
         </a>
       </nav>
@@ -141,7 +146,9 @@
                 </div>
                 <div class="cv-eis-chart-state">
                   <span id="cvEisRsChip">Rs —</span>
+                  <span id="cvEisEtaChip" role="status">η —</span>
                   <span id="cvEisQualityChip">尚未选择</span>
+                  <button id="cvEisReviewShortcut" type="button" class="secondary-outline-button" hidden>确认来源与补偿</button>
                 </div>
               </div>
 
@@ -178,26 +185,22 @@
                 </div>
               </div>
               <div class="cv-eis-legend" aria-label="CV 曲线图例">
-                <span><i class="raw"></i>原始回扫</span>
-                <span><i class="ir"></i>90% iR 补偿</span>
-                <span><i class="target"></i>目标电流</span>
+                <span id="cvEisLegendRaw"><i class="raw"></i>原始回扫</span>
+                <span id="cvEisLegendIr"><i class="ir"></i>90% iR 补偿</span>
+                <span id="cvEisLegendTarget"><i class="target"></i>目标电流</span>
               </div>
             </article>
 
             <section class="cv-eis-detail-grid">
-              <article class="panel cv-eis-overpotential-panel">
-                <div class="panel-heading">
-                  <div><span class="eyebrow">Overpotential lookup</span><h2>过电位</h2></div>
-                </div>
+              <details class="panel cv-eis-overpotential-panel">
+                <summary>所有目标电流的过电位</summary>
                 <div id="cvEisOverpotentialCards" class="cv-eis-overpotential-cards">
                   <p>选择可计算材料后显示目标电流密度结果。</p>
                 </div>
-              </article>
+              </details>
 
-              <article class="panel cv-eis-evidence-panel">
-                <div class="panel-heading">
-                  <div><span class="eyebrow">Pairing evidence</span><h2>来源与质量</h2></div>
-                </div>
+              <details id="cvEisEvidenceDetails" class="panel cv-eis-evidence-panel">
+                <summary>来源、质量与人工确认</summary>
                 <dl id="cvEisEvidence" class="cv-eis-evidence-list">
                   <div><dt>CV</dt><dd id="cvEisCvSource">—</dd></div>
                   <div><dt>EIS</dt><dd id="cvEisEisSource">—</dd></div>
@@ -206,7 +209,21 @@
                   <div><dt>计算口径</dt><dd id="cvEisBasis">—</dd></div>
                   <div><dt>质量提示</dt><dd id="cvEisWarnings">—</dd></div>
                 </dl>
-              </article>
+                <form id="cvEisReviewForm" class="cv-eis-review" hidden>
+                  <h3>确认来源与在线补偿</h3>
+                  <p>只针对这份 CV 原始版本保存确认；不会修改仪器或实验文件。</p>
+                  <label for="cvEisReviewSource">对应的 EIS 测试</label>
+                  <select id="cvEisReviewSource"><option value="">待确认</option></select>
+                  <label for="cvEisReviewIr">CV 仪器在线 iR 补偿</label>
+                  <select id="cvEisReviewIr">
+                    <option value="">未知，保留原始预览</option>
+                    <option value="false">已核实未启用，可离线补偿</option>
+                    <option value="true">已核实启用，不再次补偿</option>
+                  </select>
+                  <button id="cvEisReviewSave" type="submit" class="secondary-outline-button">确认所选来源与补偿状态</button>
+                  <p id="cvEisReviewState" role="status"></p>
+                </form>
+              </details>
             </section>
 
             <article class="panel cv-eis-rule-panel">

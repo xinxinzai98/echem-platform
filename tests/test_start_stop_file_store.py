@@ -10,6 +10,7 @@ import unicodedata
 from pathlib import Path
 
 from echem_platform.start_stop_database import (
+    ReadOnlyStartStopSourceDatabase,
     SCHEMA_VERSION,
     StartStopDatabase,
     seal_artifact_directory,
@@ -67,6 +68,24 @@ class StartStopFileStoreTests(unittest.TestCase):
             self.assertEqual(
                 connection.execute("PRAGMA busy_timeout").fetchone()[0], 15_000
             )
+
+    def test_latest_catalog_visible_to_readonly_reader_without_replacing_render(self):
+        self.ingest(b"fixture")
+        snapshot = self.database.freeze_snapshot()
+        output = self.root / "catalog-output"
+        output.mkdir()
+        for kind, fingerprint in (("render", "old"), ("scan", "new")):
+            for name in ("material_config_snapshot.json", ".material_config_readback.json"):
+                (output / name).write_text(json.dumps({"dataset_fingerprint": fingerprint, "materials": []}))
+            self.database.publish_artifacts(output, snapshot["id"], 0, kind)
+        reader = ReadOnlyStartStopSourceDatabase(self.database.path)
+        for db in (self.database, reader):
+            catalog = db.current_material_catalog()
+            self.assertEqual(catalog["snapshot"]["dataset_fingerprint"], "new")
+            self.assertEqual(catalog["readback"]["dataset_fingerprint"], "new")
+        target = self.root / "render-restored"
+        self.database.restore_current_artifact_files(target, ["material_config_snapshot.json"], kind="render")
+        self.assertEqual(json.loads((target / "material_config_snapshot.json").read_text())["dataset_fingerprint"], "old")
 
     def test_delete_journal_mode_disables_mmap_and_uses_full_sync(self) -> None:
         database_path = self.root / "delete-mode" / "start-stop.sqlite3"
@@ -155,6 +174,72 @@ class StartStopFileStoreTests(unittest.TestCase):
                 (result["version_id"],),
             ).fetchone()
         self.assertEqual(bytes(row[0]), staged.read_bytes())
+
+    def test_raw_export_resolves_and_reads_exact_historical_source_version(self) -> None:
+        first_content = (
+            b"ID_GalSquareWave\nmeta\nE(V)\ti(A/cm2)\tT(s)\n"
+            b"-0.50\t-0.30\t0.0\n"
+        )
+        second_content = (
+            b"ID_GalSquareWave\nmeta\nE(V)\ti(A/cm2)\tT(s)\n"
+            b"-0.60\t-0.30\t0.0\n"
+        )
+        first = self.ingest(first_content, ticks=1)
+        second = self.ingest(second_content, ticks=2)
+        self.assertNotEqual(first["version_id"], second["version_id"])
+
+        identity = {
+            "repository_path": first["repository_path"],
+            "sha256": first["sha256"],
+            "size_bytes": first["size_bytes"],
+        }
+        manifest = self.database.source_export_manifest(
+            [identity],
+            maximum_files=2,
+            maximum_total_bytes=1024,
+        )
+        self.assertEqual(manifest[0]["source_version_id"], first["version_id"])
+        self.assertEqual(manifest[0]["version_number"], 1)
+        content = self.database.read_source_export_content(
+            source_version_id=manifest[0]["source_version_id"],
+            expected_sha256=first["sha256"],
+            expected_size_bytes=first["size_bytes"],
+            maximum_file_bytes=1024,
+        )
+        self.assertEqual(content, first_content)
+
+        readonly = ReadOnlyStartStopSourceDatabase(self.database.path)
+        readonly_manifest = readonly.source_export_manifest(
+            [identity],
+            maximum_files=2,
+            maximum_total_bytes=1024,
+        )
+        self.assertEqual(readonly_manifest, manifest)
+        readonly_content = readonly.read_source_export_content(
+            source_version_id=manifest[0]["source_version_id"],
+            expected_sha256=first["sha256"],
+            expected_size_bytes=first["size_bytes"],
+            maximum_file_bytes=1024,
+        )
+        self.assertEqual(readonly_content, first_content)
+        with readonly.session() as connection:
+            self.assertEqual(connection.execute("PRAGMA query_only").fetchone()[0], 1)
+            with self.assertRaises(sqlite3.OperationalError):
+                connection.execute("CREATE TABLE forbidden_write(id INTEGER)")
+
+        with self.assertRaises(OverflowError):
+            readonly.source_export_manifest(
+                [identity],
+                maximum_files=2,
+                maximum_total_bytes=len(first_content) - 1,
+            )
+        with self.assertRaises(ValueError):
+            readonly.read_source_export_content(
+                source_version_id=manifest[0]["source_version_id"],
+                expected_sha256=first["sha256"],
+                expected_size_bytes=first["size_bytes"],
+                maximum_file_bytes=len(first_content) - 1,
+            )
 
     def test_v1_database_migrates_collection_config_without_changing_data(self) -> None:
         imported = self.ingest(b"ID_GalSquareWave\nmeta\nmeta\n")

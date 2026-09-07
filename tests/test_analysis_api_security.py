@@ -102,6 +102,7 @@ class AnalysisPostSecurityTests(unittest.TestCase):
             (),
             {"server_address": ("127.0.0.1", self.port)},
         )()
+        self.handler.client_address = ("127.0.0.1", 55000)
 
     def local_headers(self, **extra: str) -> dict[str, str]:
         headers = {
@@ -148,6 +149,41 @@ class AnalysisPostSecurityTests(unittest.TestCase):
         )
         self.require(self.local_headers())
 
+    def test_remote_peer_cannot_spoof_a_loopback_host_for_writes(self):
+        self.handler.client_address = ("192.168.110.50", 55000)
+        with self.assertRaises(APP.AnalysisRequestError) as caught:
+            self.require(self.local_headers())
+        self.assertEqual(caught.exception.status, 403)
+        self.assertIn("本机回环", str(caught.exception))
+
+    def test_explicit_container_proxy_still_requires_a_loopback_host(self):
+        public_port = 18787
+        handler_type = APP.create_handler(
+            object(),
+            local_public_port=public_port,
+            trusted_container_proxy=True,
+        )
+        handler = handler_type.__new__(handler_type)
+        handler.server = type(
+            "ContainerServer",
+            (),
+            {"server_address": ("0.0.0.0", self.port)},
+        )()
+        handler.client_address = ("172.20.0.1", 55000)
+        message = http.client.HTTPMessage()
+        message.add_header("Host", f"127.0.0.1:{public_port}")
+        message.add_header("Content-Type", "application/json")
+        handler.headers = message
+        handler.require_local_json_request()
+
+        message = http.client.HTTPMessage()
+        message.add_header("Host", f"192.168.110.158:{public_port}")
+        message.add_header("Content-Type", "application/json")
+        handler.headers = message
+        with self.assertRaises(APP.AnalysisRequestError) as caught:
+            handler.require_local_json_request()
+        self.assertEqual(caught.exception.status, 403)
+
     def test_not_calculable_persist_error_is_returned_as_structured_400(self):
         class RejectingRuntime:
             @staticmethod
@@ -191,6 +227,138 @@ class AnalysisPostSecurityTests(unittest.TestCase):
             payload["analysis_error"]["details"]["quality"]["level"],
             "not_calculable",
         )
+
+
+class LanReadOnlyServerTests(unittest.TestCase):
+    bind = "192.168.110.158"
+    port = 8787
+
+    def handler_for(self, path: str, *, host: str | None = None):
+        handler_type = APP.create_handler(
+            object(),
+            lan_read_only=True,
+            lan_bind_host=self.bind,
+        )
+        handler = handler_type.__new__(handler_type)
+        handler.path = path
+        handler.server = type(
+            "LanServer",
+            (),
+            {"server_address": (self.bind, self.port)},
+        )()
+        handler.client_address = ("192.168.110.50", 55000)
+        message = http.client.HTTPMessage()
+        message.add_header("Host", host or f"{self.bind}:{self.port}")
+        handler.headers = message
+        responses: list[tuple[int, str]] = []
+        handler.send_error_json = lambda status, detail: responses.append(
+            (int(status), str(detail))
+        )
+        return handler, responses
+
+    def test_lan_allows_only_start_stop_reads_and_static_assets(self):
+        allowed = (
+            "/",
+            "/start-stop",
+            "/api/start-stop/status",
+            "/api/start-stop/chart",
+            "/static/start-stop.js",
+        )
+        for path in allowed:
+            with self.subTest(path=path):
+                self.assertTrue(APP.lan_start_stop_get_allowed(path))
+
+        for path in ("/api/status", "/api/runs", "/analysis", "/static/app.js"):
+            with self.subTest(path=path):
+                self.assertFalse(APP.lan_start_stop_get_allowed(path))
+
+    def test_lan_status_redacts_paths_and_failure_details(self):
+        payload = APP.lan_start_stop_status(
+            {
+                "available": True,
+                "execution": {"ready": True, "message": "ready"},
+                "job": {
+                    "status": "failed",
+                    "message": "private traceback",
+                    "result": {
+                        "complete_cycles": 12,
+                        "output_dir": "/private/server/path",
+                        "stderr": "private error",
+                    },
+                },
+            }
+        )
+
+        self.assertEqual(payload["access_mode"], "lan_read_only")
+        self.assertTrue(payload["capabilities"]["server_ready"])
+        self.assertFalse(payload["capabilities"]["allowed_here"])
+        self.assertFalse(payload["capabilities"]["can_start_update"])
+        self.assertFalse(payload["capabilities"]["can_update_data"])
+        self.assertFalse(payload["capabilities"]["can_save_configuration"])
+        self.assertFalse(payload["capabilities"]["can_render_atlas"])
+        self.assertEqual(payload["job"]["result"], {"complete_cycles": 12})
+        self.assertNotIn("/private", payload["job"]["message"])
+        self.assertNotIn("traceback", payload["job"]["message"])
+
+    def test_local_capabilities_report_when_updates_are_ready(self):
+        payload = APP.local_start_stop_status(
+            {
+                "available": True,
+                "execution": {"ready": True, "message": "ready"},
+            }
+        )
+
+        self.assertEqual(payload["access_mode"], "local_read_write")
+        self.assertTrue(payload["capabilities"]["server_ready"])
+        self.assertTrue(payload["capabilities"]["allowed_here"])
+        self.assertFalse(payload["capabilities"]["busy"])
+        self.assertTrue(payload["capabilities"]["can_start_update"])
+        self.assertTrue(payload["capabilities"]["can_update_data"])
+        self.assertTrue(payload["capabilities"]["can_save_configuration"])
+        self.assertTrue(payload["capabilities"]["can_render_atlas"])
+
+    def test_local_capabilities_block_a_second_update_while_busy(self):
+        payload = APP.local_start_stop_status(
+            {
+                "available": True,
+                "execution": {"ready": True, "message": "ready"},
+                "job": {"status": "running", "action": "scan"},
+            }
+        )
+
+        self.assertTrue(payload["capabilities"]["server_ready"])
+        self.assertTrue(payload["capabilities"]["busy"])
+        self.assertFalse(payload["capabilities"]["can_start_update"])
+
+    def test_lan_get_blocks_other_modules_and_dns_rebinding_hosts(self):
+        handler, responses = self.handler_for("/api/status")
+        handler.do_GET()
+        self.assertEqual(responses, [(404, "Not found")])
+
+        handler, responses = self.handler_for(
+            "/api/start-stop/status",
+            host=f"attacker.example:{self.port}",
+        )
+        handler.do_GET()
+        self.assertEqual(len(responses), 1)
+        self.assertEqual(responses[0][0], 403)
+
+    def test_lan_rejects_every_post_route_before_reading_a_body(self):
+        paths = (
+            "/api/scan",
+            "/api/start-stop/materials",
+            "/api/start-stop/jobs",
+            "/api/protocols",
+            "/api/control/runs",
+            "/api/runs/1/analyses",
+            "/api/runs/1/metadata",
+        )
+        for path in paths:
+            with self.subTest(path=path):
+                handler, responses = self.handler_for(path)
+                handler.do_POST()
+                self.assertEqual(len(responses), 1)
+                self.assertEqual(responses[0][0], 403)
 
 
 class _PausingConnection:

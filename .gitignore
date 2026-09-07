@@ -31,3 +31,13 @@ server.pid
 .vscode/
 *.swp
 *~
+
+# Local developer scratch and dated internal archives
+.codex_work/
+.playwright-cli/
+/tmp/
+归档/开发历史_*/
+
+# Generated analysis, audit screenshots and deployment/image archives
+/output/
+/outputs/

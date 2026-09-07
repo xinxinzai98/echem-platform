@@ -30,14 +30,19 @@ services:
         cp /Users/hive/.ssh/aghid_windows_codex_ed25519 /tmp/start-stop-ssh/
         cp /Users/hive/.ssh/id_ed25519_192_168_110_155 /tmp/start-stop-ssh/
         cp /Users/hive/.ssh/windows_192_168_110_164_ed25519 /tmp/start-stop-ssh/
+        cp /Users/hive/.ssh/windows_192_168_110_144_ed25519 /tmp/start-stop-ssh/
         cp /Users/hive/.ssh/known_hosts /tmp/start-stop-ssh/
         chmod 600 /tmp/start-stop-ssh/aghid_windows_codex_ed25519
         chmod 600 /tmp/start-stop-ssh/id_ed25519_192_168_110_155
         chmod 600 /tmp/start-stop-ssh/windows_192_168_110_164_ed25519
+        chmod 600 /tmp/start-stop-ssh/windows_192_168_110_144_ed25519
         chmod 600 /tmp/start-stop-ssh/known_hosts
         sed 's#/Users/hive/.ssh/#/tmp/start-stop-ssh/#g' \
           /app/docker/collection-config.json \
           > /tmp/collection-config.windows.json
+        sed 's#/Users/hive/.ssh/#/tmp/start-stop-ssh/#g' \
+          /app/docker/lanbts-config.json \
+          > /tmp/lanbts-config.windows.json
         exec python3 /app/start_stop_service.py "$@"
       - start-stop-service
     command:
@@ -60,6 +65,14 @@ services:
       - /tmp/collection-config.windows.json
       - --workstation-state-file
       - /app/state/published-cache/workstation-monitor.json
+      - --lanbts-config
+      - /tmp/lanbts-config.windows.json
+      - --lanbts-state-file
+      - /app/state/published-cache/lanbts-monitor.json
+      - --lanbts-channel-config
+      - /app/state/database/lanbts-channel-config.json
+      - --lanbts-poll-seconds
+      - "30"
       - --scratch-dir
       - /app/scratch
       - --backup-dir
@@ -68,7 +81,7 @@ services:
       - "400000000"
 
   backup-scheduler:
-    image: ${ECHEM_IMAGE_REPOSITORY:-start-stop-analysis}:${ECHEM_IMAGE_TAG:-0.6.0-dev.7.2-windows}
+    image: ${ECHEM_IMAGE_REPOSITORY:-start-stop-analysis}:${ECHEM_IMAGE_TAG:-0.7.0-dev.1-windows}
     container_name: start-stop-analysis-backup-scheduler
     restart: unless-stopped
     user: "501:20"
@@ -143,12 +156,18 @@ services:
       - /tmp/start-stop-lan.sqlite3
       - --cv-eis-database
       - /app/state/database-readonly/start-stop.sqlite3
+      - --source-database
+      - /app/state/database-readonly/start-stop.sqlite3
       - --analysis-dir
       - /app/state/published-cache/current
       - --collection-config
       - /app/docker/collection-config.json
       - --workstation-state-file
       - /app/state/published-cache/workstation-monitor.json
+      - --lanbts-state-file
+      - /app/state/published-cache/lanbts-monitor.json
+      - --lanbts-poll-seconds
+      - "30"
       - --scratch-dir
       - /tmp/start-stop-lan-scratch
     volumes:

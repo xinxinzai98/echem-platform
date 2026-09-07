@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>蓝博八通道 · Start–stop Studio</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%2317212b'/%3E%3Cpath d='M10 38c8-24 16 20 24-8s14 16 20-10' fill='none' stroke='%237ee2d7' stroke-width='5' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/workbench.css">
+  <link rel="stylesheet" href="/static/start-stop.css">
+  <link rel="stylesheet" href="/static/start-stop-lanbts.css">
+  <script src="/static/start-stop-shell.js"></script>
+  <script src="/static/start-stop-client.js"></script>
+</head>
+<body class="start-stop-app start-stop-repository-mode">
+  <div class="workbench-shell">
+    <aside id="workbenchSidebar" class="workbench-sidebar">
+      <div class="workbench-sidebar-head">
+        <a id="lanbtsWorkbenchBrand" class="workbench-brand" href="/start-stop" aria-label="返回启停运行配置">
+          <div class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 48 48" role="img">
+              <path d="M8 28c5-15 10 14 16-4s11 10 16-6"/>
+              <circle cx="8" cy="28" r="3"/>
+              <circle cx="40" cy="18" r="3"/>
+            </svg>
+          </div>
+          <div>
+            <strong>Start–stop Studio</strong>
+            <span>启停数据分析</span>
+          </div>
+        </a>
+        <button id="workbenchSidebarToggle" class="workbench-sidebar-toggle" type="button" aria-controls="workbenchNavigation" aria-expanded="true" aria-label="收起侧边栏">
+          <span class="workbench-sidebar-toggle-icon" aria-hidden="true">‹</span>
+          <span class="workbench-sidebar-toggle-label">收起</span>
+        </button>
+      </div>
+
+      <div class="workbench-environment">
+        <div>
+          <strong>Docker 独立程序</strong>
+          <small>原始字节入库 · SHA-256 可追溯</small>
+          <span id="workbenchVersion" class="workbench-version-badge" role="status">版本读取中</span>
+        </div>
+      </div>
+
+      <nav id="workbenchNavigation" class="workbench-navigation" aria-label="启停数据功能">
+        <a class="workbench-nav-item" data-config-route href="/start-stop" aria-label="01 运行与绘图配置" title="运行与绘图配置">
+          <span class="workbench-nav-number">01</span>
+          <span class="workbench-nav-copy"><strong>运行与绘图配置</strong><small>数据、实验机与绘图规则</small></span>
+        </a>
+        <a class="workbench-nav-item" data-workstations-route href="/start-stop/workstations" aria-label="02 工作站监控" title="工作站监控">
+          <span class="workbench-nav-number">02</span>
+          <span class="workbench-nav-copy"><strong>工作站监控</strong><small>六个工作站与当前材料</small></span>
+        </a>
+        <a class="workbench-nav-item" data-lanbts-route href="/start-stop/lanbts" aria-current="page" aria-label="03 蓝博八通道" title="蓝博八通道">
+          <span class="workbench-nav-number">03</span>
+          <span class="workbench-nav-copy"><strong>蓝博八通道</strong><small>状态、工步、材料与面积</small></span>
+        </a>
+        <a class="workbench-nav-item" data-analysis-route href="/start-stop/analysis" aria-label="04 稳定性分析" title="稳定性分析">
+          <span class="workbench-nav-number">04</span>
+          <span class="workbench-nav-copy"><strong>稳定性分析</strong><small>启停与恒流稳定性</small></span>
+        </a>
+        <a class="workbench-nav-item" data-cv-eis-route href="/start-stop/cv-eis" aria-label="05 CV–EIS 分析" title="CV–EIS 分析">
+          <span class="workbench-nav-number">05</span>
+          <span class="workbench-nav-copy"><strong>CV–EIS 分析</strong><small>过电位、Rs 与 iR 补偿</small></span>
+        </a>
+        <a class="workbench-nav-item" data-materials-route href="/start-stop/materials" aria-label="06 材料库" title="材料库">
+          <span class="workbench-nav-number">06</span>
+          <span class="workbench-nav-copy"><strong>材料库</strong><small>全名、备注与入图范围</small></span>
+        </a>
+      </nav>
+
+      <div class="workbench-utility-dock">
+        <div class="workbench-mini-status">
+          <strong id="lanbtsSidebarState">正在读取蓝博状态</strong>
+          <small>服务器只读缓存</small>
+        </div>
+      </div>
+    </aside>
+
+    <div class="workbench-content">
+      <header class="topbar workbench-topbar start-stop-topbar lanbts-topbar">
+        <div class="workbench-page-heading">
+          <span class="eyebrow">设备监控 / LANBTS</span>
+          <h1>蓝博八通道</h1>
+        </div>
+        <div class="top-actions start-stop-actions">
+          <div class="lanbts-top-state">
+            <span id="lanbtsOverallState" class="lanbts-state-chip loading" role="status">正在读取</span>
+            <span id="lanbtsUpdatedMetric">—</span>
+          </div>
+          <button id="refreshLanbts" class="secondary-outline-button" type="button">刷新</button>
+          <button id="saveLanbtsConfiguration" class="primary-button" type="button" hidden disabled>保存配置</button>
+        </div>
+      </header>
+
+      <main class="start-stop-main lanbts-main">
+        <section id="lanbtsNotice" class="workspace-notice" role="alert" aria-live="polite" hidden></section>
+
+        <section class="lanbts-status-strip" aria-label="蓝博八通道概览">
+          <div class="lanbts-status-stat discharging">
+            <span>放电</span>
+            <strong id="lanbtsDischargingMetric">—</strong>
+          </div>
+          <div class="lanbts-status-stat charging">
+            <span>充电</span>
+            <strong id="lanbtsChargingMetric">—</strong>
+          </div>
+          <div class="lanbts-status-stat completed">
+            <span>测试完成</span>
+            <strong id="lanbtsCompletedMetric">—</strong>
+          </div>
+          <div class="lanbts-status-stat idle">
+            <span>空置</span>
+            <strong id="lanbtsIdleMetric">—</strong>
+          </div>
+          <div class="lanbts-status-stat attention">
+            <span>需检查</span>
+            <strong id="lanbtsAttentionMetric">—</strong>
+          </div>
+          <div class="lanbts-device-summary">
+            <strong id="lanbtsDeviceName">蓝博八通道</strong>
+            <span id="lanbtsDeviceMeta">正在读取设备信息</span>
+          </div>
+        </section>
+
+        <p id="lanbtsModeNote" class="lanbts-compact-note">读取访问模式 · 不控制仪器 · 电压参照待确认 · 每 10 秒刷新显示</p>
+
+        <section aria-label="蓝博八通道当前状态">
+          <div id="lanbtsChannelGrid" class="lanbts-channel-grid" aria-live="polite" aria-busy="true">
+            <div class="start-stop-loading">正在读取八通道状态…</div>
+          </div>
+        </section>
+
+        <details class="lanbts-page-details">
+          <summary>数据说明与测试类型</summary>
+          <div class="lanbts-page-details-body">
+            <p>材料与面积按本次 BTS 运行绑定；换新文件后不会沿用。电压暂标为“LANBTS 测得电压”，参照确认后再换算；活动测试沿用同一运行已缓存的内嵌工步，新文件在稳定导入后确认完整方案。</p>
+            <div class="lanbts-protocol-legend">
+              <article class="bipolar"><strong>反向启停</strong><span>电流正负反转</span></article>
+              <article class="cathodic"><strong>同向负载循环</strong><span>两个阴极电流切换</span></article>
+              <article class="constant"><strong>恒流长时运行</strong><span>单一电流持续运行</span></article>
+            </div>
+          </div>
+        </details>
+      </main>
+    </div>
+  </div>
+  <script src="/static/start-stop-lanbts.js"></script>
+</body>
+</html>

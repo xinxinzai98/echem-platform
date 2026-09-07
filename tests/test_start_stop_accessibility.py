@@ -68,6 +68,15 @@ class StartStopAccessibilityTests(unittest.TestCase):
             "startStopStepSummary",
         )
         self.assertEqual(analysis.by_id["startStopStepSummary"].get("role"), "status")
+        self.assertEqual(analysis.by_id["highlightExportStatus"].get("role"), "status")
+        self.assertEqual(
+            analysis.by_id["exportHighlightedExcel"].get("aria-describedby"),
+            "highlightExportStatus",
+        )
+        self.assertEqual(
+            analysis.by_id["exportHighlightedPdf"].get("aria-describedby"),
+            "highlightExportStatus",
+        )
         self.assertEqual(materials.by_id["visibleMaterialsCount"].get("role"), "status")
 
     def test_start_stop_work_step_filter_is_a_hard_comparison_boundary(self) -> None:

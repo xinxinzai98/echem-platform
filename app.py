@@ -41,10 +41,14 @@ from echem_platform.parsers import (
     parse_curve,
     parse_numeric_table,
 )
+from echem_platform.start_stop import (
+    StartStopWorkspace,
+    StartStopWorkspaceError,
+)
 
 
 APP_NAME = "电化学测试平台 V0.3 Stage C"
-APP_VERSION = "0.3.0-dev.11"
+APP_VERSION = "0.3.0-dev.15"
 APP_ROOT = Path(__file__).resolve().parent
 STATIC_ROOT = APP_ROOT / "static"
 DEFAULT_CONFIG = APP_ROOT / "config.json"
@@ -136,6 +140,83 @@ def _loopback_authority(value: str) -> tuple[str, int | None] | None:
     if not address.is_loopback:
         return None
     return address.compressed, port
+
+
+RFC1918_NETWORKS = (
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+)
+
+
+def validate_server_bind(
+    bind: str,
+    *,
+    lan_read_only: bool,
+    container_mode: bool = False,
+) -> str:
+    """Allow RFC1918 listeners only behind the explicit read-only LAN mode."""
+    value = str(bind or "").strip()
+    if value == "localhost":
+        return value
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError as exc:
+        raise ValueError("监听地址必须是 localhost 或明确的数字 IP 地址。") from exc
+    if address.is_loopback:
+        return address.compressed
+    if container_mode and address.version == 4 and address.is_unspecified:
+        return address.compressed
+    if not lan_read_only:
+        raise ValueError("非回环监听只能通过 --lan-read-only 显式启用。")
+    if address.version != 4 or not any(address in network for network in RFC1918_NETWORKS):
+        raise ValueError("局域网只读监听仅允许 RFC1918 IPv4 地址。")
+    return address.compressed
+
+
+def _numeric_authority(value: str) -> tuple[str, int | None] | None:
+    authority = str(value or "").strip()
+    if (
+        not authority
+        or any(character.isspace() for character in authority)
+        or any(character in authority for character in "/?#@\\")
+    ):
+        return None
+    try:
+        parsed = urllib.parse.urlsplit(f"//{authority}")
+        port = parsed.port
+    except ValueError:
+        return None
+    if (
+        not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path
+        or parsed.query
+        or parsed.fragment
+    ):
+        return None
+    try:
+        address = ipaddress.ip_address(parsed.hostname)
+    except ValueError:
+        return None
+    return address.compressed, port
+
+
+def validate_lan_read_only_host(*, host: str, bind: str, server_port: int) -> None:
+    authority = _numeric_authority(host)
+    if authority is None:
+        raise AnalysisRequestError(
+            "局域网只读访问必须使用服务器的数字 IP 地址。",
+            HTTPStatus.FORBIDDEN,
+        )
+    request_host, request_port = authority
+    effective_port = request_port if request_port is not None else 80
+    if request_host != bind or effective_port != int(server_port):
+        raise AnalysisRequestError(
+            "局域网只读访问的 Host 与服务地址不一致。",
+            HTTPStatus.FORBIDDEN,
+        )
 
 
 def validate_local_json_request(
@@ -376,6 +457,23 @@ class Database:
                     owner_token TEXT NOT NULL,
                     acquired_utc TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS start_stop_material_config (
+                    material_key TEXT PRIMARY KEY,
+                    plot_name TEXT NOT NULL,
+                    include_in_summary_atlas INTEGER NOT NULL
+                        CHECK (include_in_summary_atlas IN (0, 1)),
+                    favorite INTEGER NOT NULL DEFAULT 0
+                        CHECK (favorite IN (0, 1)),
+                    notes TEXT NOT NULL DEFAULT '',
+                    source_fingerprint TEXT NOT NULL,
+                    updated_utc TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS start_stop_config_state (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    dataset_fingerprint TEXT NOT NULL,
+                    revision INTEGER NOT NULL,
+                    updated_utc TEXT NOT NULL
+                );
                 """
             )
             columns = {
@@ -389,6 +487,18 @@ class Database:
                 connection.execute(
                     "ALTER TABLE runs ADD COLUMN parser_id TEXT NOT NULL DEFAULT ''"
                 )
+            material_columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(start_stop_material_config)"
+                ).fetchall()
+            }
+            if "favorite" not in material_columns:
+                connection.execute(
+                    "ALTER TABLE start_stop_material_config "
+                    "ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0 "
+                    "CHECK (favorite IN (0, 1))"
+                )
 
     def audit(self, action: str, target: str, detail: str) -> None:
         with self._lock, self.session() as connection:
@@ -396,6 +506,89 @@ class Database:
                 "INSERT INTO audit(created_utc, action, target, detail) VALUES (?, ?, ?, ?)",
                 (utc_now(), action, target, detail),
             )
+
+    def get_start_stop_config(self) -> dict[str, Any]:
+        with self.session() as connection:
+            state = connection.execute(
+                "SELECT dataset_fingerprint, revision, updated_utc "
+                "FROM start_stop_config_state WHERE id = 1"
+            ).fetchone()
+            rows = connection.execute(
+                "SELECT material_key, plot_name, include_in_summary_atlas, favorite, "
+                "notes, source_fingerprint, updated_utc "
+                "FROM start_stop_material_config ORDER BY material_key"
+            ).fetchall()
+        return {
+            "dataset_fingerprint": state["dataset_fingerprint"] if state else "",
+            "revision": int(state["revision"]) if state else 0,
+            "updated_utc": state["updated_utc"] if state else "",
+            "materials": [
+                {
+                    **dict(row),
+                    "include_in_summary_atlas": bool(
+                        row["include_in_summary_atlas"]
+                    ),
+                    "favorite": bool(row["favorite"]),
+                }
+                for row in rows
+            ],
+        }
+
+    def save_start_stop_config(
+        self,
+        *,
+        dataset_fingerprint: str,
+        expected_revision: int,
+        materials: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        now = utc_now()
+        with self._lock, self.session() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            state = connection.execute(
+                "SELECT revision FROM start_stop_config_state WHERE id = 1"
+            ).fetchone()
+            current_revision = int(state["revision"]) if state else 0
+            if int(expected_revision) != current_revision:
+                raise ValueError(
+                    "材料配置已在另一页中更新，请刷新后重试。"
+                )
+            revision = current_revision + 1
+            connection.execute(
+                "DELETE FROM start_stop_material_config"
+            )
+            connection.executemany(
+                """
+                INSERT INTO start_stop_material_config(
+                    material_key, plot_name, include_in_summary_atlas,
+                    favorite, notes, source_fingerprint, updated_utc
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        row["material_key"],
+                        row["plot_name"],
+                        int(bool(row["include_in_summary_atlas"])),
+                        int(bool(row.get("favorite", False))),
+                        row.get("notes", ""),
+                        row["source_fingerprint"],
+                        now,
+                    )
+                    for row in materials
+                ],
+            )
+            connection.execute(
+                """
+                INSERT INTO start_stop_config_state(
+                    id, dataset_fingerprint, revision, updated_utc
+                ) VALUES (1, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    dataset_fingerprint = excluded.dataset_fingerprint,
+                    revision = excluded.revision,
+                    updated_utc = excluded.updated_utc
+                """,
+                (dataset_fingerprint, revision, now),
+            )
+        return self.get_start_stop_config()
 
     def save_protocol_draft(
         self,
@@ -1347,6 +1540,14 @@ class RuntimeState:
         self.config = config
         self.started = time.monotonic()
         self.stop_event = threading.Event()
+        self.start_stop = StartStopWorkspace(
+            database,
+            config.get("start_stop_analysis_dir", ""),
+            collection_script=config.get("start_stop_collection_script", ""),
+            python_executable=config.get("start_stop_python", ""),
+            node_executable=config.get("start_stop_node", ""),
+            timeout_seconds=config.get("start_stop_job_timeout_seconds", 3600),
+        )
         self.control = StageCManager(
             database,
             config,
@@ -1742,7 +1943,172 @@ class RuntimeState:
         }
 
 
-def create_handler(runtime: RuntimeState):
+LAN_START_STOP_GET_PATHS = frozenset(
+    {
+        "/",
+        "/start-stop",
+        "/start-stop/analysis",
+        "/start-stop/config",
+        "/api/start-stop/status",
+        "/api/start-stop/materials",
+        "/api/start-stop/series",
+        "/api/start-stop/chart",
+        "/api/start-stop/pdf",
+    }
+)
+LAN_START_STOP_STATIC_PATHS = frozenset(
+    {
+        "/static/styles.css",
+        "/static/workbench.css",
+        "/static/start-stop.css",
+        "/static/start-stop.js",
+        "/static/start-stop-config.css",
+        "/static/start-stop-config.html",
+        "/static/start-stop-config.js",
+        "/static/icons/gear.svg",
+    }
+)
+
+
+def lan_start_stop_get_allowed(path: str) -> bool:
+    return path in LAN_START_STOP_GET_PATHS or path in LAN_START_STOP_STATIC_PATHS
+
+
+LAN_JOB_RESULT_KEYS = frozenset(
+    {
+        "stage",
+        "materials_analyzed",
+        "materials_in_atlas",
+        "materials_excluded_from_atlas",
+        "included_files",
+        "analysis_series",
+        "series_in_atlas",
+        "complete_cycles",
+        "normal_cycles",
+        "abnormal_cycles",
+        "materials",
+        "start_stop_candidates",
+        "included_start_stop_files",
+        "included_standard_files",
+        "included_adt_files",
+        "collection_outcome",
+        "collection_machines_total",
+        "collection_machines_with_errors",
+        "collection_roots_total",
+        "collection_roots_ok",
+        "collection_roots_failed",
+        "collection_inventoried",
+        "collection_already_collected",
+        "collection_planned_files",
+        "collection_planned_bytes",
+        "collection_copied",
+        "collection_versioned",
+        "collection_unchanged_content",
+        "collection_unsettled_skipped",
+        "collection_changed_during_collection",
+        "collection_errors",
+    }
+)
+
+
+def start_stop_capabilities(
+    payload: dict[str, Any],
+    *,
+    lan_read_only: bool,
+) -> dict[str, Any]:
+    execution = payload.get("execution")
+    update_ready = bool(
+        isinstance(execution, dict)
+        and execution.get("update_ready", execution.get("ready")) is True
+    )
+    render_ready = bool(
+        isinstance(execution, dict)
+        and execution.get("render_ready", execution.get("ready")) is True
+    )
+    available = payload.get("available") is True
+    job = payload.get("job")
+    busy = bool(
+        isinstance(job, dict) and job.get("status") in {"queued", "running"}
+    )
+    server_ready = available and update_ready
+    render_server_ready = available and render_ready
+    allowed_here = not lan_read_only
+    can_process = server_ready and allowed_here and not busy
+    can_render = render_server_ready and allowed_here and not busy
+    if lan_read_only:
+        message = (
+            "当前为局域网只读入口；采集与更新能力请以服务器本机页面为准。"
+        )
+    elif not available:
+        message = str(payload.get("message") or "启停数据工作区当前不可用。")
+    elif not update_ready:
+        message = str(
+            ((execution or {}).get("message") if isinstance(execution, dict) else "")
+            or "更新运行环境尚未就绪。"
+        )
+    elif busy:
+        message = "本机正在处理启停数据，请等待当前任务完成。"
+    else:
+        message = "可从实验电脑安全增量采集新文件，并随后更新材料表。"
+    return {
+        "server_ready": server_ready,
+        "render_server_ready": render_server_ready,
+        "allowed_here": allowed_here,
+        "busy": busy,
+        "can_start_update": can_process,
+        "can_update_data": can_process,
+        "can_save_configuration": available and allowed_here and not busy,
+        "can_render_atlas": can_render,
+        "data_scope": "remote_collect_then_local_repository",
+        "remote_sync_available": bool(
+            isinstance(execution, dict) and execution.get("collection_ready") is True
+        ),
+        "message": message,
+    }
+
+
+def local_start_stop_status(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **payload,
+        "access_mode": "local_read_write",
+        "capabilities": start_stop_capabilities(
+            payload,
+            lan_read_only=False,
+        ),
+    }
+
+
+def lan_start_stop_status(payload: dict[str, Any]) -> dict[str, Any]:
+    sanitized = dict(payload)
+    sanitized["access_mode"] = "lan_read_only"
+    sanitized["capabilities"] = start_stop_capabilities(
+        payload,
+        lan_read_only=True,
+    )
+    job = payload.get("job")
+    if isinstance(job, dict):
+        safe_job = dict(job)
+        result = job.get("result")
+        safe_job["result"] = {
+            key: value
+            for key, value in (result.items() if isinstance(result, dict) else [])
+            if key in LAN_JOB_RESULT_KEYS
+        }
+        if safe_job.get("status") == "failed":
+            safe_job["message"] = "任务失败，请在服务器本机查看详情。"
+        sanitized["job"] = safe_job
+    return sanitized
+
+
+def create_handler(
+    runtime: RuntimeState,
+    *,
+    lan_read_only: bool = False,
+    lan_bind_host: str = "",
+    lan_public_port: int | None = None,
+    local_public_port: int | None = None,
+    trusted_container_proxy: bool = False,
+):
     class Handler(BaseHTTPRequestHandler):
         server_version = "EchemPlatform/0.3"
 
@@ -1759,13 +2125,52 @@ def create_handler(runtime: RuntimeState):
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+            self.send_header("Referrer-Policy", "no-referrer")
             self.end_headers()
             self.wfile.write(data)
 
         def send_error_json(self, status: int, message: str) -> None:
             self.send_json({"error": message}, status)
 
+        def send_file_download(
+            self,
+            path: Path,
+            *,
+            content_type: str,
+            filename: str,
+        ) -> None:
+            size = path.stat().st_size
+            encoded_name = urllib.parse.quote(filename, safe="")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(size))
+            self.send_header(
+                "Content-Disposition",
+                f"attachment; filename*=UTF-8''{encoded_name}",
+            )
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.end_headers()
+            with path.open("rb") as source:
+                while chunk := source.read(1024 * 1024):
+                    self.wfile.write(chunk)
+
         def require_local_json_request(self) -> None:
+            try:
+                peer = ipaddress.ip_address(self.client_address[0])
+            except (ValueError, IndexError) as exc:
+                raise AnalysisRequestError(
+                    "分析请求的客户端地址无效。",
+                    HTTPStatus.FORBIDDEN,
+                ) from exc
+            if not peer.is_loopback and not trusted_container_proxy:
+                raise AnalysisRequestError(
+                    "写操作只允许来自本机回环地址。",
+                    HTTPStatus.FORBIDDEN,
+                )
             content_types = self.headers.get_all("Content-Type", [])
             if len(content_types) != 1:
                 raise AnalysisRequestError(
@@ -1788,7 +2193,24 @@ def create_handler(runtime: RuntimeState):
                 host=hosts[0],
                 origin=origins[0] if origins else None,
                 content_type=content_types[0],
-                server_port=int(self.server.server_address[1]),
+                server_port=int(
+                    local_public_port or self.server.server_address[1]
+                ),
+            )
+
+        def require_lan_read_only_host(self) -> None:
+            hosts = self.headers.get_all("Host", [])
+            if len(hosts) != 1:
+                raise AnalysisRequestError(
+                    "局域网只读访问必须且只能使用一个 Host。",
+                    HTTPStatus.FORBIDDEN,
+                )
+            validate_lan_read_only_host(
+                host=hosts[0],
+                bind=lan_bind_host,
+                server_port=int(
+                    lan_public_port or self.server.server_address[1]
+                ),
             )
 
         def read_json(self) -> dict[str, Any]:
@@ -1820,6 +2242,8 @@ def create_handler(runtime: RuntimeState):
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-cache")
             self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+            self.send_header("Referrer-Policy", "no-referrer")
             self.send_header(
                 "Content-Security-Policy",
                 "default-src 'self'; style-src 'self'; script-src 'self'; "
@@ -1835,6 +2259,11 @@ def create_handler(runtime: RuntimeState):
             path = parsed.path
             query = urllib.parse.parse_qs(parsed.query)
             try:
+                if lan_read_only:
+                    self.require_lan_read_only_host()
+                    if not lan_start_stop_get_allowed(path):
+                        self.send_error_json(HTTPStatus.NOT_FOUND, "Not found")
+                        return
                 if path == "/api/status":
                     self.send_json(runtime.status())
                 elif path == "/api/control/capabilities":
@@ -1914,12 +2343,55 @@ def create_handler(runtime: RuntimeState):
                 elif path == "/api/audit":
                     limit = int(query.get("limit", ["30"])[0])
                     self.send_json(runtime.database.recent_audit(limit))
+                elif path == "/api/start-stop/status":
+                    start_stop_status = runtime.start_stop.status()
+                    start_stop_status = (
+                        lan_start_stop_status(start_stop_status)
+                        if lan_read_only
+                        else local_start_stop_status(start_stop_status)
+                    )
+                    self.send_json(start_stop_status)
+                elif path == "/api/start-stop/materials":
+                    self.send_json(runtime.start_stop.materials())
+                elif path == "/api/start-stop/series":
+                    self.send_json(runtime.start_stop.series())
+                elif path == "/api/start-stop/chart":
+                    series_ids = [
+                        item
+                        for value in query.get("series", [])
+                        for item in value.split(",")
+                        if item
+                    ]
+                    self.send_json(
+                        runtime.start_stop.chart_data(
+                            series_ids=series_ids,
+                            metric=query.get("metric", ["cathodic"])[0],
+                            x_axis=query.get("x", ["cycle"])[0],
+                            mode=query.get("mode", ["raw"])[0],
+                            max_points=int(query.get("max_points", ["4000"])[0]),
+                        )
+                    )
+                elif path == "/api/start-stop/pdf":
+                    pdf_path, filename = runtime.start_stop.pdf(
+                        query.get("kind", ["standard"])[0]
+                    )
+                    self.send_file_download(
+                        pdf_path,
+                        content_type="application/pdf",
+                        filename=filename,
+                    )
                 elif path == "/":
-                    self.send_static("index.html")
+                    self.send_static(
+                        "start-stop-config.html" if lan_read_only else "index.html"
+                    )
                 elif path in {"/steps", "/steps.html", "/protocol", "/protocol.html"}:
                     self.send_static("protocol.html")
                 elif path in {"/analysis", "/analysis.html"}:
                     self.send_static("analysis.html")
+                elif path in {"/start-stop", "/start-stop/config"}:
+                    self.send_static("start-stop-config.html")
+                elif path == "/start-stop/analysis":
+                    self.send_static("start-stop.html")
                 elif path in {
                     "/environment",
                     "/environment.html",
@@ -1933,8 +2405,12 @@ def create_handler(runtime: RuntimeState):
                     self.send_error_json(HTTPStatus.NOT_FOUND, "Not found")
             except AnalysisRequestError as exc:
                 self.send_error_json(exc.status, str(exc))
+            except StartStopWorkspaceError as exc:
+                self.send_error_json(exc.status, str(exc))
             except ControlSafetyError as exc:
                 self.send_json(exc.to_dict(), exc.status)
+            except (ValueError, json.JSONDecodeError) as exc:
+                self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
             except Exception:
                 traceback.print_exc()
                 self.send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, "服务器内部错误。")
@@ -1942,8 +2418,55 @@ def create_handler(runtime: RuntimeState):
         def do_POST(self) -> None:
             path = urllib.parse.urlparse(self.path).path
             try:
+                if lan_read_only:
+                    self.require_lan_read_only_host()
+                    self.send_error_json(
+                        HTTPStatus.FORBIDDEN,
+                        "局域网入口为只读模式，不能执行保存、扫描或重绘。",
+                    )
+                    return
                 if path == "/api/scan":
                     self.send_json(runtime.scanner.scan())
+                    return
+                if path == "/api/start-stop/materials":
+                    self.require_local_json_request()
+                    payload = self.read_json()
+                    unknown = sorted(
+                        set(payload)
+                        - {"dataset_fingerprint", "expected_revision", "materials"}
+                    )
+                    if unknown:
+                        raise ValueError(
+                            "材料配置请求包含未知字段："
+                            + ", ".join(unknown)
+                        )
+                    self.send_json(
+                        runtime.start_stop.save_materials(
+                            dataset_fingerprint=str(
+                                payload.get("dataset_fingerprint") or ""
+                            ),
+                            expected_revision=int(
+                                payload.get("expected_revision", -1)
+                            ),
+                            materials=payload.get("materials"),
+                        )
+                    )
+                    return
+                if path == "/api/start-stop/jobs":
+                    self.require_local_json_request()
+                    payload = self.read_json()
+                    unknown = sorted(set(payload) - {"action"})
+                    if unknown:
+                        raise ValueError(
+                            "启停任务请求包含未知字段："
+                            + ", ".join(unknown)
+                        )
+                    self.send_json(
+                        runtime.start_stop.start_job(
+                            str(payload.get("action") or "")
+                        ),
+                        HTTPStatus.ACCEPTED,
+                    )
                     return
                 if path == "/api/protocols":
                     payload = self.read_json()
@@ -2092,6 +2615,8 @@ def create_handler(runtime: RuntimeState):
                 self.send_error_json(HTTPStatus.NOT_FOUND, "Not found")
             except AnalysisRequestError as exc:
                 self.send_error_json(exc.status, str(exc))
+            except StartStopWorkspaceError as exc:
+                self.send_error_json(exc.status, str(exc))
             except AnalysisValidationError as exc:
                 self.send_json(
                     {
@@ -2141,36 +2666,112 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scan-once", action="store_true")
     parser.add_argument("--no-watch", action="store_true")
     parser.add_argument("--port", type=int)
+    parser.add_argument("--bind")
+    parser.add_argument(
+        "--container-mode",
+        action="store_true",
+        help="仅供受约束的 Docker 端口映射使用",
+    )
+    parser.add_argument(
+        "--public-host",
+        help="Docker 局域网只读入口对外使用的明确 RFC1918 地址",
+    )
+    parser.add_argument(
+        "--public-port",
+        type=int,
+        help="Docker 局域网只读入口对外端口",
+    )
+    parser.add_argument(
+        "--lan-read-only",
+        action="store_true",
+        help="仅开放启停查看页和只读接口到指定 RFC1918 地址",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     runtime = build_runtime(args.config.resolve(), args.database.resolve())
-    result = runtime.scanner.scan()
+    container_mode = bool(args.container_mode)
+    if container_mode and os.environ.get("ECHEM_CONTAINER_MODE") != "1":
+        raise ValueError("Docker 监听模式必须由容器环境显式启用。")
+    if container_mode and runtime.config["instrument_control_enabled"]:
+        raise ValueError("Docker 模式禁止启用仪器控制。")
+    if not container_mode and (args.public_host or args.public_port):
+        raise ValueError("--public-host/--public-port 只能用于 Docker 模式。")
+    requested_bind = args.bind or runtime.config["bind"]
+    bind = validate_server_bind(
+        requested_bind,
+        lan_read_only=bool(args.lan_read_only),
+        container_mode=container_mode,
+    )
+    if args.lan_read_only and not args.bind:
+        raise ValueError("局域网只读模式必须通过 --bind 指定明确的 RFC1918 地址。")
+    if args.lan_read_only and runtime.config["instrument_control_enabled"]:
+        raise ValueError("启用仪器控制时禁止开放局域网入口。")
+    if args.lan_read_only and args.scan_once:
+        raise ValueError("局域网只读模式不能与 --scan-once 同时使用。")
+    if container_mode and bind != "0.0.0.0":
+        raise ValueError("Docker 模式必须在容器内监听 0.0.0.0。")
+
+    port = args.port or runtime.config["port"]
+    lan_public_host = bind
+    lan_public_port = port
+    local_public_port = port
+    if container_mode and args.lan_read_only:
+        if not args.public_host:
+            raise ValueError("Docker 局域网只读入口必须指定 --public-host。")
+        lan_public_host = validate_server_bind(
+            args.public_host,
+            lan_read_only=True,
+        )
+        lan_public_port = int(args.public_port or port)
+        if not 1 <= lan_public_port <= 65535:
+            raise ValueError("Docker 局域网对外端口无效。")
+    elif container_mode:
+        if args.public_host:
+            raise ValueError("--public-host 只用于局域网只读容器。")
+        local_public_port = int(args.public_port or port)
+        if not 1 <= local_public_port <= 65535:
+            raise ValueError("Docker 本机入口对外端口无效。")
+
+    result = runtime.scanner.scan() if not args.lan_read_only else {"errors": 0}
     if args.scan_once:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0 if result.get("errors", 0) == 0 else 1
 
-    if not args.no_watch:
+    if not args.no_watch and not args.lan_read_only:
         watcher = threading.Thread(target=runtime.watcher, name="file-watcher", daemon=True)
         watcher.start()
-    control_watcher = threading.Thread(
-        target=runtime.control_watcher,
-        name="stage-c-supervisor",
-        daemon=True,
-    )
-    control_watcher.start()
+    if not args.lan_read_only:
+        control_watcher = threading.Thread(
+            target=runtime.control_watcher,
+            name="stage-c-supervisor",
+            daemon=True,
+        )
+        control_watcher.start()
 
-    bind = runtime.config["bind"]
-    port = args.port or runtime.config["port"]
-    server = ThreadingHTTPServer((bind, port), create_handler(runtime))
+    server = ThreadingHTTPServer(
+        (bind, port),
+        create_handler(
+            runtime,
+            lan_read_only=bool(args.lan_read_only),
+            lan_bind_host=lan_public_host,
+            lan_public_port=lan_public_port,
+            local_public_port=local_public_port,
+            trusted_container_proxy=container_mode and not args.lan_read_only,
+        ),
+    )
     print(f"{APP_NAME} {APP_VERSION}")
     if runtime.config["instrument_control_enabled"]:
         print("只读源文件模式：开启；阶段 C 60 s OCP：本机私有配置已启用；串口直连：关闭")
     else:
         print("只读源文件模式：开启；阶段 C 60 s OCP：锁定；串口和仪器控制：关闭")
-    print(f"浏览器地址：http://{bind}:{port}")
+    if args.lan_read_only:
+        print("访问模式：局域网启停只读；保存、扫描、重绘和其他平台模块：关闭")
+        print(f"局域网地址：http://{bind}:{port}/start-stop")
+    else:
+        print(f"浏览器地址：http://{bind}:{port}")
     try:
         server.serve_forever(poll_interval=0.5)
     except KeyboardInterrupt:

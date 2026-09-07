@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "id": "04_蓝博八通道_AGHID-P_192.168.110.144",
+  "name": "蓝博八通道",
+  "hostname": "AGHID-P",
+  "ip": "192.168.110.144",
+  "user": "aghid",
+  "identity_file": "/Users/hive/.ssh/windows_192_168_110_144_ed25519",
+  "known_hosts_file": "/Users/hive/.ssh/known_hosts",
+  "installation_root": "D:\\LANBTS",
+  "data_root": "D:\\LANBTS\\Data",
+  "system_root": "D:\\LANBTS\\LANBTSSystem",
+  "device_id": "2426577833",
+  "box_id": "1"
+}

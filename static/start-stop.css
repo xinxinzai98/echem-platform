@@ -1793,9 +1793,8 @@ body.start-stop-repository-mode .workbench-environment {
 }
 
 .legend-item span:last-child {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .legend-item.highlighted {
@@ -1914,6 +1913,50 @@ body.start-stop-repository-mode .workbench-environment {
   border: 1px solid #e3e8ea;
   border-radius: 7px;
   background: #fff;
+}
+
+.highlight-export-card {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 13px;
+  border-top: 1px solid #e4eaed;
+}
+
+.highlight-export-copy strong,
+.highlight-export-copy span {
+  display: block;
+}
+
+.highlight-export-copy strong {
+  color: #25313b;
+  font-size: 14px;
+}
+
+.highlight-export-copy span {
+  margin-top: 4px;
+  color: #52606a;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.highlight-export-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.highlight-export-actions button {
+  min-height: 42px;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+@media (max-width: 1380px) {
+  .highlight-export-actions {
+    grid-template-columns: 1fr;
+  }
 }
 
 .chart-grid-line {

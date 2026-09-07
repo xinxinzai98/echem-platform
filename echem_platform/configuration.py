@@ -26,6 +26,11 @@ CONFIG_KEYS = {
     "stage_c_ocp_profile_sha256",
     "arm_token_ttl_seconds",
     "completion_grace_seconds",
+    "start_stop_analysis_dir",
+    "start_stop_collection_script",
+    "start_stop_python",
+    "start_stop_node",
+    "start_stop_job_timeout_seconds",
 }
 
 SHA256_PATTERN = re.compile(r"[0-9a-fA-F]{64}")
@@ -151,6 +156,18 @@ def load_config(
         "completion_grace_seconds": min(
             120,
             max(5, int(raw.get("completion_grace_seconds", 20))),
+        ),
+        "start_stop_analysis_dir": str(
+            raw.get("start_stop_analysis_dir", "")
+        ).strip(),
+        "start_stop_collection_script": str(
+            raw.get("start_stop_collection_script", "")
+        ).strip(),
+        "start_stop_python": str(raw.get("start_stop_python", "")).strip(),
+        "start_stop_node": str(raw.get("start_stop_node", "")).strip(),
+        "start_stop_job_timeout_seconds": min(
+            4 * 3600,
+            max(60, int(raw.get("start_stop_job_timeout_seconds", 3600))),
         ),
     }
     if config["bind"] not in {"127.0.0.1", "::1", "localhost"}:

@@ -1,5 +1,6 @@
 const SVG_NS = "http://www.w3.org/2000/svg";
 const MAX_CHART_SELECTION = 64;
+const DEFAULT_CHART_SELECTION = 16;
 const MAX_HIGHLIGHTED_SERIES = 16;
 const LIVE_PREVIEW_SERIES_PREFIX = "live-preview:";
 const LIVE_COMPARISON_POLL_MS = 30_000;
@@ -38,6 +39,7 @@ const state = {
   chartRenderFrame: null,
   chartSuppressClickUntil: 0,
   chartContextMenuReturnFocus: false,
+  highlightExporting: "",
 };
 
 const palette = [
@@ -57,7 +59,7 @@ const elements = Object.fromEntries(
     "sidebarStartStopState",
     "workbenchBrand", "workbenchBrandTitle", "workbenchBrandSubtitle",
     "workbenchEnvironmentTitle", "workbenchEnvironmentNote", "workbenchVersion", "startStopNavNumber",
-    "startStopWorkstationsNavNumber",
+    "startStopWorkstationsNavNumber", "startStopLanbtsNavNumber",
     "startStopConfigNavNumber", "startStopCvEisNavNumber", "startStopMaterialsNavNumber", "printCurrentView", "workspaceNotice",
     "materialSearch", "startStopStepFilter", "startStopStepSummary",
     "materialFilter", "materialSort", "materialFilterSummary", "clearMaterialFilters",
@@ -71,6 +73,7 @@ const elements = Object.fromEntries(
     "highlightDetails", "inspectMode", "zoomSelectMode", "panMode", "zoomOut", "zoomIn",
     "resetZoom", "zoomLevel", "zoomSelection", "chartInteractionHint",
     "liveComparisonBanner", "liveComparisonMeta", "liveComparisonState", "refreshLiveComparison",
+    "exportHighlightedExcel", "exportHighlightedPdf", "highlightExportStatus",
   ].map((id) => [id, document.querySelector(`#${id}`)]),
 );
 
@@ -89,18 +92,104 @@ function svgElement(tag, attributes = {}) {
   return node;
 }
 
-async function request(url) {
-  const response = await fetch(url, {
-    cache: "no-store",
-  });
-  const contentType = response.headers.get("content-type") || "";
-  const payload = contentType.includes("application/json")
-    ? await response.json()
-    : null;
-  if (!response.ok) {
-    throw new Error(payload?.error || `请求失败（${response.status}）`);
+async function request(url, options = {}) {
+  return StartStopClient.request(url, options);
+}
+
+function highlightedExportSeriesIds() {
+  if (isAnomalyMode()) return [];
+  return [...state.highlightedSeries].filter((seriesId) => (
+    state.series.some((item) => (
+      item.series_id === seriesId
+      && item.work_step_key === state.activeWorkStepKey
+    ))
+  ));
+}
+
+function updateHighlightExportControls() {
+  const highlighted = highlightedExportSeriesIds();
+  const hasLivePreview = highlighted.some((seriesId) => state.livePreviewItems.has(seriesId));
+  const busy = Boolean(state.highlightExporting);
+  const enabled = highlighted.length > 0
+    && !hasLivePreview
+    && !busy
+    && !state.loadingChart;
+  elements.exportHighlightedExcel.disabled = !enabled;
+  elements.exportHighlightedPdf.disabled = !enabled;
+  if (busy) {
+    elements.highlightExportStatus.textContent = state.highlightExporting === "xlsx"
+      ? "正在生成原始与处理数据 Excel…"
+      : "正在生成高亮 PDF 图…";
+  } else if (isAnomalyMode()) {
+    elements.highlightExportStatus.textContent = "异常判断为单材料模式，请切换到其他图表后高亮导出";
+  } else if (!highlighted.length) {
+    elements.highlightExportStatus.textContent = "请先高亮要导出的材料曲线";
+  } else if (hasLivePreview) {
+    elements.highlightExportStatus.textContent = "正在测试曲线尚未正式入库，请先移除实时高亮后导出";
+  } else if (state.loadingChart) {
+    elements.highlightExportStatus.textContent = "正在读取处理后的高亮曲线…";
+  } else {
+    const modeLabel = {
+      raw: "原始实测",
+      water: "水位补偿",
+      compare: "原始与补偿对照",
+    }[state.mode] || "当前模式";
+    elements.highlightExportStatus.textContent = `可导出 ${highlighted.length} 条高亮序列 · ${modeLabel}`;
   }
-  return payload;
+}
+
+function responseDownloadFilename(response, fallback) {
+  return StartStopClient.downloadFilename(response, fallback);
+}
+
+async function exportHighlighted(format) {
+  const seriesIds = highlightedExportSeriesIds();
+  if (!seriesIds.length || seriesIds.some((seriesId) => state.livePreviewItems.has(seriesId))) {
+    updateHighlightExportControls();
+    return;
+  }
+  state.highlightExporting = format;
+  updateHighlightExportControls();
+  let successMessage = "";
+  let failureMessage = "";
+  try {
+    const query = new URLSearchParams({
+      series: seriesIds.join(","),
+      metric: state.metric,
+      x: state.xAxis,
+      mode: state.mode,
+      format,
+      markers: state.showMarkers ? "1" : "0",
+    });
+    const { response, blob } = await StartStopClient.download(`/api/start-stop/chart-export?${query}`);
+    const fallback = format === "xlsx"
+      ? "启停分析_当前高亮_原始与处理数据.xlsx"
+      : "启停分析_当前高亮_曲线图.pdf";
+    const anchor = document.createElement("a");
+    const objectUrl = URL.createObjectURL(blob);
+    anchor.href = objectUrl;
+    anchor.download = responseDownloadFilename(response, fallback);
+    anchor.hidden = true;
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 30_000);
+    successMessage = format === "xlsx"
+      ? `已生成 ${seriesIds.length} 条高亮序列的原始与处理数据 Excel`
+      : `已生成 ${seriesIds.length} 条高亮序列的 PDF 图`;
+  } catch (error) {
+    failureMessage = `导出失败：${error.message}`;
+    setNotice(failureMessage, "error");
+  } finally {
+    state.highlightExporting = "";
+    updateHighlightExportControls();
+    if (successMessage) {
+      elements.highlightExportStatus.textContent = successMessage;
+      setNotice(successMessage, "success");
+    } else if (failureMessage) {
+      elements.highlightExportStatus.textContent = failureMessage;
+    }
+  }
 }
 
 function formatInteger(value) {
@@ -126,21 +215,7 @@ function isLanReadOnly() {
 function applyDeploymentProfile(payload) {
   const repositoryMode = payload?.deployment_profile === "start_stop_repository"
     || payload?.repository?.storage_mode === "sqlite_blob_repository";
-  document.querySelectorAll("[data-config-route]").forEach((link) => {
-    link.href = "/start-stop";
-  });
-  document.querySelectorAll("[data-workstations-route]").forEach((link) => {
-    link.href = "/start-stop/workstations";
-  });
-  document.querySelectorAll("[data-analysis-route]").forEach((link) => {
-    link.href = "/start-stop/analysis";
-  });
-  document.querySelectorAll("[data-cv-eis-route]").forEach((link) => {
-    link.href = "/start-stop/cv-eis";
-  });
-  document.querySelectorAll("[data-materials-route]").forEach((link) => {
-    link.href = "/start-stop/materials";
-  });
+  StartStopClient.applyRoutes();
   if (!repositoryMode) return false;
   elements.workbenchBrand.href = "/start-stop";
   elements.workbenchBrand.setAttribute("aria-label", "返回启停数据分析首页");
@@ -153,9 +228,10 @@ function applyDeploymentProfile(payload) {
   elements.workbenchVersion.title = payload?.service?.image_reference || "当前运行服务版本";
   elements.startStopConfigNavNumber.textContent = "01";
   elements.startStopWorkstationsNavNumber.textContent = "02";
-  elements.startStopNavNumber.textContent = "03";
-  elements.startStopCvEisNavNumber.textContent = "04";
-  elements.startStopMaterialsNavNumber.textContent = "05";
+  elements.startStopLanbtsNavNumber.textContent = "03";
+  elements.startStopNavNumber.textContent = "04";
+  elements.startStopCvEisNavNumber.textContent = "05";
+  elements.startStopMaterialsNavNumber.textContent = "06";
   return true;
 }
 
@@ -167,17 +243,17 @@ function updateStatusView() {
     setNotice(payload?.message || "无法读取启停分析工作区。", "error");
     return;
   }
-  elements.sidebarStartStopState.textContent = payload.export_ready
-    ? "启停图集已就绪"
-    : "启停图集待更新";
+  elements.sidebarStartStopState.textContent = payload.analysis_ready
+    ? "平台分析已就绪"
+    : "平台分析待更新";
   const lanReadOnly = isLanReadOnly();
   document.body.classList.toggle("lan-read-only", lanReadOnly);
-  if (lanReadOnly) {
-    setNotice("当前是局域网只读入口：可以选线、高亮、缩放并导出当前检查视图。数据管理请前往第一页“材料与绘图配置”。");
-  } else if (!payload.export_ready) {
-    setNotice(payload.data_stale
-      ? "第一页有新数据尚未确认；当前曲线仍来自上一次已生成结果。"
-      : "材料配置已修改但尚未重新绘图；请在第一页完成重绘后再检查结果。");
+  if (payload.data_stale) {
+    setNotice("新数据已入库，尚未重新分析；当前图线和导出文件仍为上次分析结果。");
+  } else if (payload.configuration_stale) {
+    setNotice("材料配置已修改，尚未重新分析；当前图线仍为上次分析结果。");
+  } else if (lanReadOnly) {
+    setNotice("局域网查看模式：可选线、高亮、缩放和导出；数据管理在服务器本机进行。");
   } else {
     setNotice();
   }
@@ -185,8 +261,11 @@ function updateStatusView() {
     elements.potentialBasisRule.textContent = "原始实测电位 vs Hg/HgO（不做参比换算）";
     elements.endpointRule.textContent = payload.rules.endpoint || "最后 1 s 中位数";
     elements.anomalyRule.textContent = payload.rules.anomaly || "最低点 <15 s 异常，≥15 s 正常";
+    const hasWaterModel = payload.rules.water_slope_mv_per_h !== null && payload.rules.water_slope_mv_per_h !== undefined;
     const slope = formatNumber(payload.rules.water_slope_mv_per_h, 4);
-    elements.waterRule.textContent = `${payload.rules.water_reference} · ${slope} mV/h`;
+    elements.waterRule.textContent = hasWaterModel
+      ? `${payload.rules.water_reference} · ${slope} mV/h`
+      : "本次分析未生成水位补偿模型";
   }
 }
 
@@ -524,16 +603,26 @@ function renderWorkStepFilter() {
   elements.startStopStepFilter.disabled = state.workSteps.length === 0;
 }
 
-function selectIncludedSeriesForActiveWorkStep() {
+function selectIncludedSeriesForActiveWorkStep(limit = DEFAULT_CHART_SELECTION) {
   state.selectedSeries.clear();
   state.highlightedSeries.clear();
+  const boundedLimit = Math.max(1, Math.min(Number(limit) || 1, MAX_CHART_SELECTION));
+  const byKey = new Map(state.materials.map((item) => [item.key, item]));
+  const priorityTime = (series) => {
+    const value = Date.parse(byKey.get(series.material_relative_path)?.latest_source_modified_at || "");
+    return Number.isFinite(value) ? value : 0;
+  };
   const prioritized = [...state.series].sort((left, right) => (
     Number(Boolean(right.live_preview)) - Number(Boolean(left.live_preview))
+    || Number(Boolean(byKey.get(right.material_relative_path)?.favorite))
+      - Number(Boolean(byKey.get(left.material_relative_path)?.favorite))
+    || priorityTime(right) - priorityTime(left)
   ));
   for (const series of prioritized) {
     if (series.work_step_key !== state.activeWorkStepKey) continue;
     const material = state.materials.find((item) => item.key === series.material_relative_path);
     if (material?.include_in_summary_atlas) state.selectedSeries.add(series.series_id);
+    if (state.selectedSeries.size >= boundedLimit) break;
   }
   enforceSelectionLimit();
 }
@@ -780,8 +869,6 @@ function renderMaterialList() {
     const orderedSources = material.ordered_source_files?.length
       ? material.ordered_source_files
       : [material.key];
-    const source = element("div", "material-source-line", orderedSources.join(" → "));
-    source.title = orderedSources.join("\n");
     const sourceDetails = element("details", "material-source-details");
     const sourceSummary = element("summary", "", "查看完整来源与接续");
     const sourceFullList = element("div", "material-source-full-list");
@@ -789,7 +876,7 @@ function renderMaterialList() {
       sourceFullList.append(element("div", "", `${index + 1}. ${sourceName}`));
     });
     sourceDetails.append(sourceSummary, sourceFullList);
-    main.append(nameRow, meta, source, sourceDetails);
+    main.append(nameRow, meta, sourceDetails);
     if (material.notes) {
       const notes = element("div", "material-notes-line", material.notes);
       notes.title = material.notes;
@@ -831,6 +918,14 @@ function updateAnalysisModeControls() {
     button.disabled = false;
   });
   elements.compensationMode.disabled = anomalyMode;
+  const waterAvailable = state.status?.analyzed_data_mode !== "raw";
+  for (const option of elements.compensationMode.options) {
+    option.disabled = option.value !== "raw" && !waterAvailable;
+  }
+  if (!waterAvailable && state.mode !== "raw") {
+    state.mode = "raw";
+    elements.compensationMode.value = "raw";
+  }
   elements.compensationMode.title = anomalyMode
     ? "异常判断使用最低点时间，与水位补偿无关"
     : "";
@@ -864,6 +959,7 @@ function toggleHighlight(seriesId) {
 }
 
 function renderHighlights() {
+  updateHighlightExportControls();
   if (isAnomalyMode()) {
     elements.highlightCount.textContent = "单材料";
     elements.highlightDetails.replaceChildren(element(
@@ -1094,10 +1190,10 @@ function mergeLiveComparisonChart(payload, selectedLiveIds, maxPoints) {
 }
 
 function scheduleLiveComparisonPoll() {
-  window.clearTimeout(state.liveComparisonPollTimer);
+  StartStopClient.clearVisibleTimeout(state.liveComparisonPollTimer);
   state.liveComparisonPollTimer = null;
   if (!state.liveComparisonRequested || state.livePreview?.enabled !== true) return;
-  state.liveComparisonPollTimer = window.setTimeout(() => {
+  state.liveComparisonPollTimer = StartStopClient.visibleTimeout(() => {
     refreshLiveComparison({ silent: true });
   }, LIVE_COMPARISON_POLL_MS);
 }
@@ -1139,13 +1235,20 @@ async function loadChart() {
   const selected = activeSeriesIds();
   state.chartRequestId += 1;
   const requestId = state.chartRequestId;
+  state.chartController?.abort();
+  const controller = new AbortController();
+  state.chartController = controller;
   elements.chartTooltip.hidden = true;
+  state.chartData = null;
   if (!selected.length) {
-    state.chartData = null;
+    state.loadingChart = false;
+    updateHighlightExportControls();
     renderChart();
     return;
   }
   state.loadingChart = true;
+  renderChart();
+  updateHighlightExportControls();
   elements.chartEmpty.hidden = false;
   elements.chartEmpty.textContent = "正在读取曲线…";
   const perSeriesCap = state.metric === "overview" ? 2200 : 6000;
@@ -1172,7 +1275,7 @@ async function loadChart() {
         mode: isAnomalyMode() ? "raw" : state.mode,
         max_points: String(maxPoints),
       });
-      payload = await request(`/api/start-stop/chart?${query}`);
+      payload = await request(`/api/start-stop/chart?${query}`, { signal: controller.signal });
     }
     payload = mergeLiveComparisonChart(payload, selectedLive, maxPoints);
     if (requestId !== state.chartRequestId) return;
@@ -1184,10 +1287,12 @@ async function loadChart() {
   } catch (error) {
     if (requestId !== state.chartRequestId) return;
     state.chartData = null;
+    renderChart();
     elements.chartEmpty.hidden = false;
     elements.chartEmpty.textContent = error.message;
   } finally {
     if (requestId === state.chartRequestId) state.loadingChart = false;
+    updateHighlightExportControls();
   }
 }
 
@@ -1916,7 +2021,7 @@ function wireEvents() {
   elements.startStopStepFilter.addEventListener("change", () => {
     state.activeWorkStepKey = elements.startStopStepFilter.value;
     state.anomalyMaterialKey = "";
-    selectIncludedSeriesForActiveWorkStep();
+    selectIncludedSeriesForActiveWorkStep(DEFAULT_CHART_SELECTION);
     ensureAnomalyMaterial();
     updateAnalysisModeControls();
     updateChartHeading();
@@ -1940,7 +2045,7 @@ function wireEvents() {
   });
   elements.selectIncludedForChart.addEventListener("click", () => {
     if (isAnomalyMode()) return;
-    selectIncludedSeriesForActiveWorkStep();
+  selectIncludedSeriesForActiveWorkStep(DEFAULT_CHART_SELECTION);
     renderMaterialList();
     loadChart();
   });
@@ -2049,6 +2154,12 @@ function wireEvents() {
   });
   elements.refreshLiveComparison.addEventListener("click", () => {
     refreshLiveComparison();
+  });
+  elements.exportHighlightedExcel.addEventListener("click", () => {
+    exportHighlighted("xlsx");
+  });
+  elements.exportHighlightedPdf.addEventListener("click", () => {
+    exportHighlighted("pdf");
   });
   elements.printCurrentView.addEventListener("click", () => {
     window.print();

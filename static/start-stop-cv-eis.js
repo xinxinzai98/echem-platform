@@ -12,6 +12,7 @@ const cvEisState = {
   baseDomain: null,
   geometry: null,
   drag: null,
+  showIrPreferred: true,
 };
 
 const cvEisElements = Object.fromEntries(
@@ -27,6 +28,8 @@ const cvEisElements = Object.fromEntries(
     "cvEisZoomSelection", "cvEisContextMenu", "cvEisContextAutoScale",
     "cvEisOverpotentialCards", "cvEisCvSource", "cvEisEisSource",
     "cvEisPairing", "cvEisRsEvidence", "cvEisBasis", "cvEisWarnings",
+    "cvEisReviewForm", "cvEisReviewSource", "cvEisReviewIr", "cvEisReviewSave", "cvEisReviewState",
+    "cvEisEtaChip", "cvEisEvidenceDetails", "cvEisReviewShortcut", "cvEisLegendRaw", "cvEisLegendIr", "cvEisLegendTarget",
   ].map((id) => [id, document.querySelector(`#${id}`)]),
 );
 
@@ -37,14 +40,8 @@ class CvEisRequestError extends Error {
   }
 }
 
-async function cvEisRequest(url) {
-  const response = await fetch(url, { cache: "no-store" });
-  const contentType = response.headers.get("content-type") || "";
-  const payload = contentType.includes("application/json") ? await response.json() : null;
-  if (!response.ok) {
-    throw new CvEisRequestError(payload?.error || `请求失败（${response.status}）`, response.status);
-  }
-  return payload;
+async function cvEisRequest(url, options = {}) {
+  return StartStopClient.request(url, options, CvEisRequestError);
 }
 
 function cvEisElement(tag, className = "", text = "") {
@@ -65,6 +62,7 @@ function formatCvEisInteger(value) {
 }
 
 function formatCvEisNumber(value, digits = 2) {
+  if (value === null || value === undefined || value === "") return "—";
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed.toFixed(digits) : "—";
 }
@@ -77,11 +75,7 @@ function setCvEisNotice(message = "", type = "warning") {
 }
 
 function applyCvEisDeploymentProfile(payload) {
-  document.querySelectorAll("[data-config-route]").forEach((link) => { link.href = "/start-stop"; });
-  document.querySelectorAll("[data-workstations-route]").forEach((link) => { link.href = "/start-stop/workstations"; });
-  document.querySelectorAll("[data-analysis-route]").forEach((link) => { link.href = "/start-stop/analysis"; });
-  document.querySelectorAll("[data-cv-eis-route]").forEach((link) => { link.href = "/start-stop/cv-eis"; });
-  document.querySelectorAll("[data-materials-route]").forEach((link) => { link.href = "/start-stop/materials"; });
+  StartStopClient.applyRoutes();
   cvEisElements.cvEisWorkbenchBrand.href = "/start-stop";
   const serviceVersion = payload?.service?.version;
   cvEisElements.workbenchVersion.textContent = serviceVersion && serviceVersion !== "unknown"
@@ -165,7 +159,7 @@ function renderCvEisMaterialList() {
   const rows = visibleCvEisRecords();
   const fragment = document.createDocumentFragment();
   for (const record of rows) {
-    const selectable = ["ready", "area_required", "range_insufficient"].includes(record.status);
+    const selectable = record.status !== "invalid";
     const button = cvEisElement("button", "cv-eis-material-card");
     button.type = "button";
     button.disabled = !selectable;
@@ -211,6 +205,7 @@ function evidenceValue(path, sha256) {
 }
 
 function renderCvEisEvidence(record) {
+  renderCvEisReview(record);
   if (!record) {
     for (const key of ["cvEisCvSource", "cvEisEisSource", "cvEisPairing", "cvEisRsEvidence", "cvEisBasis", "cvEisWarnings"]) {
       cvEisElements[key].textContent = "—";
@@ -220,19 +215,85 @@ function renderCvEisEvidence(record) {
   cvEisElements.cvEisCvSource.textContent = evidenceValue(record.cv?.repository_path, record.cv?.sha256);
   cvEisElements.cvEisEisSource.textContent = evidenceValue(record.eis?.repository_path, record.eis?.sha256);
   cvEisElements.cvEisPairing.textContent = record.eis
-    ? `${record.stage_label} · 同材料目录 + 阶段名/文件名配对`
+    ? `${record.stage_label} · ${record.pairing_status === "reviewed" ? "用户已确认 EIS 来源" : "同材料目录 + 阶段名/文件名配对"}`
     : "没有可配对的 EIS";
   cvEisElements.cvEisRsEvidence.textContent = record.rs
     ? `${formatCvEisNumber(record.rs.rs, 6)} ${record.rs.unit} · ${formatCvEisNumber(record.rs.crossing_frequency_hz, 1)} Hz 高频交点`
     : "—";
   cvEisElements.cvEisBasis.textContent = record.current_basis === "density"
-    ? `CV ${record.current_unit}；EIS ${record.rs?.unit || "—"}；Hg/HgO + 0.9268 V；90% iR`
+    ? `CV ${record.current_unit}；EIS ${record.rs?.unit || "—"}；Hg/HgO + 0.9268 V；${record.ir_correction_available ? "90% iR" : "仅原始预览"}`
     : `CV ${record.current_unit || "绝对电流"}；缺少面积时不报告电流密度过电位`;
   cvEisElements.cvEisWarnings.textContent = (record.warnings || []).join("；") || "质量门槛通过";
+  if (cvEisState.catalog?.can_review === false && (!record.eis || typeof record.instrument_ir_applied !== "boolean")) {
+    cvEisElements.cvEisWarnings.textContent += "；请在服务器本机确认来源与在线补偿状态。";
+  }
+}
+
+function renderCvEisReview(record) {
+  cvEisElements.cvEisReviewForm.hidden = !record || cvEisState.catalog?.can_review !== true;
+  cvEisElements.cvEisReviewShortcut.hidden = cvEisElements.cvEisReviewForm.hidden;
+  cvEisElements.cvEisEvidenceDetails.open = Boolean(record && (!record.eis || typeof record.instrument_ir_applied !== "boolean"));
+  if (!record) return;
+  const fragment = document.createDocumentFragment();
+  const pending = cvEisElement("option", "", "待确认，不自动选择");
+  pending.value = "";
+  fragment.append(pending);
+  for (const source of record.eis_candidates || []) {
+    const option = cvEisElement("option", "", `${source.name} · ${source.source_modified_utc || "时间未知"}${source.compatible ? "" : " · 阶段不相容"}`);
+    option.value = String(source.source_version_id);
+    option.disabled = !source.compatible;
+    fragment.append(option);
+  }
+  cvEisElements.cvEisReviewSource.replaceChildren(fragment);
+  cvEisElements.cvEisReviewSource.value = String(record.eis?.source_version_id || "");
+  const ir = record.instrument_ir_applied;
+  cvEisElements.cvEisReviewIr.value = typeof ir === "boolean" ? String(ir) : "";
+  cvEisElements.cvEisReviewIr.disabled = typeof record.instrument_ir_metadata === "boolean";
+  cvEisElements.cvEisReviewSave.disabled = false;
+  cvEisElements.cvEisReviewState.textContent = record.review?.confirmed_utc
+    ? `已确认 · ${record.review.confirmed_utc}`
+    : typeof record.instrument_ir_metadata === "boolean"
+      ? "在线补偿状态由仪器文件提供；可确认 EIS 来源。"
+      : "尚未确认在线补偿；不会自动执行离线补偿。";
+}
+
+async function saveCvEisReview(event) {
+  event.preventDefault();
+  const record = currentCvEisRecord();
+  if (!record || cvEisState.catalog?.can_review !== true) return;
+  cvEisElements.cvEisReviewSave.disabled = true;
+  try {
+    const selected = cvEisElements.cvEisReviewSource.value;
+    const ir = cvEisElements.cvEisReviewIr.value;
+    await cvEisRequest("/api/start-stop/cv-eis/review", {
+      method: "PUT", body: JSON.stringify({
+        expected_revision: cvEisState.catalog.review_revision,
+        cv_source_version_id: record.cv_source_version_id,
+        eis_source_version_id: selected ? Number(selected) : null,
+        instrument_ir_applied: ir === "" ? null : ir === "true",
+      }),
+    });
+    await loadCvEisWorkspace();
+    const refreshed = cvEisState.catalog.materials.find(item => item.cv_source_version_id === record.cv_source_version_id);
+    if (refreshed) await selectCvEisRecord(refreshed.analysis_id);
+    setCvEisNotice("确认已保存，当前曲线已按确认结果更新。", "success");
+  } catch (error) {
+    cvEisElements.cvEisReviewState.textContent = error.message;
+  } finally {
+    cvEisElements.cvEisReviewSave.disabled = false;
+  }
 }
 
 function renderCvEisOverpotentials(record) {
   const rows = record?.overpotentials || [];
+  const selectedTarget = Number(cvEisElements.cvEisTarget.value);
+  const selected = rows.find(row => Number(row.target_ma_cm2) === selectedTarget);
+  cvEisElements.cvEisEtaChip.textContent = selected && record?.ir_correction_available
+    ? `η${selectedTarget} · ${formatCvEisNumber(selected.ir90_eta_mv, 1)} mV`
+    : `η${selectedTarget} · 未计算`;
+  cvEisElements.cvEisEtaChip.title = selected
+    ? `90% iR 补偿；原始过电位 ${formatCvEisNumber(selected.raw_eta_mv, 1)} mV`
+    : "尚无通过计算门槛的目标电流结果";
   if (!rows.length) {
     const message = record?.status === "area_required"
       ? "该文件使用绝对电流且未提供几何面积，暂不报告 mA/cm² 过电位。"
@@ -240,7 +301,6 @@ function renderCvEisOverpotentials(record) {
     cvEisElements.cvEisOverpotentialCards.replaceChildren(cvEisElement("p", "", message));
     return;
   }
-  const selectedTarget = Number(cvEisElements.cvEisTarget.value);
   const fragment = document.createDocumentFragment();
   for (const row of rows) {
     const card = cvEisElement("article", Number(row.target_ma_cm2) === selectedTarget ? "selected" : "");
@@ -261,6 +321,8 @@ function updateCvEisSelectionHeader(record) {
     cvEisElements.cvEisRsChip.textContent = "Rs —";
     cvEisElements.cvEisQualityChip.textContent = "尚未选择";
     cvEisElements.cvEisTarget.disabled = true;
+    cvEisElements.showCvIr.disabled = true;
+    cvEisElements.showCvIr.checked = false;
     return;
   }
   cvEisElements.cvEisChartTitle.textContent = `${record.display_name} · ${record.stage_label}`;
@@ -269,11 +331,19 @@ function updateCvEisSelectionHeader(record) {
     ? `Rs ${formatCvEisNumber(record.rs.rs, 4)} ${record.rs.unit}`
     : "Rs —";
   cvEisElements.cvEisQualityChip.textContent = record.status_label || "待检查";
-  cvEisElements.cvEisTarget.disabled = record.current_basis !== "density";
+  cvEisElements.cvEisTarget.disabled = !record.ir_correction_available || record.current_basis !== "density";
+  cvEisElements.showCvIr.disabled = !record.ir_correction_available;
+  cvEisElements.showCvIr.checked = Boolean(record.ir_correction_available && cvEisState.showIrPreferred);
+  if (!record.ir_correction_available) cvEisElements.showCvRaw.checked = true;
 }
 
 async function selectCvEisRecord(analysisId) {
-  if (!analysisId || cvEisState.loadingCurve) return;
+  if (!analysisId) return;
+  const requestId = (cvEisState.requestId || 0) + 1;
+  cvEisState.requestId = requestId;
+  cvEisState.requestController?.abort();
+  const controller = new AbortController();
+  cvEisState.requestController = controller;
   cvEisState.selectedId = analysisId;
   cvEisState.curve = null;
   cvEisState.chartView = null;
@@ -287,14 +357,17 @@ async function selectCvEisRecord(analysisId) {
   cvEisElements.cvEisChartEmpty.hidden = false;
   cvEisElements.cvEisChartEmpty.textContent = "正在读取并校验 CV 曲线…";
   try {
-    cvEisState.curve = await cvEisRequest(`/api/start-stop/cv-eis/curve?analysis_id=${encodeURIComponent(analysisId)}`);
+    const curve = await cvEisRequest(`/api/start-stop/cv-eis/curve?analysis_id=${encodeURIComponent(analysisId)}`, {signal:controller.signal});
+    if (cvEisState.requestId !== requestId) return;
+    cvEisState.curve = curve;
     cvEisState.chartView = null;
     renderCvEisChart();
   } catch (error) {
+    if (cvEisState.requestId !== requestId || controller.signal.aborted) return;
     setCvEisNotice(error.message, "error");
     cvEisElements.cvEisChartEmpty.textContent = "无法读取该材料的 CV 曲线";
   } finally {
-    cvEisState.loadingCurve = false;
+    if (cvEisState.requestId === requestId) cvEisState.loadingCurve = false;
   }
 }
 
@@ -304,7 +377,7 @@ function chartSeries() {
   if (cvEisElements.showCvRaw.checked) {
     result.push({ key: "raw", label: "原始回扫", x: "raw_e_rhe_v", color: "#667085", dash: "8 5" });
   }
-  if (cvEisElements.showCvIr.checked) {
+  if (cvEisElements.showCvIr.checked && cvEisState.curve?.rules?.ir_correction_available !== false) {
     result.push({ key: "ir", label: "90% iR 补偿", x: "ir90_e_rhe_v", color: "#175cd3", dash: "" });
   }
   return result.map((series) => ({ ...series, points }));
@@ -330,6 +403,9 @@ function tickValues(minimum, maximum, count = 6) {
 
 function renderCvEisChart() {
   const series = chartSeries();
+  cvEisElements.cvEisLegendRaw.hidden = !series.some(item => item.key === "raw" && item.points.length);
+  cvEisElements.cvEisLegendIr.hidden = !series.some(item => item.key === "ir" && item.points.length);
+  cvEisElements.cvEisLegendTarget.hidden = true;
   cvEisElements.cvEisChart.replaceChildren();
   if (!cvEisState.curve || !series.length || !series.some((item) => item.points.length)) {
     cvEisElements.cvEisChartEmpty.hidden = false;
@@ -340,8 +416,8 @@ function renderCvEisChart() {
     return;
   }
   cvEisElements.cvEisChartEmpty.hidden = true;
-  const width = 1040;
-  const height = 570;
+  const width = Math.max(480, cvEisElements.cvEisChart.clientWidth || 1040);
+  const height = Math.max(360, cvEisElements.cvEisChart.clientHeight || 470);
   const margin = { left: 82, right: 28, top: 24, bottom: 66 };
   const plot = { left: margin.left, top: margin.top, width: width - margin.left - margin.right, height: height - margin.top - margin.bottom };
   cvEisElements.cvEisChart.setAttribute("viewBox", `0 0 ${width} ${height}`);
@@ -392,6 +468,7 @@ function renderCvEisChart() {
   }
   const target = Number(cvEisElements.cvEisTarget.value);
   if (cvEisState.curve.current_unit === "mA/cm²" && domain.yMin <= -target && -target <= domain.yMax) {
+    cvEisElements.cvEisLegendTarget.hidden = false;
     const y = yScale(-target);
     plotGroup.append(cvEisSvg("line", { x1: plot.left, y1: y, x2: plot.left + plot.width, y2: y, stroke: "#b7791f", "stroke-width": 1.8, "stroke-dasharray": "3 4" }));
     const eta = (cvEisState.curve.overpotentials || []).find((item) => Number(item.target_ma_cm2) === target);
@@ -556,7 +633,7 @@ async function loadCvEisWorkspace() {
     renderCvEisMaterialList();
     const preferred = (catalog.materials || []).find((item) => recordIsFavorite(item) && item.status === "ready")
       || (catalog.materials || []).find((item) => item.status === "ready")
-      || (catalog.materials || []).find((item) => ["area_required", "range_insufficient"].includes(item.status));
+      || (catalog.materials || []).find((item) => item.status !== "invalid");
     if (preferred) await selectCvEisRecord(preferred.analysis_id);
     else updateCvEisSelectionHeader(null);
     if (catalog.counts?.attention) {
@@ -578,7 +655,15 @@ cvEisElements.cvEisSort.addEventListener("change", renderCvEisMaterialList);
 cvEisElements.reloadCvEis.addEventListener("click", loadCvEisWorkspace);
 cvEisElements.printCvEis.addEventListener("click", () => window.print());
 cvEisElements.showCvRaw.addEventListener("change", renderCvEisChart);
-cvEisElements.showCvIr.addEventListener("change", renderCvEisChart);
+cvEisElements.showCvIr.addEventListener("change", () => {
+  cvEisState.showIrPreferred = cvEisElements.showCvIr.checked;
+  renderCvEisChart();
+});
+cvEisElements.cvEisReviewShortcut.addEventListener("click", () => {
+  cvEisElements.cvEisEvidenceDetails.open = true;
+  cvEisElements.cvEisReviewSource.scrollIntoView({ block: "center" });
+  cvEisElements.cvEisReviewSource.focus({ preventScroll: true });
+});
 cvEisElements.cvEisTarget.addEventListener("change", () => {
   renderCvEisMaterialList();
   renderCvEisOverpotentials(currentCvEisRecord());
@@ -616,4 +701,5 @@ document.addEventListener("pointerdown", (event) => {
   if (!event.target.closest(".cv-eis-context-menu")) closeCvEisContextMenu();
 });
 
+cvEisElements.cvEisReviewForm.addEventListener("submit", saveCvEisReview);
 loadCvEisWorkspace();

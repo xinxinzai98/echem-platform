@@ -9,6 +9,20 @@
   padding: 24px;
 }
 
+.readonly-runtime-summary { display: none; }
+.lan-read-only .readonly-runtime-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 12px; }
+.readonly-runtime-summary > p { flex: 1 1 100%; margin: 0 0 2px; font-size: 15px; color: #475467; }
+.readonly-runtime-summary :is(a, button) { font-size: 14px; padding: 8px 12px; }
+.lan-read-only :is(.operations-actions, .collection-config-panel, #dataOperationsDescription) { display: none; }
+.lan-read-only:not(.config-job-attention):not(.show-completed-job) #jobProgressPanel { display: none; }
+.lan-read-only .safety-status-grid { align-items: start; }
+.lan-read-only .safety-status-card { min-height: 0; }
+.lan-read-only .machine-connectivity-list .start-stop-loading { min-height: 60px; padding: 12px; }
+.safety-provenance-details { margin-top: 10px; font-size: 14px; color: #475467; }
+.safety-provenance-details > summary { cursor: pointer; font-weight: 700; }
+.job-progress-step.is-skipped { color: #667085; }
+.job-progress-step.is-skipped .job-progress-step-number { color: #667085; border-color: #d9e3e6; background: #f2f4f7; }
+
 .data-operations-heading,
 .machine-connectivity-heading {
   display: flex;
@@ -1116,6 +1130,21 @@
   box-shadow: inset 4px 0 0 #e0ad2f;
 }
 
+.material-library-read-only .config-table-head,
+.material-library-read-only .config-material-row {
+  grid-template-columns: minmax(360px, 1.8fr) minmax(220px, 1fr) 92px;
+}
+.material-library-read-only .config-table-head > :nth-child(2),
+.material-library-read-only .config-field-cell[hidden] { display: none; }
+.material-library-read-only .config-favorite-button { display: grid; place-items: center;
+  border: 0; background: transparent; cursor: default; pointer-events: none; width: 26px; height: 26px; }
+.material-library-read-only .is-favorite .config-favorite-button { color: #9a6700; }
+.material-library-read-only .config-source-heading > strong { font-size: 15px; }
+.material-library-read-only .config-source-actions { justify-content: flex-start; }
+.material-library-read-only .config-source-details { flex: 0 1 auto; max-width: calc(100% - 90px); font-size: 13px; }
+.config-readonly-notes { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; color: #475467; }
+.config-readonly-inclusion { font-size: 14px; font-weight: 750; color: #475467; }
+
 .config-table-head {
   padding: 14px 12px 8px;
   color: #98a2b3;
@@ -1136,6 +1165,7 @@
 }
 
 .config-material-row {
+  position: relative;
   align-items: center;
   margin-bottom: 8px;
   padding: 11px 10px;

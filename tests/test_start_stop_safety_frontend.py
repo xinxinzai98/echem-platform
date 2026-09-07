@@ -81,7 +81,7 @@ class StartStopSafetyFrontendTests(unittest.TestCase):
             "renderProvenanceSafety(safety?.provenance)",
             "renderSafetyStatus(payload?.safety)",
             'renderSafetyStatus();',
-            'return "尚未启用";',
+            'return "未提供";',
         ):
             self.assertIn(marker, self.script)
         safety_script = self.script.split("function safetyHasValue", 1)[1].split(

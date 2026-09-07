@@ -51,6 +51,7 @@ const configState = {
   checkingPaths: new Set(),
   pathCheckResults: new Map(),
   jobPollTimer: null,
+  jobStartError: "",
   jobElapsedTimer: null,
   lastJobAnnouncement: "",
   uploadQueue: [],
@@ -70,7 +71,7 @@ const configElements = Object.fromEntries(
   [
     "workbenchBrand", "workbenchBrandTitle", "workbenchBrandSubtitle",
     "workbenchEnvironmentTitle", "workbenchEnvironmentNote", "workbenchVersion", "startStopNavNumber",
-    "startStopWorkstationsNavNumber",
+    "startStopWorkstationsNavNumber", "startStopLanbtsNavNumber",
     "startStopConfigNavNumber", "startStopCvEisNavNumber", "startStopMaterialsNavNumber",
     "sidebarConfigState", "configAccessState", "configNotice",
     "updateCapability", "jobStatus", "refreshData", "renderAtlas", "openUpload",
@@ -87,6 +88,7 @@ const configElements = Object.fromEntries(
     "machineConnectivityList", "machineConnectivitySummary", "checkAllMachines",
     "safetyOverallState", "safetyStatusGrid",
     "safetyStorageCard", "safetyStorageState", "safetyStoragePrimary",
+    "dataOperationsTitle", "readonlyRuntimeDates", "toggleReadonlyJob",
     "safetyStorageDetail", "safetyStorageWarning",
     "safetyBackupCard", "safetyBackupState", "safetyBackupPrimary",
     "safetyBackupDetail", "safetyBackupWarning",
@@ -113,19 +115,7 @@ class ConfigRequestError extends Error {
 }
 
 async function configRequest(url, options = {}) {
-  const response = await fetch(url, {
-    cache: "no-store",
-    ...options,
-    headers: options.body
-      ? { "Content-Type": "application/json", ...(options.headers || {}) }
-      : options.headers,
-  });
-  const contentType = response.headers.get("content-type") || "";
-  const payload = contentType.includes("application/json") ? await response.json() : null;
-  if (!response.ok) {
-    throw new ConfigRequestError(payload?.error || `请求失败（${response.status}）`, response.status);
-  }
-  return payload;
+  return StartStopClient.request(url, options, ConfigRequestError);
 }
 
 function uploadRequest(url, file, onProgress) {
@@ -134,6 +124,7 @@ function uploadRequest(url, file, onProgress) {
     xhr.open("POST", url);
     xhr.setRequestHeader("Content-Type", "application/octet-stream");
     xhr.responseType = "json";
+    xhr.timeout = 180_000;
     xhr.upload.addEventListener("progress", (event) => {
       if (event.lengthComputable) onProgress(event.loaded, event.total);
     });
@@ -144,6 +135,7 @@ function uploadRequest(url, file, onProgress) {
     });
     xhr.addEventListener("error", () => reject(new Error("网络连接中断，请重试。")));
     xhr.addEventListener("abort", () => reject(new Error("上传已取消。")));
+    xhr.addEventListener("timeout", () => reject(new Error("上传超时，请检查连接并刷新材料库确认是否入库后再重试。")));
     xhr.send(file);
   });
 }
@@ -192,7 +184,7 @@ function safetyFiniteNumber(value) {
   return Number.isFinite(number) ? number : null;
 }
 
-function safetyShortValue(value, fallback = "尚未启用") {
+function safetyShortValue(value, fallback = "未提供") {
   if (value === null || value === undefined || value === "") return fallback;
   const normalized = String(value).trim().replace(/^sha256:/i, "");
   if (!normalized) return fallback;
@@ -200,9 +192,9 @@ function safetyShortValue(value, fallback = "尚未启用") {
 }
 
 function safetyShortReference(value) {
-  if (value === null || value === undefined || value === "") return "尚未启用";
+  if (value === null || value === undefined || value === "") return "未提供";
   const normalized = String(value).trim();
-  if (!normalized) return "尚未启用";
+  if (!normalized) return "未提供";
   const digestMarker = normalized.toLowerCase().lastIndexOf("@sha256:");
   if (digestMarker >= 0) {
     const imageName = normalized.slice(0, digestMarker).split("/").pop() || "image";
@@ -224,8 +216,8 @@ function renderStorageSafety(storage) {
     "ok", "free_bytes", "total_bytes", "used_percent", "preflight_ok", "shortfall_bytes",
   ]);
   if (!enabled) {
-    setSafetyCardState(configElements.safetyStorageCard, configElements.safetyStorageState, "neutral", "尚未启用");
-    configElements.safetyStoragePrimary.textContent = "尚未启用";
+    setSafetyCardState(configElements.safetyStorageCard, configElements.safetyStorageState, "neutral", "状态未提供");
+    configElements.safetyStoragePrimary.textContent = "存储信息未提供";
     configElements.safetyStorageDetail.textContent = "服务器尚未提供存储安全状态。";
     configElements.safetyStorageWarning.hidden = true;
     configElements.safetyStorageWarning.textContent = "";
@@ -271,9 +263,9 @@ function renderBackupSafety(backup) {
     "latest_valid", "same_filesystem",
   ]);
   if (!enabled) {
-    setSafetyCardState(configElements.safetyBackupCard, configElements.safetyBackupState, "neutral", "尚未启用");
-    configElements.safetyBackupPrimary.textContent = "尚未启用";
-    configElements.safetyBackupDetail.textContent = "服务器尚未提供备份状态。";
+    setSafetyCardState(configElements.safetyBackupCard, configElements.safetyBackupState, "neutral", "状态未提供");
+    configElements.safetyBackupPrimary.textContent = "暂时无法读取备份状态";
+    configElements.safetyBackupDetail.textContent = "当前入口未提供有效的备份状态，请稍后刷新；这不代表没有备份。";
     configElements.safetyBackupWarning.hidden = true;
     configElements.safetyBackupWarning.textContent = "";
     return false;
@@ -366,8 +358,8 @@ function renderProvenanceSafety(provenance) {
     "artifact_manifest_sha256", "analysis_script_sha256", "image_reference", "created_utc",
   ]);
   if (!enabled) {
-    setSafetyCardState(configElements.safetyProvenanceCard, configElements.safetyProvenanceState, "neutral", "尚未启用");
-    configElements.safetyProvenancePrimary.textContent = "尚未启用";
+    setSafetyCardState(configElements.safetyProvenanceCard, configElements.safetyProvenanceState, "neutral", "状态未提供");
+    configElements.safetyProvenancePrimary.textContent = "封存状态未提供";
     configElements.safetyProvenanceDetail.textContent = "服务器尚未提供图集封存状态。";
   } else {
     const provenanceState = String(provenance.state || "").trim().toLowerCase();
@@ -388,10 +380,10 @@ function renderProvenanceSafety(provenance) {
   configElements.safetySnapshot.textContent = safetyShortValue(provenance?.snapshot_id);
   configElements.safetyConfigRevision.textContent = provenance?.config_revision === null
     || provenance?.config_revision === undefined || provenance?.config_revision === ""
-    ? "尚未启用" : `r${provenance.config_revision}`;
+    ? "未提供" : `r${provenance.config_revision}`;
   configElements.safetyArtifactGeneration.textContent = provenance?.artifact_generation_id === null
     || provenance?.artifact_generation_id === undefined || provenance?.artifact_generation_id === ""
-    ? "尚未启用" : `g${provenance.artifact_generation_id}`;
+    ? "未提供" : `g${provenance.artifact_generation_id}`;
   configElements.safetyManifestHash.textContent = safetyShortValue(provenance?.artifact_manifest_sha256);
   configElements.safetyScriptHash.textContent = safetyShortValue(provenance?.analysis_script_sha256);
   configElements.safetyImageReference.textContent = safetyShortReference(provenance?.image_reference);
@@ -410,7 +402,7 @@ function renderSafetyStatus(safety = null) {
     configElements.safetyProvenanceCard.dataset.safetyState,
   ];
   let state = "neutral";
-  let label = enabled.some(Boolean) ? "部分已启用" : "尚未启用";
+  let label = enabled.some(Boolean) ? "部分状态未提供" : "状态未提供";
   if (states.includes("danger")) {
     state = "danger";
     label = "需要处理";
@@ -469,9 +461,9 @@ function renderAutoUpdate() {
 }
 
 function scheduleAutoUpdatePoll() {
-  window.clearTimeout(configState.autoUpdatePollTimer);
+  StartStopClient.clearVisibleTimeout(configState.autoUpdatePollTimer);
   if (configState.autoUpdate?.enabled !== true || isConfigReadOnly()) return;
-  configState.autoUpdatePollTimer = window.setTimeout(async () => {
+  configState.autoUpdatePollTimer = StartStopClient.visibleTimeout(async () => {
     await Promise.all([loadAutoUpdate({ silent: true }), loadConfigWorkspace()]);
   }, 15000);
 }
@@ -576,13 +568,13 @@ function renderLivePreview() {
   configElements.livePreviewLastResult.title = configElements.livePreviewLastResult.textContent;
   configElements.plotLivePreview.disabled = !hasPlottableItems;
   configElements.plotLivePreview.textContent = hasPlottableItems
-    ? `在 03 页叠加正在测试数据（${itemCount}）`
-    : "在 03 页叠加正在测试数据";
+    ? `在稳定性分析中叠加测试数据（${itemCount}）`
+    : "在稳定性分析中叠加测试数据";
   configElements.plotLivePreview.title = hasPlottableItems
-    ? "进入 03 启停分析，按正式分段、计算和接续规则叠加当前活动曲线"
+    ? "进入 04 稳定性分析的启停视图，按正式分段、计算和接续规则叠加当前活动曲线"
     : "等待实时预览按正式启停规则计算出可绘制数据";
   configElements.livePreviewPlotHint.textContent = hasPlottableItems
-    ? `${running ? "本轮快照正在刷新；" : ""}点击后在 03 启停分析的同一工步、同一张图中叠加 ${itemCount} 条活动曲线，仍不会正式入库。`
+    ? `${running ? "本轮快照正在刷新；" : ""}点击后在 04 稳定性分析启停视图的同一工步、同一张图中叠加 ${itemCount} 条活动曲线，仍不会正式入库。`
     : enabled
       ? "正在等待识别完整循环并按正式启停规则计算第一份快照。"
       : "开启实时预览并完成首次正式规则计算后即可叠加绘图。";
@@ -590,9 +582,9 @@ function renderLivePreview() {
 }
 
 function scheduleLivePreviewPoll() {
-  window.clearTimeout(configState.livePreviewPollTimer);
+  StartStopClient.clearVisibleTimeout(configState.livePreviewPollTimer);
   if (configState.livePreview?.enabled !== true || isConfigReadOnly()) return;
-  configState.livePreviewPollTimer = window.setTimeout(async () => {
+  configState.livePreviewPollTimer = StartStopClient.visibleTimeout(async () => {
     await loadLivePreview({ silent: true });
   }, 10_000);
 }
@@ -657,21 +649,7 @@ function setConfigNotice(message = "", type = "warning") {
 function applyConfigDeploymentProfile(payload) {
   const repositoryMode = payload?.deployment_profile === "start_stop_repository"
     || payload?.repository?.storage_mode === "sqlite_blob_repository";
-  document.querySelectorAll("[data-config-route]").forEach((link) => {
-    link.href = "/start-stop";
-  });
-  document.querySelectorAll("[data-workstations-route]").forEach((link) => {
-    link.href = "/start-stop/workstations";
-  });
-  document.querySelectorAll("[data-analysis-route]").forEach((link) => {
-    link.href = "/start-stop/analysis";
-  });
-  document.querySelectorAll("[data-cv-eis-route]").forEach((link) => {
-    link.href = "/start-stop/cv-eis";
-  });
-  document.querySelectorAll("[data-materials-route]").forEach((link) => {
-    link.href = "/start-stop/materials";
-  });
+  StartStopClient.applyRoutes();
   configElements.workbenchBrand.href = "/start-stop";
   configElements.workbenchBrand.setAttribute("aria-label", "返回启停运行配置");
   configElements.workbenchBrandTitle.textContent = "Start–stop Studio";
@@ -684,16 +662,18 @@ function applyConfigDeploymentProfile(payload) {
   if (!repositoryMode) {
     configElements.startStopConfigNavNumber.textContent = "01";
     configElements.startStopWorkstationsNavNumber.textContent = "02";
-    configElements.startStopNavNumber.textContent = "03";
-    configElements.startStopCvEisNavNumber.textContent = "04";
-    configElements.startStopMaterialsNavNumber.textContent = "05";
+    configElements.startStopLanbtsNavNumber.textContent = "03";
+    configElements.startStopNavNumber.textContent = "04";
+    configElements.startStopCvEisNavNumber.textContent = "05";
+    configElements.startStopMaterialsNavNumber.textContent = "06";
     return false;
   }
   configElements.startStopConfigNavNumber.textContent = "01";
   configElements.startStopWorkstationsNavNumber.textContent = "02";
-  configElements.startStopNavNumber.textContent = "03";
-  configElements.startStopCvEisNavNumber.textContent = "04";
-  configElements.startStopMaterialsNavNumber.textContent = "05";
+  configElements.startStopLanbtsNavNumber.textContent = "03";
+  configElements.startStopNavNumber.textContent = "04";
+  configElements.startStopCvEisNavNumber.textContent = "05";
+  configElements.startStopMaterialsNavNumber.textContent = "06";
   return true;
 }
 
@@ -779,6 +759,8 @@ function updateCapabilityView(payload = configState.status || {}) {
     if (payload?.job?.stage === "collecting_remote") {
       const machineCount = Number(payload?.execution?.collection_machine_count || 0);
       label = machineCount ? `正在检查 ${machineCount} 台实验机` : "正在下载到数据库";
+    } else if (payload?.job?.stage === "importing_lanbts") {
+      label = "正在导入蓝博稳定性数据";
     } else if (payload?.job?.stage === "refreshing_material_table") {
       label = "正在更新材料表";
     } else {
@@ -788,9 +770,12 @@ function updateCapabilityView(payload = configState.status || {}) {
   } else if (capability.canUpdate) {
     stateName = "ready";
     const machineCount = Number(payload?.execution?.collection_machine_count || 0);
-    label = machineCount ? `可从 ${machineCount} 台实验机下载入库` : "可下载到独立数据库";
+    const lanbtsReady = payload?.execution?.lanbts_import_ready === true;
+    label = machineCount
+      ? `可从 ${machineCount} 台实验机${lanbtsReady ? "及蓝博" : ""}下载入库`
+      : "可下载到独立数据库";
     detail = machineCount
-      ? `已配置 ${machineCount} 台实验机，可以检查并下载新数据。`
+      ? `已配置 ${machineCount} 台实验机${lanbtsReady ? "和蓝博八通道" : ""}，可以检查并下载新数据。`
       : "数据更新功能已准备就绪。";
   }
   configElements.updateCapability.className = `update-capability-chip ${stateName}`;
@@ -837,6 +822,7 @@ const JOB_PHASE_LABELS = {
   storing_files: "正在将文件写入数据库",
   writing_database: "正在写入独立数据库",
   ingesting_files: "正在将文件写入独立数据库",
+  importing_lanbts: "正在导入并分类蓝博稳定性数据",
   freezing_snapshot: "正在固定本次数据快照",
   materializing_snapshot: "正在从数据库准备分析数据",
   refreshing_material_table: "正在更新材料表",
@@ -1011,6 +997,7 @@ function jobProgressSummaryValues(job, progress) {
   if (job.action === "render" && ["completed", "completed_with_warnings"].includes(progress.status)) {
     return [
       ["已分析材料", firstNumber(result.materials_analyzed)],
+      ["复用未变材料", firstNumber(result.materials_skipped_unchanged)],
       ["已入图材料", firstNumber(result.materials_in_atlas)],
       ["完整循环", firstNumber(result.complete_cycles)],
     ].filter(([, value]) => value !== null);
@@ -1027,7 +1014,7 @@ function jobProgressSummaryValues(job, progress) {
     const changed = firstNumber(result.collection_changed_during_collection) || 0;
     if (hasSkipCounts) skipped = already + unsettled + changed;
   }
-  return [
+  const values = [
     ["成功", firstNumber(
       result.collection_ingested,
       result.collection_downloaded,
@@ -1037,7 +1024,14 @@ function jobProgressSummaryValues(job, progress) {
     )],
     ["跳过", skipped],
     ["失败", firstNumber(source.failed, source.errors, result.collection_errors)],
-  ].filter(([, value]) => value !== null);
+  ];
+  if (job.action === "scan") {
+    values.push(
+      ["蓝博启停", firstNumber(result.lanbts_start_stop)],
+      ["蓝博恒流", firstNumber(result.lanbts_constant_current)],
+    );
+  }
+  return values.filter(([, value]) => value !== null);
 }
 
 function renderJobProgressSummary(job, progress) {
@@ -1109,7 +1103,7 @@ function updateJobElapsed(job, isBusy) {
   }
 }
 
-function renderJobProgressSteps(progress, isRender) {
+function renderJobProgressSteps(progress, isRender, job = {}) {
   if (!isRender) {
     configElements.jobProgressSteps.hidden = true;
     configElements.jobProgressSteps.replaceChildren();
@@ -1122,6 +1116,10 @@ function renderJobProgressSteps(progress, isRender) {
   const terminalComplete = ["completed", "completed_with_warnings"].includes(progress.status);
   const fragment = document.createDocumentFragment();
   RENDER_PROGRESS_STEPS.forEach((label, index) => {
+    const samePublishedJob = job.id === configState.status?.analysis_provenance?.job_id;
+    const dataMode = job.result?.render_data_mode || (samePublishedJob ? configState.status?.analyzed_data_mode : "");
+    const skipped = index === 4 && dataMode === "raw";
+    if (skipped) label = "原始模式：跳过水位补偿";
     const stepNumber = index + 1;
     const item = configElement("li", "job-progress-step");
     const complete = terminalComplete || stepNumber < activeIndex;
@@ -1129,8 +1127,9 @@ function renderJobProgressSteps(progress, isRender) {
     item.classList.toggle("is-complete", complete);
     item.classList.toggle("is-active", active);
     item.classList.toggle("is-failed", active && progress.status === "failed");
+    item.classList.toggle("is-skipped", skipped);
     item.append(
-      configElement("span", "job-progress-step-number", complete ? "✓" : String(stepNumber)),
+      configElement("span", "job-progress-step-number", skipped ? "—" : complete ? "✓" : String(stepNumber)),
       configElement("span", "job-progress-step-label", label),
     );
     fragment.append(item);
@@ -1172,7 +1171,7 @@ function updateJobProgressView(job = {}) {
   configElements.jobProgressPanel.classList.add(`status-${visualStatusClass}`);
   configElements.jobProgressPanel.classList.toggle("task-render", isRender);
   configElements.jobProgressTitle.textContent = {
-    scan: "三台实验电脑更新进度",
+    scan: "实验电脑与蓝博更新进度",
     prepare_upload: "上传数据处理进度",
     render: "平台分析进度",
   }[job.action] || "数据任务进度";
@@ -1189,7 +1188,7 @@ function updateJobProgressView(job = {}) {
   configElements.jobProgressCount.textContent = jobProgressCountText(progress);
   configElements.jobProgressDetail.textContent = progress.detail;
   updateJobElapsed(job, isBusy);
-  renderJobProgressSteps(progress, isRender);
+  renderJobProgressSteps(progress, isRender, job);
 
   if (progress.mode === "indeterminate" && isBusy) {
     configElements.jobProgressBar.removeAttribute("value");
@@ -1283,7 +1282,7 @@ function renderMachineConnectivity() {
   }
 
   if (!machines.length) {
-    fragment.append(configElement("div", "start-stop-loading", "未配置可检查的实验机"));
+    fragment.append(configElement("div", "start-stop-loading", configState.connectivity?.message || "实验机列表尚未提供"));
   }
   configElements.machineConnectivityList.replaceChildren(fragment);
   configElements.machineConnectivityList.setAttribute(
@@ -1299,6 +1298,8 @@ function renderMachineConnectivity() {
     configElements.machineConnectivitySummary.textContent = `连接状态暂不可用：${configState.connectivityError}`;
   } else if (checking) {
     configElements.machineConnectivitySummary.textContent = `正在检查 ${configState.checkingMachineIds.size} 台实验机…`;
+  } else if (!machines.length) {
+    configElements.machineConnectivitySummary.textContent = "实验机连接状态未提供";
   } else {
     configElements.machineConnectivitySummary.textContent = checked
       ? `已检查 ${checked} / ${machines.length} 台，其中 ${reachable} 台可以连接`
@@ -1647,7 +1648,7 @@ function updateConfigActions() {
   configElements.renderMaterialScope.disabled = busy || !capability.canRender;
   configElements.refreshData.textContent = jobIsBusy && activeJob.action === "scan"
     ? "正在下载并更新…"
-    : "从三台实验电脑下载并更新";
+    : "从实验电脑与蓝博下载并更新";
   configElements.renderAtlas.textContent = jobIsBusy && activeJob.action === "render"
     ? "正在更新平台分析…"
     : "按选择更新平台分析";
@@ -1672,6 +1673,10 @@ function updateConfigStatusView() {
   renderSafetyStatus(payload?.safety);
   const readOnly = isConfigReadOnly();
   document.body.classList.toggle("lan-read-only", readOnly);
+  document.body.classList.toggle("config-job-attention", ["queued", "running", "failed", "interrupted", "completed_with_warnings"].includes(payload?.job?.status));
+  configElements.dataOperationsTitle.textContent = readOnly ? "运行摘要与连接状态" : "数据操作与实验机状态";
+  configElements.readonlyRuntimeDates.textContent = `材料表更新：${payload?.last_data_update_at ? configFormatTime(payload.last_data_update_at) : "未提供"}　最近分析：${payload?.created_at ? configFormatTime(payload.created_at) : "未提供"}`;
+  configElements.toggleReadonlyJob.disabled = !payload?.job?.id;
   if (payload?.connectivity && configState.checkingMachineIds.size === 0) mergeMachineConnectivity(payload.connectivity);
   else renderMachineConnectivity();
   if (!payload?.available) {
@@ -1694,6 +1699,8 @@ function updateConfigStatusView() {
   applyUploadCapabilityLimits();
   if (readOnly) {
     setConfigNotice("当前是局域网只读入口：可查看平台分析；PDF 图集请前往材料库下载。上传、更新与保存仅限服务器本机。");
+  } else if (configState.jobStartError) {
+    setConfigNotice(configState.jobStartError, "error");
   } else if (configState.collectionConfigDirty) {
     setConfigNotice("实验机搜索位置已修改但尚未保存；保存前不能启动远程下载。");
   } else if (payload.job?.status === "interrupted") {
@@ -1713,7 +1720,7 @@ function updateConfigStatusView() {
     };
     setConfigNotice(messages[payload.job.action] || "任务已完成。", "success");
   } else if (payload.data_stale) {
-    setConfigNotice("发现尚未刷新的数据，请使用页面上方的数据更新功能。");
+    setConfigNotice("新数据已入库，尚未重新分析；请确认材料选择后点击重新绘图。");
   } else {
     setConfigNotice();
   }
@@ -1741,6 +1748,7 @@ async function startSavedConfigJob(action) {
       method: "POST",
       body: JSON.stringify(requestBody),
     });
+    configState.jobStartError = "";
     configState.status = { ...(configState.status || {}), job };
     updateConfigStatusView();
     configElements.jobProgressPanel.scrollIntoView({
@@ -1749,6 +1757,7 @@ async function startSavedConfigJob(action) {
     });
     scheduleConfigJobPoll();
   } catch (error) {
+    configState.jobStartError = error.message;
     setConfigNotice(error.message, "error");
     await loadConfigWorkspace();
   }
@@ -2030,8 +2039,8 @@ async function startUploadBatch() {
 }
 
 function scheduleConfigJobPoll() {
-  window.clearTimeout(configState.jobPollTimer);
-  configState.jobPollTimer = window.setTimeout(async () => {
+  StartStopClient.clearVisibleTimeout(configState.jobPollTimer);
+  configState.jobPollTimer = StartStopClient.visibleTimeout(async () => {
     try {
       configState.status = await configRequest("/api/start-stop/status");
       updateConfigStatusView();
@@ -2217,5 +2226,11 @@ async function initializeConfigPage() {
     loadLivePreview(),
   ]);
 }
+
+configElements.toggleReadonlyJob.addEventListener("click", () => {
+  const expanded = document.body.classList.toggle("show-completed-job");
+  configElements.toggleReadonlyJob.setAttribute("aria-expanded", String(expanded));
+  configElements.toggleReadonlyJob.textContent = expanded ? "收起任务详情" : "查看最近任务";
+});
 
 initializeConfigPage();

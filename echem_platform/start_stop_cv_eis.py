@@ -13,9 +13,11 @@ import re
 import sqlite3
 import threading
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
+
+from .start_stop_cv_eis_review import incompatible_stages, read_reviews, save_review, select_eis
 
 
 RHE_OFFSET_V = 0.9268
@@ -357,24 +359,23 @@ def _downsample_indices(length: int, maximum: int = MAX_CHART_POINTS) -> list[in
     )
 
 
-def analyze_pair(cv: CvData, eis: EisData) -> dict[str, Any]:
-    if cv.instrument_ir_applied is True:
-        raise CvEisAnalysisError("CV 仪器参数显示已启用 iR 补偿，禁止再次离线补偿。", 422)
+def analyze_pair(cv: CvData, eis: EisData | None) -> dict[str, Any]:
     compatible = (
-        cv.current_basis == "density" and eis.impedance_basis == "area_normalized"
+        cv.current_basis == "density" and eis is not None and eis.impedance_basis == "area_normalized"
     ) or (
-        cv.current_basis == "absolute" and eis.impedance_basis == "absolute"
+        cv.current_basis == "absolute" and eis is not None and eis.impedance_basis == "absolute"
     )
-    if not compatible:
+    if eis is not None and not compatible:
         raise CvEisAnalysisError("CV 电流单位与 EIS 阻抗单位不兼容。", 422)
-    rs = extract_high_frequency_rs(eis)
+    rs = extract_high_frequency_rs(eis) if eis is not None else None
     start, end = return_scan_indices(cv)
     potential = list(cv.potential_v[start:end])
     current = list(cv.current[start:end])
+    can_correct = cv.instrument_ir_applied is False and rs is not None
     corrected = [
         e_value - IR_COMPENSATION_FRACTION * i_value * float(rs["rs"])
         for e_value, i_value in zip(potential, current)
-    ]
+    ] if can_correct else []
     raw_rhe = [value + RHE_OFFSET_V for value in potential]
     corrected_rhe = [value + RHE_OFFSET_V for value in corrected]
     if cv.current_basis == "density":
@@ -384,7 +385,7 @@ def analyze_pair(cv: CvData, eis: EisData) -> dict[str, Any]:
         display_current = [value * 1000 for value in current]
         display_unit = "mA"
     overpotentials = []
-    if cv.current_basis == "density":
+    if cv.current_basis == "density" and can_correct:
         cathodic_magnitude = [-value for value in display_current]
         for target in TARGET_CURRENT_DENSITIES_MA_CM2:
             raw_value = _interpolate_crossing(cathodic_magnitude, raw_rhe, float(target))
@@ -408,7 +409,7 @@ def analyze_pair(cv: CvData, eis: EisData) -> dict[str, Any]:
             "index": index,
             "current": display_current[index],
             "raw_e_rhe_v": raw_rhe[index],
-            "ir90_e_rhe_v": corrected_rhe[index],
+            "ir90_e_rhe_v": corrected_rhe[index] if can_correct else None,
         }
         for index in indices
     ]
@@ -417,7 +418,9 @@ def analyze_pair(cv: CvData, eis: EisData) -> dict[str, Any]:
         "current_basis": cv.current_basis,
         "current_unit": display_unit,
         "cv_format": cv.format_name,
-        "eis_format": eis.format_name,
+        "eis_format": eis.format_name if eis is not None else "",
+        "instrument_ir_applied": cv.instrument_ir_applied,
+        "ir_correction_available": can_correct,
         "instrument": cv.instrument,
         "area_cm2": cv.area_cm2,
         "return_scan_points": len(potential),
@@ -539,11 +542,62 @@ class CvEisRepositoryAnalyzer:
     def __init__(self, database: Any):
         self.database = database
         self._lock = threading.RLock()
-        self._token: tuple[int, int, int] | None = None
+        self._token: tuple[int, ...] | None = None
         self._catalog: dict[str, Any] | None = None
         self._curves: dict[str, dict[str, Any]] = {}
 
-    def _generation_token(self) -> tuple[int, int, int]:
+    def _review_state(self) -> dict[str, Any]:
+        if not callable(getattr(self.database, "session", None)):
+            return {"revision": 0, "reviews": {}}
+        with self.database.session() as connection:
+            return read_reviews(connection)
+
+    def review(self, payload: Any) -> dict[str, Any]:
+        if not isinstance(payload, dict) or set(payload) != {
+            "expected_revision", "cv_source_version_id", "eis_source_version_id", "instrument_ir_applied"
+        }:
+            raise CvEisAnalysisError("CV/EIS 确认字段不完整或包含未知字段。")
+        for name in ("expected_revision", "cv_source_version_id"):
+            if type(payload[name]) is not int or payload[name] < (0 if name == "expected_revision" else 1):
+                raise CvEisAnalysisError("CV/EIS 确认编号无效。")
+        eis_id = payload["eis_source_version_id"]
+        if eis_id is not None and (type(eis_id) is not int or eis_id < 1):
+            raise CvEisAnalysisError("EIS 来源编号无效。")
+        decision = payload["instrument_ir_applied"]
+        if decision is not None and type(decision) is not bool:
+            raise CvEisAnalysisError("在线补偿状态必须为已启用、未启用或未知。")
+        with self._lock:
+            inventory = self._inventory()
+            cv_source = next((item for item in inventory if item.kind == "cv" and item.source_version_id == payload["cv_source_version_id"]), None)
+            if cv_source is None:
+                raise CvEisAnalysisError("CV 来源已更新，请重新读取。", 409)
+            eis_source = next((item for item in inventory if item.kind == "eis" and item.source_version_id == eis_id), None)
+            if eis_id is not None and (
+                eis_source is None
+                or PurePosixPath(eis_source.repository_path).parent != PurePosixPath(cv_source.repository_path).parent
+                or incompatible_stages(cv_source, eis_source)
+            ):
+                raise CvEisAnalysisError("EIS 必须来自同一材料目录且测试阶段相容。")
+            cv_data = parse_cv_text(self._read_blob(cv_source))
+            if cv_data.instrument_ir_applied is not None and decision != cv_data.instrument_ir_applied:
+                raise CvEisAnalysisError("仪器文件已提供在线补偿状态，不能用人工确认覆盖。")
+            recorded = {
+                "cv_source_version_id": cv_source.source_version_id,
+                "cv_sha256": cv_source.sha256,
+                "eis_source_version_id": eis_id,
+                "eis_sha256": eis_source.sha256 if eis_source else None,
+                "instrument_ir_applied": decision,
+                "origin": "local_user_confirmation",
+            }
+            with self.database.session() as connection:
+                try:
+                    result = save_review(connection, expected_revision=payload["expected_revision"], payload=recorded)
+                except ValueError as exc:
+                    raise CvEisAnalysisError(str(exc), 409) from exc
+            self._token = None
+            return {"revision": result["revision"], "confirmed": recorded}
+
+    def _generation_token(self) -> tuple[int, ...]:
         with self.database.session() as connection:
             row = connection.execute(
                 """
@@ -553,7 +607,7 @@ class CvEisRepositoryAnalyzer:
                 JOIN source_selections ss ON ss.id = sc.selection_id
                 """
             ).fetchone()
-        return int(row[0]), int(row[1]), int(row[2])
+        return int(row[0]), int(row[1]), int(row[2]), self._review_state()["revision"]
 
     def _inventory(self) -> list[SourceRecord]:
         with self.database.session() as connection:
@@ -608,6 +662,7 @@ class CvEisRepositoryAnalyzer:
 
     def _build(self) -> None:
         inventory = self._inventory()
+        reviews = self._review_state()
         groups: dict[str, dict[str, list[SourceRecord]]] = {}
         for source in inventory:
             parent = PurePosixPath(source.repository_path).parent.as_posix()
@@ -623,10 +678,10 @@ class CvEisRepositoryAnalyzer:
                 group["cv"],
                 key=lambda item: (-item.priority, item.repository_path.casefold()),
             ):
-                eis_source = max(
-                    group["eis"],
-                    key=lambda item: _pair_score(cv_source, item),
-                    default=None,
+                review = reviews["reviews"].get(str(cv_source.source_version_id), {})
+                eis_source, pairing_status, pairing_notice = select_eis(
+                    cv_source, group["eis"], _pair_score,
+                    reviewed_id=review.get("eis_source_version_id"),
                 )
                 identifier_basis = (
                     f"{cv_source.source_version_id}:"
@@ -643,6 +698,18 @@ class CvEisRepositoryAnalyzer:
                 }.get(cv_source.stage, cv_source.stage)
                 record: dict[str, Any] = {
                     "analysis_id": analysis_id,
+                    "cv_source_version_id": cv_source.source_version_id,
+                    "review_revision": reviews["revision"],
+                    "review": review,
+                    "pairing_status": pairing_status,
+                    "eis_candidates": [
+                        {"source_version_id": item.source_version_id,
+                         "name": PurePosixPath(item.repository_path).name,
+                         "stage": item.stage,
+                         "source_modified_utc": item.source_modified_utc,
+                         "compatible": not incompatible_stages(cv_source, item)}
+                        for item in group["eis"]
+                    ],
                     "material_key": parent_text,
                     "display_name": display_name,
                     "stage": cv_source.stage,
@@ -661,22 +728,25 @@ class CvEisRepositoryAnalyzer:
                 }
                 if eis_source is None:
                     record.update(
-                        status="missing_eis",
-                        status_label="缺少可配对 EIS",
+                        status=pairing_status,
+                        status_label="缺少可配对 EIS" if pairing_status == "missing_eis" else "配对待确认",
                     )
-                    record["warnings"].append("同一材料目录没有受支持的 EIS 文本。")
-                    records.append(record)
-                    continue
+                    record["warnings"].append(pairing_notice)
                 record["eis"] = {
                     "name": PurePosixPath(eis_source.repository_path).name,
                     "repository_path": eis_source.repository_path,
                     "sha256": eis_source.sha256,
                     "source_modified_utc": eis_source.source_modified_utc,
-                    "pairing_method": "same_material_directory_stage_and_name",
-                }
+                    "source_version_id": eis_source.source_version_id,
+                    "pairing_method": pairing_status,
+                } if eis_source is not None else None
                 try:
                     cv_data = parse_cv_text(self._read_blob(cv_source))
-                    eis_data = parse_eis_text(self._read_blob(eis_source))
+                    record["instrument_ir_metadata"] = cv_data.instrument_ir_applied
+                    if cv_data.instrument_ir_applied is None and review:
+                        cv_data = replace(cv_data, instrument_ir_applied=review.get("instrument_ir_applied"))
+                    record["instrument_ir_applied"] = cv_data.instrument_ir_applied
+                    eis_data = parse_eis_text(self._read_blob(eis_source)) if eis_source is not None else None
                     analysis = analyze_pair(cv_data, eis_data)
                 except CvEisAnalysisError as exc:
                     record.update(status="invalid", status_label="无法安全计算")
@@ -685,7 +755,15 @@ class CvEisRepositoryAnalyzer:
                     continue
                 density_basis = analysis["current_basis"] == "density"
                 density_ready = density_basis and bool(analysis["overpotentials"])
-                if density_ready:
+                if eis_source is None:
+                    status, status_label = record["status"], record["status_label"]
+                elif cv_data.instrument_ir_applied is None:
+                    status, status_label = "ir_confirmation_required", "在线补偿待确认"
+                    record["warnings"].append("仪器在线补偿状态未知，仅显示原始回扫；确认未启用后才可离线补偿。")
+                elif cv_data.instrument_ir_applied is True:
+                    status, status_label = "already_compensated", "仪器已补偿"
+                    record["warnings"].append("仪器已启用在线补偿，仅显示原始回扫，不再次离线补偿。")
+                elif density_ready:
                     status = "ready"
                     status_label = "可计算过电位"
                 elif density_basis:
@@ -706,6 +784,7 @@ class CvEisRepositoryAnalyzer:
                     eis_format=analysis["eis_format"],
                     return_scan_points=analysis["return_scan_points"],
                     overpotentials=analysis["overpotentials"],
+                    ir_correction_available=analysis["ir_correction_available"],
                 )
                 if status == "area_required":
                     record["warnings"].append(
@@ -727,7 +806,10 @@ class CvEisRepositoryAnalyzer:
                         "scan": "last_cathodic_turn_return_branch",
                         "ir_fraction": IR_COMPENSATION_FRACTION,
                         "rhe_offset_v": RHE_OFFSET_V,
-                        "rs_method": analysis["rs"]["method"],
+                        "rs_method": analysis["rs"]["method"] if analysis["rs"] else None,
+                        "instrument_ir_applied": cv_data.instrument_ir_applied,
+                        "ir_correction_available": analysis["ir_correction_available"],
+                        "pairing_status": pairing_status,
                     },
                 }
                 records.append(record)
@@ -749,6 +831,7 @@ class CvEisRepositoryAnalyzer:
         area_required = sum(item["status"] == "area_required" for item in records)
         paired = sum(item.get("eis") is not None for item in records)
         self._catalog = {
+            "review_revision": reviews["revision"],
             "generated_from": "current_repository_sources",
             "rules": {
                 "rhe_offset_v": RHE_OFFSET_V,

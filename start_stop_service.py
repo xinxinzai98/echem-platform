@@ -32,6 +32,7 @@ import traceback
 import urllib.parse
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from echem_platform.start_stop_runtime_status import RUNTIME_STATUS_NAME, RuntimeSafetyPublisher
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -59,11 +60,19 @@ from echem_platform.start_stop_cv_eis import (
 )
 from echem_platform.start_stop_database import (
     AutoUpdateConfigConflict,
+    ReadOnlyStartStopSourceDatabase,
     StartStopDatabase,
 )
 from echem_platform.start_stop_live_preview import (
     LivePreviewScheduler,
     LivePreviewStateFile,
+)
+from echem_platform.start_stop_lanbts import (
+    DEFAULT_POLL_SECONDS as LANBTS_POLL_SECONDS,
+    LanbtsConfigConflict,
+    LanbtsMonitor,
+    LanbtsRunConfigStore,
+    load_lanbts_machine_config,
 )
 from echem_platform.start_stop_workstations import (
     DEFAULT_DISCOVERY_SECONDS as WORKSTATION_DISCOVERY_SECONDS,
@@ -84,12 +93,17 @@ GET_API_PATHS = frozenset(
         "/api/start-stop/status",
         "/api/start-stop/materials",
         "/api/start-stop/series",
+        "/api/start-stop/stability/catalog",
+        "/api/start-stop/stability/chart",
+        "/api/start-stop/stability/chart-export",
         "/api/start-stop/chart",
+        "/api/start-stop/chart-export",
         "/api/start-stop/cv-eis",
         "/api/start-stop/cv-eis/curve",
         "/api/start-stop/pdf",
         "/api/start-stop/connectivity",
         "/api/start-stop/workstations",
+        "/api/start-stop/lanbts",
         "/api/start-stop/collection-config",
         "/api/start-stop/auto-update",
         "/api/start-stop/live-preview",
@@ -106,9 +120,11 @@ POST_API_PATHS = frozenset(
 )
 PUT_API_PATHS = frozenset(
     {
+        "/api/start-stop/cv-eis/review",
         "/api/start-stop/collection-config",
         "/api/start-stop/auto-update",
         "/api/start-stop/live-preview",
+        "/api/start-stop/lanbts",
     }
 )
 STATIC_FILES = {
@@ -116,7 +132,11 @@ STATIC_FILES = {
     "/static/workbench.css": "workbench.css",
     "/static/start-stop.css": "start-stop.css",
     "/static/start-stop.js": "start-stop.js",
+    "/static/start-stop-stability.css": "start-stop-stability.css",
+    "/static/start-stop-stability.js": "start-stop-stability.js",
     "/static/start-stop-shell.js": "start-stop-shell.js",
+    "/static/start-stop-client.js": "start-stop-client.js",
+    "/static/start-stop-plot-interaction.js": "start-stop-plot-interaction.js",
     "/static/start-stop-config.css": "start-stop-config.css",
     "/static/start-stop-config.html": "start-stop-config.html",
     "/static/start-stop-config.js": "start-stop-config.js",
@@ -128,6 +148,9 @@ STATIC_FILES = {
     "/static/start-stop-workstations.css": "start-stop-workstations.css",
     "/static/start-stop-workstations.html": "start-stop-workstations.html",
     "/static/start-stop-workstations.js": "start-stop-workstations.js",
+    "/static/start-stop-lanbts.css": "start-stop-lanbts.css",
+    "/static/start-stop-lanbts.html": "start-stop-lanbts.html",
+    "/static/start-stop-lanbts.js": "start-stop-lanbts.js",
 }
 ICON_PATH = re.compile(r"^/static/icons/([A-Za-z0-9][A-Za-z0-9_.-]*\.svg)$")
 RFC1918_NETWORKS = (
@@ -141,6 +164,7 @@ LAN_JOB_RESULT_KEYS = frozenset(
         "analysis_series",
         "series_in_atlas",
         "materials_analyzed",
+        "render_data_mode",
         "materials_available",
         "materials_skipped_unchanged",
         "materials_in_atlas",
@@ -170,6 +194,18 @@ LAN_JOB_RESULT_KEYS = frozenset(
         "collection_unsettled_skipped",
         "collection_changed_during_collection",
         "collection_errors",
+        "lanbts_import_outcome",
+        "lanbts_inventoried",
+        "lanbts_stable",
+        "lanbts_unsettled_skipped",
+        "lanbts_raw_downloaded",
+        "lanbts_raw_ingested",
+        "lanbts_derived_ingested",
+        "lanbts_derived_reused",
+        "lanbts_start_stop",
+        "lanbts_constant_current",
+        "lanbts_import_errors",
+        "lanbts_known_failure_skipped",
         "repository_files",
         "repository_bytes",
         "repository_new_versions",
@@ -201,6 +237,7 @@ JOB_STAGES = frozenset(
         "downloading_files",
         "storing_files",
         "writing_database",
+        "importing_lanbts",
         "preparing_upload",
         "freezing_snapshot",
         "materializing_snapshot",
@@ -231,6 +268,7 @@ JOB_PROGRESS_MACHINE_STATUSES = frozenset(
         "running",
         "completed",
         "completed_with_warnings",
+        "deferred",
         "skipped",
         "unreachable",
         "failed",
@@ -239,7 +277,12 @@ JOB_PROGRESS_MACHINE_STATUSES = frozenset(
 JOB_PROGRESS_MAX_COUNT = 9_007_199_254_740_991
 JOB_PROGRESS_MAX_PHASES = 1_000
 JOB_PROGRESS_MAX_MACHINES = 32
-JOB_RESULT_COUNT_KEYS = LAN_JOB_RESULT_KEYS - {"stage", "collection_outcome"}
+JOB_RESULT_COUNT_KEYS = LAN_JOB_RESULT_KEYS - {
+    "render_data_mode",
+    "stage",
+    "collection_outcome",
+    "lanbts_import_outcome",
+}
 SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 SAFE_UTC_TIMESTAMP = re.compile(
     r"^$|^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|\+00:00)$"
@@ -829,13 +872,13 @@ def _capabilities(payload: dict[str, Any], *, lan_read_only: bool) -> dict[str, 
     elif not available:
         message = str(payload.get("message") or "启停数据仓库当前不可用。")
     elif not update_ready and upload_ready:
-        message = "可从本机上传数据并更新启停分析；实验电脑下载环境当前未就绪。"
+        message = "可从本机上传数据并更新稳定性分析；实验电脑下载环境当前未就绪。"
     elif not update_ready:
         message = str(execution.get("message") or "实验电脑数据下载环境尚未就绪。")
     elif busy:
         message = "启停数据任务正在运行，请等待当前任务完成。"
     else:
-        message = "可从实验电脑增量下载数据到独立数据库，并更新启停分析。"
+        message = "可从实验电脑及蓝博增量下载数据到独立数据库，并更新稳定性分析。"
     return {
         "server_ready": available and update_ready,
         "render_server_ready": available and render_ready,
@@ -849,7 +892,7 @@ def _capabilities(payload: dict[str, Any], *, lan_read_only: bool) -> dict[str, 
         "can_save_configuration": available and allowed_here and not busy,
         "can_render_atlas": can_render,
         "can_export_pdf": can_render,
-        "data_scope": "remote_collect_or_local_upload_to_database_then_start_stop_analysis",
+        "data_scope": "remote_collect_or_local_upload_to_database_then_stability_analysis",
         "database_backed": True,
         "remote_sync_available": execution.get("collection_ready") is True,
         "upload_max_file_bytes": StartStopWorkspace.MAX_UPLOAD_BYTES,
@@ -1030,6 +1073,9 @@ def _sanitize_job_result(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict):
         return {}
     result: dict[str, Any] = {}
+    mode = payload.get("render_data_mode")
+    if isinstance(mode, str) and mode in {"raw", "water", "both"}:
+        result["render_data_mode"] = mode
     for key in JOB_RESULT_COUNT_KEYS:
         if key not in payload:
             continue
@@ -1047,6 +1093,14 @@ def _sanitize_job_result(payload: Any) -> dict[str, Any]:
         "skipped",
     }:
         result["collection_outcome"] = outcome
+    lanbts_outcome = payload.get("lanbts_import_outcome")
+    if isinstance(lanbts_outcome, str) and lanbts_outcome in {
+        "completed",
+        "partial",
+        "failed",
+        "skipped",
+    }:
+        result["lanbts_import_outcome"] = lanbts_outcome
     return result
 
 
@@ -1093,6 +1147,7 @@ def _sanitize_job(payload: dict[str, Any], *, lan_read_only: bool) -> dict[str, 
     if isinstance(job.get("can_retry"), bool):
         safe_job["can_retry"] = bool(job["can_retry"])
     duplicate_notice = duplicate_plot_name_notice(job.get("message"))
+    snapshot_stale = "网页配置对应的数据快照已过期" in str(job.get("message") or "")
     message = _safe_progress_text(
         duplicate_notice or job.get("message"), maximum=240
     )
@@ -1102,13 +1157,18 @@ def _sanitize_job(payload: dict[str, Any], *, lan_read_only: bool) -> dict[str, 
         # Older jobs were persisted with the generic code before duplicate
         # names had a first-class, user-actionable failure state.
         safe_job["failure_code"] = "duplicate_material_name"
+    if snapshot_stale:
+        safe_job["failure_code"] = "material_snapshot_mismatch"
+        safe_job["message"] = "材料配置与本次数据版本不一致，请刷新材料库后重新分析。"
+    if safe_job.get("failure_code") == "scratch_space_insufficient":
+        safe_job["message"] = "本次任务所需临时空间不足，请减少分析范围或由管理员调整临时容量。"
     safe_job["result"] = _sanitize_job_result(job.get("result"))
     progress = _sanitize_job_progress(job.get("progress"))
     if progress is not None:
         safe_job["progress"] = progress
     if safe_job.get("status") in {"failed", "interrupted"}:
         if not (
-            safe_job.get("failure_code") == "duplicate_material_name"
+            safe_job.get("failure_code") in {"duplicate_material_name", "material_snapshot_mismatch", "scratch_space_insufficient"}
             and safe_job.get("message")
         ):
             safe_job["message"] = (
@@ -1423,6 +1483,7 @@ def create_handler(
     live_preview_snapshot_provider: Callable[[], dict[str, Any]] | None = None,
     cv_eis_analyzer: CvEisRepositoryAnalyzer | None = None,
     workstation_monitor: WorkstationMonitor | None = None,
+    lanbts_monitor: LanbtsMonitor | None = None,
 ):
     if lan_no_auth and not lan_read_only:
         raise ValueError("免登录模式仅可用于 LAN 只读服务。")
@@ -1477,6 +1538,7 @@ def create_handler(
         if callable(getattr(database, "session", None)):
             cv_eis_analyzer = CvEisRepositoryAnalyzer(database)
     workstation_status = workstation_monitor or WorkstationMonitor(None)
+    lanbts_status = lanbts_monitor or LanbtsMonitor(None)
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "StartStopRepository/1.0"
@@ -1689,6 +1751,25 @@ def create_handler(
                 while chunk := source.read(1024 * 1024):
                     self.wfile.write(chunk)
 
+        def send_bytes_download(
+            self,
+            data: bytes,
+            filename: str,
+            content_type: str,
+        ) -> None:
+            encoded_name = urllib.parse.quote(filename, safe="")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header(
+                "Content-Disposition",
+                f"attachment; filename*=UTF-8''{encoded_name}",
+            )
+            self.send_header("Cache-Control", "no-store")
+            self._send_common_headers()
+            self.end_headers()
+            self.wfile.write(data)
+
         def _require_local_json_request(self) -> None:
             if lan_read_only:
                 raise StartStopRequestError(
@@ -1846,6 +1927,7 @@ def create_handler(
                     "/start-stop/analysis",
                     "/start-stop/config",
                     "/start-stop/workstations",
+                    "/start-stop/lanbts",
                     "/start-stop/cv-eis",
                     "/start-stop/materials",
                 }:
@@ -1866,6 +1948,8 @@ def create_handler(
                     self.send_static("start-stop-config.html")
                 elif path == "/start-stop/workstations":
                     self.send_static("start-stop-workstations.html")
+                elif path == "/start-stop/lanbts":
+                    self.send_static("start-stop-lanbts.html")
                 elif path == "/start-stop/cv-eis":
                     self.send_static("start-stop-cv-eis.html")
                 elif path == "/start-stop/materials":
@@ -1886,6 +1970,21 @@ def create_handler(
                             "工作站监控接口不接受查询参数。"
                         )
                     self.send_json(workstation_status.snapshot())
+                elif path == "/api/start-stop/lanbts":
+                    if query:
+                        raise StartStopRequestError(
+                            "蓝博八通道接口不接受查询参数。"
+                        )
+                    self.send_json(
+                        {
+                            **lanbts_status.snapshot(),
+                            "can_edit": bool(
+                                not lan_read_only
+                                and lanbts_status.active_probe
+                                and lanbts_status.config_store is not None
+                            ),
+                        }
+                    )
                 elif path == "/api/start-stop/auto-update":
                     if lan_read_only:
                         raise StartStopRequestError(
@@ -1946,6 +2045,46 @@ def create_handler(
                     self.send_json(workspace.materials())
                 elif path == "/api/start-stop/series":
                     self.send_json(workspace.series())
+                elif path == "/api/start-stop/stability/catalog":
+                    if query:
+                        raise StartStopRequestError(
+                            "稳定性数据目录接口不接受查询参数。"
+                        )
+                    self.send_json(workspace.stability_catalog())
+                elif path == "/api/start-stop/stability/chart":
+                    allowed = {"series", "analysis_mode", "metric", "max_points"}
+                    unknown = sorted(set(query) - allowed)
+                    if unknown:
+                        raise StartStopRequestError(
+                            "稳定性曲线包含未知参数：" + ", ".join(unknown)
+                        )
+                    series_ids = [
+                        item
+                        for value in query.get("series", [])
+                        for item in value.split(",")
+                        if item
+                    ]
+                    self.send_json(
+                        workspace.stability_chart(
+                            series_ids=series_ids,
+                            analysis_mode=query.get(
+                                "analysis_mode", ["start_stop"]
+                            )[0],
+                            metric=query.get("metric", ["overview"])[0],
+                            max_points=int(
+                                query.get("max_points", ["6000"])[0]
+                            ),
+                        )
+                    )
+                elif path == "/api/start-stop/stability/chart-export":
+                    allowed = {"series", "analysis_mode", "metric", "format"}
+                    if set(query) != allowed or any(len(values) != 1 or not values[0] for values in query.values()):
+                        raise StartStopRequestError("蓝博导出必须且只能提供 series、analysis_mode、metric、format 四个非空参数。")
+                    data, filename, content_type = workspace.stability_chart_export(
+                        series_ids=query["series"][0].split(","), analysis_mode=query["analysis_mode"][0],
+                        metric=query["metric"][0], export_format=query["format"][0],
+                    )
+                    self.send_bytes_download(data, filename, content_type)
                 elif path == "/api/start-stop/cv-eis":
                     if query:
                         raise StartStopRequestError("CV/EIS 列表接口不接受查询参数。")
@@ -1954,7 +2093,7 @@ def create_handler(
                             "CV/EIS 数据库分析当前不可用。",
                             HTTPStatus.SERVICE_UNAVAILABLE,
                         )
-                    self.send_json(cv_eis_analyzer.catalog())
+                    self.send_json({**cv_eis_analyzer.catalog(), "can_review": not lan_read_only})
                 elif path == "/api/start-stop/cv-eis/curve":
                     if set(query) != {"analysis_id"} or len(query["analysis_id"]) != 1:
                         raise StartStopRequestError(
@@ -1982,6 +2121,38 @@ def create_handler(
                             max_points=int(query.get("max_points", ["4000"])[0]),
                         )
                     )
+                elif path == "/api/start-stop/chart-export":
+                    allowed = {"series", "metric", "x", "mode", "format", "markers"}
+                    unknown = sorted(set(query) - allowed)
+                    if unknown:
+                        raise StartStopRequestError(
+                            "高亮导出包含未知参数：" + ", ".join(unknown)
+                        )
+
+                    def single_query_value(key: str, default: str) -> str:
+                        values = query.get(key)
+                        if values is None:
+                            return default
+                        if len(values) != 1 or not values[0]:
+                            raise StartStopRequestError(
+                                f"高亮导出参数 {key} 必须且只能提供一个非空值。"
+                            )
+                        return values[0]
+
+                    series_value = single_query_value("series", "")
+                    series_ids = [item for item in series_value.split(",") if item]
+                    marker_value = single_query_value("markers", "1")
+                    if marker_value not in {"0", "1"}:
+                        raise StartStopRequestError("markers 只支持 0 或 1。")
+                    data, filename, content_type = workspace.chart_export(
+                        series_ids=series_ids,
+                        metric=single_query_value("metric", "cathodic"),
+                        x_axis=single_query_value("x", "cycle"),
+                        mode=single_query_value("mode", "raw"),
+                        export_format=single_query_value("format", "xlsx"),
+                        show_anomaly_markers=marker_value == "1",
+                    )
+                    self.send_bytes_download(data, filename, content_type)
                 elif path == "/api/start-stop/pdf":
                     pdf_path, filename = workspace.pdf(query.get("kind", ["standard"])[0])
                     self.send_file_download(pdf_path, filename)
@@ -2204,6 +2375,45 @@ def create_handler(
                 if path not in PUT_API_PATHS:
                     self.send_error_json(HTTPStatus.NOT_FOUND, "Not found")
                     return
+                if path == "/api/start-stop/cv-eis/review":
+                    self._require_local_json_request()
+                    if cv_eis_analyzer is None:
+                        raise StartStopRequestError("CV/EIS 确认功能当前不可用。", HTTPStatus.SERVICE_UNAVAILABLE)
+                    self.send_json(cv_eis_analyzer.review(self.read_json()))
+                    return
+                if path == "/api/start-stop/lanbts":
+                    if (
+                        not lanbts_status.active_probe
+                        or lanbts_status.config_store is None
+                    ):
+                        raise StartStopRequestError(
+                            "蓝博材料与面积配置当前不可用。",
+                            HTTPStatus.SERVICE_UNAVAILABLE,
+                        )
+                    self._require_local_json_request()
+                    payload = self.read_json()
+                    unknown = sorted(
+                        set(payload) - {"expected_revision", "channels"}
+                    )
+                    if unknown:
+                        raise StartStopRequestError(
+                            "蓝博配置请求包含未知字段：" + ", ".join(unknown)
+                        )
+                    if set(payload) != {"expected_revision", "channels"}:
+                        raise StartStopRequestError(
+                            "蓝博配置必须提供 expected_revision 和 channels。"
+                        )
+                    try:
+                        saved = lanbts_status.save_config(
+                            expected_revision=payload.get("expected_revision"),
+                            channels=payload.get("channels"),
+                        )
+                    except LanbtsConfigConflict as exc:
+                        raise StartStopRequestError(
+                            str(exc), HTTPStatus.CONFLICT
+                        ) from exc
+                    self.send_json({**saved, "can_edit": True})
+                    return
                 if path == "/api/start-stop/auto-update":
                     if not callable(auto_update_saver):
                         raise StartStopRequestError(
@@ -2306,6 +2516,8 @@ def create_handler(
                 self.send_error_json(exc.status, str(exc))
             except StartStopWorkspaceError as exc:
                 self.send_error_json(exc.status, str(exc))
+            except CvEisAnalysisError as exc:
+                self.send_error_json(exc.status, str(exc))
             except (ValueError, json.JSONDecodeError) as exc:
                 self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
             except Exception:
@@ -2355,6 +2567,14 @@ def build_workspace(
     analysis_dir.mkdir(parents=True, exist_ok=True)
     scratch_dir.mkdir(parents=True, exist_ok=True)
     database = database_type(database_path)
+    source_database_path = str(
+        getattr(args, "source_database", "") or ""
+    ).strip()
+    source_database = (
+        ReadOnlyStartStopSourceDatabase(source_database_path)
+        if source_database_path
+        else None
+    )
     analysis_script = str(args.analysis_script or "").strip()
     collection_config = str(args.collection_config or "").strip()
     collection_config_path = (
@@ -2381,9 +2601,34 @@ def build_workspace(
         and callable(getattr(database, "save_collection_config", None))
         else None
     )
+    raw_lanbts_config = (
+        ""
+        if bool(args.lan_read_only)
+        else str(getattr(args, "lanbts_config", "") or "").strip()
+    )
+    lanbts_config_path = (
+        Path(raw_lanbts_config).expanduser().resolve()
+        if raw_lanbts_config
+        else None
+    )
+    raw_lanbts_channel_config = (
+        ""
+        if bool(args.lan_read_only)
+        else str(getattr(args, "lanbts_channel_config", "") or "").strip()
+    )
+    lanbts_channel_config_path = (
+        Path(raw_lanbts_channel_config).expanduser().resolve()
+        if raw_lanbts_channel_config
+        else (
+            database_path.parent / "lanbts-channel-config.json"
+            if lanbts_config_path is not None
+            else None
+        )
+    )
     workspace = workspace_type(
         database,
         analysis_dir,
+        source_database=source_database,
         analysis_script=(
             Path(analysis_script).expanduser().resolve()
             if analysis_script
@@ -2391,6 +2636,8 @@ def build_workspace(
         ),
         collection_config=collection_config_path,
         collection_config_provider=collection_config_store,
+        lanbts_config=lanbts_config_path,
+        lanbts_channel_config=lanbts_channel_config_path,
         scratch_dir=scratch_dir,
         backup_dir=backup_dir,
         estimated_output_bytes=estimated_output_bytes,
@@ -2409,6 +2656,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--cv-eis-database",
         default="",
         help="CV/EIS 原始文件数据库的只读路径（LAN 服务可单独挂载）",
+    )
+    parser.add_argument(
+        "--source-database",
+        default="",
+        help="启停完整原始数据的只读数据库路径（仅用于 LAN 导出）",
     )
     parser.add_argument("--analysis-dir", required=True, help="当前分析产物缓存目录")
     parser.add_argument("--analysis-script", default="", help="固定启停分析脚本")
@@ -2429,6 +2681,27 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=WORKSTATION_DISCOVERY_SECONDS,
         help="工作站文件夹重新发现周期（秒）",
+    )
+    parser.add_argument(
+        "--lanbts-config",
+        default="",
+        help="蓝博八通道固定 SSH 与安装目录配置（仅本机探测）",
+    )
+    parser.add_argument(
+        "--lanbts-state-file",
+        default="",
+        help="蓝博八通道只读共享状态缓存",
+    )
+    parser.add_argument(
+        "--lanbts-channel-config",
+        default="",
+        help="蓝博材料名称与逐通道电极面积配置（仅本机）",
+    )
+    parser.add_argument(
+        "--lanbts-poll-seconds",
+        type=int,
+        default=LANBTS_POLL_SECONDS,
+        help="蓝博八通道只读检查周期（秒）",
     )
     parser.add_argument("--scratch-dir", required=True, help="任务临时工作目录")
     parser.add_argument(
@@ -2479,6 +2752,15 @@ def _validated_launch(args: argparse.Namespace) -> tuple[str, str, int]:
     cv_eis_database = str(getattr(args, "cv_eis_database", "") or "").strip()
     if cv_eis_database and not bool(args.lan_read_only):
         raise ValueError("--cv-eis-database 仅用于 LAN 只读服务。")
+    source_database = str(getattr(args, "source_database", "") or "").strip()
+    if source_database and not bool(args.lan_read_only):
+        raise ValueError("--source-database 仅用于 LAN 只读服务。")
+    lanbts_config = str(getattr(args, "lanbts_config", "") or "").strip()
+    lanbts_channel_config = str(
+        getattr(args, "lanbts_channel_config", "") or ""
+    ).strip()
+    if bool(args.lan_read_only) and (lanbts_config or lanbts_channel_config):
+        raise ValueError("蓝博固定设备和材料面积配置仅用于本机服务。")
     bind = validate_bind(
         args.bind,
         lan_read_only=bool(args.lan_read_only),
@@ -2510,6 +2792,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     live_preview_scheduler: LivePreviewScheduler | None = None
     live_preview_state_file: LivePreviewStateFile | None = None
     workstation_monitor: WorkstationMonitor | None = None
+    lanbts_monitor: LanbtsMonitor | None = None
+    safety_publisher: RuntimeSafetyPublisher | None = None
     server: StartStopHTTPServer | None = None
     try:
         try:
@@ -2569,6 +2853,45 @@ def main(argv: Iterable[str] | None = None) -> int:
                 poll_seconds=int(args.workstation_poll_seconds),
                 discovery_seconds=int(args.workstation_discovery_seconds),
             )
+            lanbts_state_file = str(
+                getattr(args, "lanbts_state_file", "") or ""
+            ).strip()
+            if not lanbts_state_file:
+                lanbts_state_file = str(
+                    Path(workstation_state_file).with_name("lanbts-monitor.json")
+                )
+            lanbts_fixed_path = str(
+                getattr(args, "lanbts_config", "") or ""
+            ).strip()
+            lanbts_machine_config = (
+                load_lanbts_machine_config(lanbts_fixed_path)
+                if lanbts_fixed_path and not args.lan_read_only
+                else None
+            )
+            lanbts_channel_config_path = str(
+                getattr(args, "lanbts_channel_config", "") or ""
+            ).strip()
+            if not lanbts_channel_config_path and not args.lan_read_only:
+                lanbts_channel_config_path = str(
+                    Path(args.database).expanduser().resolve().parent
+                    / "lanbts-channel-config.json"
+                )
+            lanbts_config_store = (
+                LanbtsRunConfigStore(lanbts_channel_config_path)
+                if lanbts_machine_config is not None
+                and lanbts_channel_config_path
+                and not args.lan_read_only
+                else None
+            )
+            lanbts_monitor = LanbtsMonitor(
+                lanbts_state_file,
+                active_probe=bool(
+                    not args.lan_read_only and lanbts_machine_config is not None
+                ),
+                machine_config=lanbts_machine_config,
+                config_store=lanbts_config_store,
+                poll_seconds=int(args.lanbts_poll_seconds),
+            )
             live_preview_state_file = LivePreviewStateFile(
                 Path(workstation_state_file).with_name("live-preview.json")
             )
@@ -2606,8 +2929,14 @@ def main(argv: Iterable[str] | None = None) -> int:
                 ),
                 cv_eis_analyzer=cv_eis_analyzer,
                 workstation_monitor=workstation_monitor,
+                lanbts_monitor=lanbts_monitor,
             )
             server = StartStopHTTPServer((bind, int(args.port)), handler)
+            if not args.lan_read_only and callable(getattr(workspace, "_safety_status", None)):
+                safety_publisher = RuntimeSafetyPublisher(
+                    Path(args.analysis_dir).expanduser().resolve().parent / RUNTIME_STATUS_NAME,
+                    lambda: _sanitize_safety_status(workspace._safety_status(), provenance=_sanitize_analysis_provenance(workspace._analysis_provenance_status())),
+                )
         except (OSError, ValueError) as exc:
             parser.error(str(exc))
         mode = "LAN read-only" if args.lan_read_only else "local read-write"
@@ -2618,6 +2947,10 @@ def main(argv: Iterable[str] | None = None) -> int:
         )
         if workstation_monitor is not None:
             workstation_monitor.start()
+        if safety_publisher is not None:
+            safety_publisher.start()
+        if lanbts_monitor is not None:
+            lanbts_monitor.start()
         if live_preview_scheduler is not None:
             live_preview_scheduler.start()
         if auto_update_scheduler is not None:
@@ -2626,6 +2959,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     except KeyboardInterrupt:
         pass
     finally:
+        if safety_publisher is not None:
+            safety_publisher.close()
         try:
             if auto_update_scheduler is not None:
                 auto_update_scheduler.close()
@@ -2635,15 +2970,19 @@ def main(argv: Iterable[str] | None = None) -> int:
                     live_preview_scheduler.close()
             finally:
                 try:
-                    if workstation_monitor is not None:
-                        workstation_monitor.close()
+                    if lanbts_monitor is not None:
+                        lanbts_monitor.close()
                 finally:
                     try:
-                        if server is not None:
-                            server.server_close()
+                        if workstation_monitor is not None:
+                            workstation_monitor.close()
                     finally:
-                        if database_instance_lock is not None:
-                            database_instance_lock.close()
+                        try:
+                            if server is not None:
+                                server.server_close()
+                        finally:
+                            if database_instance_lock is not None:
+                                database_instance_lock.close()
     return 0
 
 

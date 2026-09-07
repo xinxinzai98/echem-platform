@@ -433,7 +433,7 @@ class ProtocolApiTests(unittest.TestCase):
         self.assertIn('path == "/api/control/capabilities"', handler_source)
         self.assertIn('path == "/api/control/runs"', handler_source)
         self.assertIn('runtime.config["instrument_control_enabled"]', handler_source)
-        self.assertNotIn("/start", handler_source)
+        self.assertNotIn('path == "/start"', handler_source)
 
     def test_draft_save_list_and_restore(self):
         draft = default_dry_run_draft()
@@ -679,6 +679,42 @@ class FixtureValidationTests(unittest.TestCase):
 
 
 class SafetyTests(unittest.TestCase):
+    def test_server_bind_requires_explicit_read_only_mode_for_rfc1918(self):
+        self.assertEqual(
+            APP.validate_server_bind("127.0.0.1", lan_read_only=False),
+            "127.0.0.1",
+        )
+        self.assertEqual(
+            APP.validate_server_bind("192.168.110.158", lan_read_only=True),
+            "192.168.110.158",
+        )
+        with self.assertRaises(ValueError):
+            APP.validate_server_bind("192.168.110.158", lan_read_only=False)
+        with self.assertRaises(ValueError):
+            APP.validate_server_bind("0.0.0.0", lan_read_only=True)
+        with self.assertRaises(ValueError):
+            APP.validate_server_bind("8.8.8.8", lan_read_only=True)
+
+    def test_unspecified_bind_requires_explicit_container_mode(self):
+        with self.assertRaises(ValueError):
+            APP.validate_server_bind("0.0.0.0", lan_read_only=False)
+        self.assertEqual(
+            APP.validate_server_bind(
+                "0.0.0.0",
+                lan_read_only=False,
+                container_mode=True,
+            ),
+            "0.0.0.0",
+        )
+        self.assertEqual(
+            APP.validate_server_bind(
+                "0.0.0.0",
+                lan_read_only=True,
+                container_mode=True,
+            ),
+            "0.0.0.0",
+        )
+
     def test_non_loopback_bind_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:
             config_path = Path(temporary) / "config.json"

@@ -443,6 +443,8 @@ def _task_storage_preflight(
     cache_dir: Path,
     estimated_snapshot_bytes: int,
     estimated_output_bytes: int,
+    reclaimable_scratch_bytes: int = 0,
+    output_estimate_includes_margin: bool = False,
 ) -> dict[str, Any]:
     """Check every filesystem that receives bytes during one analysis task."""
 
@@ -465,7 +467,7 @@ def _task_storage_preflight(
         {
             "role": "scratch",
             "path": scratch_dir,
-            "workload_bytes": snapshot_bytes + output_bytes,
+            "workload_bytes": max(0, snapshot_bytes + output_bytes - max(0, int(reclaimable_scratch_bytes))),
             "minimum_margin_bytes": TASK_EPHEMERAL_MARGIN_BYTES,
         },
         {
@@ -504,6 +506,10 @@ def _task_storage_preflight(
             int(volume["minimum_margin_bytes"]),
             math.ceil(workload * DEFAULT_SAFETY_MARGIN_RATIO),
         )
+        if output_estimate_includes_margin and set(volume["roles"]).issubset({"scratch", "cache"}):
+            # Immutable input size is exact; the measured output already has
+            # its growth margin. Keep a fixed I/O margin without adding it twice.
+            margin = int(volume["minimum_margin_bytes"])
         required = workload + margin
         shortfall = max(0, required - int(volume["free_bytes"]))
         required_total += required
@@ -871,6 +877,8 @@ def build_safety_status(
     scratch_dir: str | Path | None = None,
     cache_dir: str | Path | None = None,
     estimated_snapshot_bytes: int = 0,
+    reclaimable_scratch_bytes: int = 0,
+    output_estimate_includes_margin: bool = False,
     low_space_ratio: float = 0.15,
     backup_policy_mode: str = "risk_tiered",
     scheduled_background_enabled: bool = False,
@@ -904,6 +912,8 @@ def build_safety_status(
         ),
         estimated_snapshot_bytes=estimated_snapshot_bytes,
         estimated_output_bytes=estimated_output_bytes,
+        reclaimable_scratch_bytes=reclaimable_scratch_bytes,
+        output_estimate_includes_margin=output_estimate_includes_margin,
     )
     backup_preflight = storage_preflight(
         source,

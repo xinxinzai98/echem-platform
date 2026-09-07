@@ -11,6 +11,7 @@
   <link rel="stylesheet" href="/static/start-stop.css">
   <link rel="stylesheet" href="/static/start-stop-config.css">
   <script src="/static/start-stop-shell.js"></script>
+  <script src="/static/start-stop-client.js"></script>
 </head>
 <body class="start-stop-app start-stop-repository-mode">
   <div class="workbench-shell">
@@ -52,16 +53,20 @@
           <span id="startStopWorkstationsNavNumber" class="workbench-nav-number">02</span>
           <span class="workbench-nav-copy"><strong>工作站监控</strong><small>六个工作站与当前材料</small></span>
         </a>
-        <a id="startStopNavItem" class="workbench-nav-item" data-analysis-route href="/start-stop/analysis" aria-label="03 启停分析" title="启停分析">
-          <span id="startStopNavNumber" class="workbench-nav-number">03</span>
-          <span class="workbench-nav-copy"><strong>启停分析</strong><small>曲线检查、高亮与缩放</small></span>
+        <a id="startStopLanbtsNavItem" class="workbench-nav-item" data-lanbts-route href="/start-stop/lanbts" aria-label="03 蓝博八通道" title="蓝博八通道">
+          <span id="startStopLanbtsNavNumber" class="workbench-nav-number">03</span>
+          <span class="workbench-nav-copy"><strong>蓝博八通道</strong><small>状态、工步、材料与面积</small></span>
         </a>
-        <a id="startStopCvEisNavItem" class="workbench-nav-item" data-cv-eis-route href="/start-stop/cv-eis" aria-label="04 CV–EIS 分析" title="CV–EIS 分析">
-          <span id="startStopCvEisNavNumber" class="workbench-nav-number">04</span>
+        <a id="startStopNavItem" class="workbench-nav-item" data-analysis-route href="/start-stop/analysis" aria-label="04 稳定性分析" title="稳定性分析">
+          <span id="startStopNavNumber" class="workbench-nav-number">04</span>
+          <span class="workbench-nav-copy"><strong>稳定性分析</strong><small>启停与恒流稳定性</small></span>
+        </a>
+        <a id="startStopCvEisNavItem" class="workbench-nav-item" data-cv-eis-route href="/start-stop/cv-eis" aria-label="05 CV–EIS 分析" title="CV–EIS 分析">
+          <span id="startStopCvEisNavNumber" class="workbench-nav-number">05</span>
           <span class="workbench-nav-copy"><strong>CV–EIS 分析</strong><small>过电位、Rs 与 iR 补偿</small></span>
         </a>
-        <a id="startStopMaterialsNavItem" class="workbench-nav-item" data-materials-route href="/start-stop/materials" aria-label="05 材料库" title="材料库">
-          <span id="startStopMaterialsNavNumber" class="workbench-nav-number">05</span>
+        <a id="startStopMaterialsNavItem" class="workbench-nav-item" data-materials-route href="/start-stop/materials" aria-label="06 材料库" title="材料库">
+          <span id="startStopMaterialsNavNumber" class="workbench-nav-number">06</span>
           <span class="workbench-nav-copy"><strong>材料库</strong><small>全名、备注与入图范围</small></span>
         </a>
       </nav>
@@ -79,7 +84,7 @@
         <div class="workbench-page-heading">
           <span class="eyebrow">Start–stop / Runtime configuration</span>
           <h1>运行与绘图配置</h1>
-          <p>管理数据更新、三台实验机搜索位置与绘图规则；材料重命名与入图选择已移至独立“材料库”</p>
+          <p>管理三台实验机与蓝博数据更新、搜索位置和绘图规则；材料重命名与入图选择已移至独立“材料库”</p>
         </div>
       </header>
 
@@ -91,7 +96,7 @@
             <div>
               <span class="eyebrow">Data operations</span>
               <h2 id="dataOperationsTitle">数据操作与实验机状态</h2>
-              <p>上传本地数据、从实验电脑下载更新，或按已保存配置更新平台分析。PDF 图集已移至材料库按需生成。远端文件停止写入满 5 分钟后才会安全入库。</p>
+              <p id="dataOperationsDescription">上传本地数据、从实验电脑下载更新，或按已保存配置更新平台分析。PDF 图集已移至材料库按需生成。远端文件停止写入满 5 分钟后才会安全入库。</p>
             </div>
             <div class="operations-status" aria-label="数据任务状态">
               <span id="updateCapability" class="update-capability-chip checking" role="status" aria-live="polite">正在检查更新能力</span>
@@ -99,9 +104,15 @@
             </div>
           </div>
 
+          <div class="readonly-runtime-summary">
+            <p id="readonlyRuntimeDates">正在读取数据时间</p>
+            <a class="secondary-outline-button" href="/start-stop/analysis">查看稳定性分析</a>
+            <a class="secondary-outline-button" href="/start-stop/materials">查看材料库</a>
+            <button id="toggleReadonlyJob" type="button" class="secondary-outline-button" aria-expanded="false">查看最近任务</button>
+          </div>
           <div class="operations-actions" aria-label="数据操作">
             <button id="openUpload" class="secondary-outline-button local-write-only" type="button" hidden>上传数据</button>
-            <button id="refreshData" class="secondary-outline-button local-write-only" type="button">从三台实验电脑下载并更新</button>
+            <button id="refreshData" class="secondary-outline-button local-write-only" type="button">从实验电脑与蓝博下载并更新</button>
             <div class="auto-update-control local-write-only" aria-label="后台自动更新">
               <button id="toggleAutoUpdate" class="auto-update-toggle" type="button" aria-pressed="false">开启自动更新</button>
               <label for="autoUpdateInterval">
@@ -129,7 +140,7 @@
                 范围
                 <select id="renderMaterialScope">
                   <option value="all" selected>全部材料</option>
-                  <option value="updated">仅新增／数据已更新</option>
+                  <option value="updated">增量更新（保留已有材料结果）</option>
                 </select>
               </label>
               <button id="renderAtlas" class="primary-button" type="button">按选择更新平台分析</button>
@@ -140,7 +151,7 @@
             <div class="job-progress-heading">
               <div>
                 <span class="eyebrow">Task progress</span>
-                <h3 id="jobProgressTitle">三台实验电脑更新进度</h3>
+                <h3 id="jobProgressTitle">实验电脑与蓝博更新进度</h3>
               </div>
               <span id="jobProgressState" class="job-progress-state" role="status" aria-live="polite">等待开始</span>
             </div>
@@ -194,10 +205,10 @@
             <div>
               <span class="eyebrow">Live data preview</span>
               <h3 id="livePreviewTitle">实时数据预览</h3>
-              <p>开启后立即执行一次，之后每 5 分钟识别正在写入的启停文件、抓取只读快照，并按正式启停规则识别完整循环、计算末端电位与异常、接续累计时间。结果只临时叠加到 03 启停分析，不写入正式数据库。</p>
+              <p>开启后立即执行一次，之后每 5 分钟识别正在写入的启停文件、抓取只读快照，并按正式启停规则识别完整循环、计算末端电位与异常、接续累计时间。结果只临时叠加到 04 稳定性分析的启停视图，不写入正式数据库。</p>
               <div class="live-preview-actions">
                 <button id="toggleLivePreview" class="auto-update-toggle live-preview-toggle" type="button" aria-pressed="false">开启实时预览</button>
-                <button id="plotLivePreview" class="primary-button live-preview-plot-button" type="button" aria-describedby="livePreviewPlotHint" disabled>在 03 页叠加正在测试数据</button>
+                <button id="plotLivePreview" class="primary-button live-preview-plot-button" type="button" aria-describedby="livePreviewPlotHint" disabled>在稳定性分析中叠加测试数据</button>
               </div>
               <p id="livePreviewPlotHint" class="live-preview-plot-hint" role="status" aria-live="polite">等待第一份正式规则计算快照后即可叠加绘图。</p>
             </div>
@@ -288,6 +299,8 @@
               </header>
               <strong id="safetyProvenancePrimary" class="safety-card-primary">尚未启用</strong>
               <p id="safetyProvenanceDetail" class="safety-card-detail">服务器尚未提供图集封存状态。</p>
+              <details class="safety-provenance-details">
+              <summary>查看校验与版本详情</summary>
               <dl class="safety-provenance-grid" aria-label="当前图集追溯信息">
                 <div><dt>分析运行</dt><dd id="safetyAnalysisRun">尚未启用</dd></div>
                 <div><dt>数据快照</dt><dd id="safetySnapshot">尚未启用</dd></div>
@@ -297,6 +310,7 @@
                 <div><dt>分析脚本</dt><dd id="safetyScriptHash">尚未启用</dd></div>
                 <div class="safety-provenance-wide"><dt>运行镜像</dt><dd id="safetyImageReference">尚未启用</dd></div>
               </dl>
+              </details>
             </article>
           </div>
         </section>
@@ -334,7 +348,7 @@
             <div>
               <span class="eyebrow">Plotting rules</span>
               <h2 id="plottingRulesTitle">当前绘图规则</h2>
-              <p>以下规则应用于所有材料，点击页面上方“按已保存配置重新绘图”时生效。</p>
+              <p>以下规则用于工作站启停数据，在管理端更新平台分析时生效；蓝博数据保留独立的参照与工步口径。</p>
             </div>
             <a class="panel-text-link" href="/start-stop/materials">打开材料库</a>
           </div>

@@ -839,6 +839,8 @@
 .live-preview-heading-actions {
   flex: 0 0 auto;
 }
+.live-preview-window-label { display: flex; align-items: center; gap: 8px; color: #52606a; font-size: 14px; }
+.live-preview-window-label select { min-height: 38px; padding: 7px 10px; border: 1px solid #d9e3e6; border-radius: 8px; background: #fff; color: #25313b; font-size: 14px; }
 
 .live-preview-grid {
   display: grid;

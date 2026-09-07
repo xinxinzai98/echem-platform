@@ -6,6 +6,7 @@ const workstationState = {
   status: null,
   loading: false,
   timer: null,
+  previewWindowSeconds: 600,
 };
 
 const workstationElements = {
@@ -24,6 +25,7 @@ const workstationElements = {
   livePreviewDescription: document.querySelector("#livePreviewDescription"),
   livePreviewStatus: document.querySelector("#livePreviewStatus"),
   livePreviewGrid: document.querySelector("#livePreviewGrid"),
+  livePreviewWindow: document.querySelector("#livePreviewWindow"),
 };
 
 const WORKSTATION_SVG_NS = "http://www.w3.org/2000/svg";
@@ -35,31 +37,12 @@ function workstationElement(tag, className = "", text = "") {
   return node;
 }
 
-async function workstationRequest(path) {
-  const response = await fetch(path, {
-    method: "GET",
-    credentials: "same-origin",
-    cache: "no-store",
-    headers: { Accept: "application/json" },
-  });
-  let payload = null;
-  try {
-    payload = await response.json();
-  } catch (_error) {
-    payload = null;
-  }
-  if (!response.ok) {
-    throw new Error(payload?.error || `请求失败（${response.status}）`);
-  }
-  return payload;
+async function workstationRequest(url, options = {}) {
+  return StartStopClient.request(url, { ...options, method: "GET" });
 }
 
 function setWorkstationRoutes() {
-  document.querySelectorAll("[data-config-route]").forEach((link) => { link.href = "/start-stop"; });
-  document.querySelectorAll("[data-workstations-route]").forEach((link) => { link.href = "/start-stop/workstations"; });
-  document.querySelectorAll("[data-analysis-route]").forEach((link) => { link.href = "/start-stop/analysis"; });
-  document.querySelectorAll("[data-cv-eis-route]").forEach((link) => { link.href = "/start-stop/cv-eis"; });
-  document.querySelectorAll("[data-materials-route]").forEach((link) => { link.href = "/start-stop/materials"; });
+  StartStopClient.applyRoutes();
   workstationElements.workstationWorkbenchBrand?.setAttribute("href", "/start-stop");
 }
 
@@ -140,6 +123,12 @@ function stationViewState(machine, station, activity) {
   return "idle";
 }
 
+function stationDisplayName(station, stationIndex) {
+  if (station?.physical_station_mapping_confirmed) return station.label || "工作站";
+  return stationIndex === 0 || stationIndex === 1 ? `活动任务 ${stationIndex === 0 ? "A" : "B"}`
+    : String(station?.label || "活动任务").replace(/^工作站\s*/, "活动任务 ");
+}
+
 function renderOverviewStation(machine, station, machineIndex, stationIndex) {
   const activity = stationActivity(machine, station, stationIndex);
   const state = stationViewState(machine, station, activity);
@@ -153,14 +142,14 @@ function renderOverviewStation(machine, station, machineIndex, stationIndex) {
   const ordinal = machineIndex * 2 + stationIndex + 1;
   const card = workstationElement("article", `station-overview-card ${state}`);
   card.dataset.stationState = state;
-  card.setAttribute("aria-label", `${machine?.name || "实验电脑"} ${station?.label || `工作站 ${stationIndex + 1}`}：${labels[state]}`);
+  card.setAttribute("aria-label", `${machine?.name || "实验电脑"} ${stationDisplayName(station, stationIndex)}：${labels[state]}`);
 
   const heading = workstationElement("div", "station-overview-card-heading");
   const identity = workstationElement("div", "station-overview-identity");
   identity.append(workstationElement("span", "station-overview-number", String(ordinal).padStart(2, "0")));
   const title = workstationElement("div");
   title.append(workstationElement("span", "station-overview-location", machine?.name || "实验电脑"));
-  title.append(workstationElement("h3", "", station?.label || `工作站 ${stationIndex + 1}`));
+  title.append(workstationElement("h3", "", stationDisplayName(station, stationIndex)));
   identity.append(title);
   heading.append(identity);
   heading.append(workstationElement("span", `station-overview-state ${state}`, labels[state]));
@@ -247,7 +236,7 @@ function renderMaterialActivity(activity) {
 function renderStation(station) {
   const card = workstationElement("article", "workstation-station-card");
   const heading = workstationElement("div", "station-card-heading");
-  heading.append(workstationElement("strong", "", station.label || "工作站"));
+  heading.append(workstationElement("strong", "", stationDisplayName(station)));
   heading.append(workstationElement("span", `station-state-chip ${station.status || "attention"}`, station.status_label || "状态未知"));
   card.append(heading);
 
@@ -318,12 +307,14 @@ function livePreviewSvgElement(tag, attributes = {}) {
 }
 
 function livePreviewNumber(value, digits = 3) {
+  if (value === null || value === undefined || value === "") return "—";
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return "—";
   return parsed.toFixed(digits).replace(/\.?0+$/, "");
 }
 
 function livePreviewElapsed(seconds) {
+  if (seconds === null || seconds === undefined || seconds === "") return "—";
   const value = Number(seconds);
   if (!Number.isFinite(value) || value < 0) return "—";
   const hours = Math.floor(value / 3600);
@@ -332,15 +323,23 @@ function livePreviewElapsed(seconds) {
   return `${hours}h ${String(minutes).padStart(2, "0")}m ${String(remaining).padStart(2, "0")}s`;
 }
 
+function livePreviewPoints(item, windowSeconds) {
+  const points = (Array.isArray(item?.points) ? item.points : [])
+    .filter(point => point?.[0] !== null && point?.[1] !== null && point?.[0] !== "" && point?.[1] !== "")
+    .map(point => [Number(point?.[0])/3600, Number(point?.[1])])
+    .filter(([x,y]) => Number.isFinite(x) && Number.isFinite(y));
+  if (!points.length || !(windowSeconds > 0)) return points;
+  const end = points.reduce((maximum, point) => Math.max(maximum, point[0]), -Infinity);
+  return points.filter(point => point[0] >= end-windowSeconds/3600);
+}
+
 function renderLivePreviewChart(item) {
   const width = 720;
   const height = 250;
   const margin = { left: 67, right: 18, top: 18, bottom: 43 };
   const chartWidth = width - margin.left - margin.right;
   const chartHeight = height - margin.top - margin.bottom;
-  const points = (Array.isArray(item?.points) ? item.points : [])
-    .map((point) => [Number(point?.[0]) / 3600, Number(point?.[1])])
-    .filter(([x, y]) => Number.isFinite(x) && Number.isFinite(y));
+  const points = livePreviewPoints(item, workstationState.previewWindowSeconds);
   const svg = livePreviewSvgElement("svg", {
     class: "live-preview-chart",
     viewBox: `0 0 ${width} ${height}`,
@@ -387,6 +386,7 @@ function renderLivePreviewChart(item) {
   yLabel.textContent = "原始电位 / V vs Hg/HgO";
   const path = points.map(([x, y], index) => `${index ? "L" : "M"}${xScale(x).toFixed(2)},${yScale(y).toFixed(2)}`).join(" ");
   svg.append(livePreviewSvgElement("path", { class: "live-preview-line", d: path }), xLabel, yLabel);
+  if (points.length === 1) svg.append(livePreviewSvgElement("circle", {cx:xScale(points[0][0]), cy:yScale(points[0][1]), r:3, fill:"#087f78"}));
   return svg;
 }
 
@@ -404,9 +404,9 @@ function renderLivePreviewCard(item) {
   const metrics = workstationElement("div", "live-preview-card-metrics");
   [
     ["最新原始电位", `${livePreviewNumber(item?.last_potential_v, 5)} V`],
-    ["当前密度", `${livePreviewNumber(Number(item?.last_current_a_cm2) * 1000, 1)} mA·cm⁻²`],
+    ["当前密度", `${livePreviewNumber(item?.last_current_a_cm2 == null ? null : Number(item.last_current_a_cm2) * 1000, 1)} mA·cm⁻²`],
     ["文件内时间", livePreviewElapsed(item?.time_end_s)],
-    ["完整数据行", Number(item?.complete_row_count || 0).toLocaleString("zh-CN")],
+    ["完整数据行", item?.complete_row_count == null ? "—" : Number(item.complete_row_count).toLocaleString("zh-CN")],
   ].forEach(([label, value]) => {
     const metric = workstationElement("div");
     metric.append(workstationElement("span", "", label), workstationElement("strong", "", value));
@@ -515,6 +515,10 @@ async function loadWorkstations({ manual = false } = {}) {
 
 async function initializeWorkstations() {
   setWorkstationRoutes();
+  workstationElements.livePreviewWindow.addEventListener("change", event => {
+    workstationState.previewWindowSeconds = Number(event.target.value) || 0;
+    if (workstationState.livePreview) renderLivePreview(workstationState.livePreview);
+  });
   workstationElements.refreshWorkstations.addEventListener("click", () => loadWorkstations({ manual: true }));
   try {
     applyServiceStatus(await workstationRequest("/api/start-stop/status"));

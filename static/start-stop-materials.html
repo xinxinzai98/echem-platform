@@ -11,6 +11,7 @@
   <link rel="stylesheet" href="/static/start-stop.css">
   <link rel="stylesheet" href="/static/start-stop-config.css">
   <script src="/static/start-stop-shell.js"></script>
+  <script src="/static/start-stop-client.js"></script>
 </head>
 <body class="start-stop-app start-stop-repository-mode">
   <div class="workbench-shell">
@@ -52,16 +53,20 @@
           <span id="startStopWorkstationsNavNumber" class="workbench-nav-number">02</span>
           <span class="workbench-nav-copy"><strong>工作站监控</strong><small>六个工作站与当前材料</small></span>
         </a>
-        <a id="startStopNavItem" class="workbench-nav-item" data-analysis-route href="/start-stop/analysis" aria-label="03 启停分析" title="启停分析">
-          <span id="startStopNavNumber" class="workbench-nav-number">03</span>
-          <span class="workbench-nav-copy"><strong>启停分析</strong><small>曲线检查、高亮与缩放</small></span>
+        <a id="startStopLanbtsNavItem" class="workbench-nav-item" data-lanbts-route href="/start-stop/lanbts" aria-label="03 蓝博八通道" title="蓝博八通道">
+          <span id="startStopLanbtsNavNumber" class="workbench-nav-number">03</span>
+          <span class="workbench-nav-copy"><strong>蓝博八通道</strong><small>状态、工步、材料与面积</small></span>
         </a>
-        <a id="startStopCvEisNavItem" class="workbench-nav-item" data-cv-eis-route href="/start-stop/cv-eis" aria-label="04 CV–EIS 分析" title="CV–EIS 分析">
-          <span id="startStopCvEisNavNumber" class="workbench-nav-number">04</span>
+        <a id="startStopNavItem" class="workbench-nav-item" data-analysis-route href="/start-stop/analysis" aria-label="04 稳定性分析" title="稳定性分析">
+          <span id="startStopNavNumber" class="workbench-nav-number">04</span>
+          <span class="workbench-nav-copy"><strong>稳定性分析</strong><small>启停与恒流稳定性</small></span>
+        </a>
+        <a id="startStopCvEisNavItem" class="workbench-nav-item" data-cv-eis-route href="/start-stop/cv-eis" aria-label="05 CV–EIS 分析" title="CV–EIS 分析">
+          <span id="startStopCvEisNavNumber" class="workbench-nav-number">05</span>
           <span class="workbench-nav-copy"><strong>CV–EIS 分析</strong><small>过电位、Rs 与 iR 补偿</small></span>
         </a>
-        <a id="startStopMaterialsNavItem" class="workbench-nav-item" data-materials-route href="/start-stop/materials" aria-current="page" aria-label="05 材料库" title="材料库">
-          <span id="startStopMaterialsNavNumber" class="workbench-nav-number">05</span>
+        <a id="startStopMaterialsNavItem" class="workbench-nav-item" data-materials-route href="/start-stop/materials" aria-current="page" aria-label="06 材料库" title="材料库">
+          <span id="startStopMaterialsNavNumber" class="workbench-nav-number">06</span>
           <span class="workbench-nav-copy"><strong>材料库</strong><small>全名、备注与入图范围</small></span>
         </a>
       </nav>
@@ -83,7 +88,7 @@
         </div>
         <div class="top-actions start-stop-actions">
           <a class="secondary-outline-button action-link" href="/start-stop">返回运行配置</a>
-          <a class="secondary-outline-button action-link" href="/start-stop/analysis">打开启停分析</a>
+          <a class="secondary-outline-button action-link" href="/start-stop/analysis">打开稳定性分析</a>
           <div class="export-menu materials-export-menu">
             <button id="materialsExportPdf" class="export-button" type="button" aria-expanded="false" aria-haspopup="menu" aria-controls="materialsExportMenu">生成 PDF 图集</button>
             <div id="materialsExportMenu" class="export-menu-panel" role="menu" aria-label="PDF 图集下载" hidden>

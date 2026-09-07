@@ -131,11 +131,11 @@ class StartStopCvEisTests(unittest.TestCase):
             extract_high_frequency_rs(parse_eis_text(corrtest_eis(crossing=False)))
 
     def test_instrument_compensated_cv_is_not_compensated_twice(self):
-        with self.assertRaisesRegex(CvEisAnalysisError, "禁止再次"):
-            analyze_pair(
-                parse_cv_text(corrtest_cv(ir_applied=True)),
-                parse_eis_text(corrtest_eis()),
-            )
+        result = analyze_pair(parse_cv_text(corrtest_cv(ir_applied=True)), parse_eis_text(corrtest_eis()))
+        self.assertFalse(result["ir_correction_available"])
+        self.assertEqual(result["overpotentials"], [])
+        self.assertTrue(result["points"])
+        self.assertTrue(all(point["ir90_e_rhe_v"] is None for point in result["points"]))
 
     def test_pairing_prefers_matching_file_signature_inside_one_directory(self):
         def source(identifier: int, name: str, kind: str) -> SourceRecord:

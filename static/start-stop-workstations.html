@@ -11,6 +11,7 @@
   <link rel="stylesheet" href="/static/start-stop.css">
   <link rel="stylesheet" href="/static/start-stop-workstations.css">
   <script src="/static/start-stop-shell.js"></script>
+  <script src="/static/start-stop-client.js"></script>
 </head>
 <body class="start-stop-app start-stop-repository-mode">
   <div class="workbench-shell">
@@ -52,16 +53,20 @@
           <span class="workbench-nav-number">02</span>
           <span class="workbench-nav-copy"><strong>工作站监控</strong><small>六个工作站与当前材料</small></span>
         </a>
-        <a class="workbench-nav-item" data-analysis-route href="/start-stop/analysis" aria-label="03 启停分析" title="启停分析">
+        <a class="workbench-nav-item" data-lanbts-route href="/start-stop/lanbts" aria-label="03 蓝博八通道" title="蓝博八通道">
           <span class="workbench-nav-number">03</span>
-          <span class="workbench-nav-copy"><strong>启停分析</strong><small>曲线检查、高亮与缩放</small></span>
+          <span class="workbench-nav-copy"><strong>蓝博八通道</strong><small>状态、工步、材料与面积</small></span>
         </a>
-        <a class="workbench-nav-item" data-cv-eis-route href="/start-stop/cv-eis" aria-label="04 CV–EIS 分析" title="CV–EIS 分析">
+        <a class="workbench-nav-item" data-analysis-route href="/start-stop/analysis" aria-label="04 稳定性分析" title="稳定性分析">
           <span class="workbench-nav-number">04</span>
+          <span class="workbench-nav-copy"><strong>稳定性分析</strong><small>启停与恒流稳定性</small></span>
+        </a>
+        <a class="workbench-nav-item" data-cv-eis-route href="/start-stop/cv-eis" aria-label="05 CV–EIS 分析" title="CV–EIS 分析">
+          <span class="workbench-nav-number">05</span>
           <span class="workbench-nav-copy"><strong>CV–EIS 分析</strong><small>过电位、Rs 与 iR 补偿</small></span>
         </a>
-        <a class="workbench-nav-item" data-materials-route href="/start-stop/materials" aria-label="05 材料库" title="材料库">
-          <span class="workbench-nav-number">05</span>
+        <a class="workbench-nav-item" data-materials-route href="/start-stop/materials" aria-label="06 材料库" title="材料库">
+          <span class="workbench-nav-number">06</span>
           <span class="workbench-nav-copy"><strong>材料库</strong><small>全名、备注与入图范围</small></span>
         </a>
       </nav>
@@ -78,8 +83,8 @@
       <header class="topbar workbench-topbar start-stop-topbar workstation-topbar">
         <div class="workbench-page-heading">
           <span class="eyebrow">Start–stop / Workstation monitor</span>
-          <h1>六台工作站运行状态</h1>
-          <p>绿色正在运行，灰色空闲，红色离线；不用翻页就能看完六台工作站</p>
+          <h1>六个活动任务槽位</h1>
+          <p>绿色正在运行，灰色空闲，红色离线；三台实验电脑的活动任务集中展示</p>
         </div>
         <div class="top-actions start-stop-actions">
           <span id="monitorAutoRefresh" class="monitor-auto-refresh" role="status">每 10 秒刷新显示</span>
@@ -108,7 +113,7 @@
         </section>
 
         <section aria-labelledby="stationOverviewTitle">
-          <h2 id="stationOverviewTitle" class="visually-hidden">六台工作站当前状态</h2>
+          <h2 id="stationOverviewTitle" class="visually-hidden">六个活动任务槽位当前状态</h2>
           <div id="workstationStationGrid" class="workstation-station-overview-grid" aria-live="polite" aria-busy="true">
             <div class="start-stop-loading">正在读取六台工作站…</div>
           </div>
@@ -127,6 +132,14 @@
               <p id="livePreviewDescription">开启后每 5 分钟抓取一次只读快照，只显示完整数据行；电位保持文件中的 Hg/HgO 原始标尺。</p>
             </div>
             <div class="live-preview-heading-actions">
+              <label class="live-preview-window-label">显示范围
+                <select id="livePreviewWindow" aria-label="实时预览时间范围">
+                  <option value="600" selected>最近 10 分钟</option>
+                  <option value="1800">最近 30 分钟</option>
+                  <option value="3600">最近 1 小时</option>
+                  <option value="0">全程</option>
+                </select>
+              </label>
               <span id="livePreviewStatus" class="monitor-state-chip loading" role="status" aria-live="polite">正在读取</span>
               <a class="secondary-outline-button" href="/start-stop#livePreviewPanel">预览设置</a>
             </div>

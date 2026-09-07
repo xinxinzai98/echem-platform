@@ -30,6 +30,9 @@ from typing import Any, Callable, Iterable, Protocol, TypeVar
 
 UTC = dt.timezone.utc
 BASE64_LINE = re.compile(rb"^[A-Za-z0-9+/]+={0,2}$")
+REMOTE_SCRIPT_PID = re.compile(
+    rb"__START_STOP_(?:REMOTE|CHILD)_PID__(?P<pid>[1-9][0-9]{0,9})"
+)
 STREAM_VERIFICATION_PREFIX = b"START_STOP_STREAM_VERIFICATION:"
 LIVE_PREVIEW_STREAM_PREFIX = b"START_STOP_LIVE_PREVIEW_STREAM:"
 DEFAULT_SETTLE_SECONDS = 5 * 60
@@ -195,6 +198,34 @@ def encode_powershell(script: str) -> str:
     return base64.b64encode(script.encode("utf-16le")).decode("ascii")
 
 
+def stdin_powershell_loader_script(timeout_seconds: int = 180) -> str:
+    """Execute one stdin script with a remote watchdog and exact PID markers."""
+
+    watchdog_seconds = max(5, min(int(timeout_seconds), 3595))
+    return (
+        "$exitCode=0;$watchdog=$null;"
+        "[Console]::Error.WriteLine('__START_STOP_REMOTE_PID__'+$PID);"
+        "[Console]::Error.Flush();"
+        "try{$watchdogSource='$target='+$PID+';Start-Sleep -Seconds "
+        + str(watchdog_seconds)
+        + ";Stop-Process -Id $target -Force -ErrorAction SilentlyContinue';"
+        "$watchdogEncoded=[Convert]::ToBase64String("
+        "[Text.Encoding]::Unicode.GetBytes($watchdogSource));"
+        "$watchdog=Start-Process powershell.exe -WindowStyle Hidden -PassThru "
+        "-ArgumentList @('-NoLogo','-NoProfile','-NonInteractive',"
+        "'-EncodedCommand',$watchdogEncoded);"
+        "[Console]::Error.WriteLine('__START_STOP_CHILD_PID__'+$watchdog.Id);"
+        "[Console]::Error.Flush();"
+        "$source=[Console]::In.ReadToEnd();"
+        " & ([ScriptBlock]::Create($source))}"
+        "catch{[Console]::Error.WriteLine($_.Exception.Message);$exitCode=1}"
+        "finally{if($null -ne $watchdog -and -not $watchdog.HasExited){"
+        "Stop-Process -Id $watchdog.Id -Force -ErrorAction SilentlyContinue};"
+        "[Console]::Out.Flush();[Console]::Error.Flush()}"
+        "[Environment]::Exit($exitCode)"
+    )
+
+
 def decode_base64_payload(stdout: bytes) -> Any:
     candidates = [
         line.strip()
@@ -208,6 +239,16 @@ def decode_base64_payload(stdout: bytes) -> Any:
         return json.loads(payload.decode("utf-8"))
     except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise RemoteProtocolError("远端返回的数据格式无效") from exc
+
+
+def remote_script_pids(stderr: bytes | None) -> tuple[int, ...]:
+    if not stderr:
+        return ()
+    values = {
+        int(match.group("pid"))
+        for match in REMOTE_SCRIPT_PID.finditer(bytes(stderr))
+    }
+    return tuple(sorted(values))[:4]
 
 
 def _encoded_remote_path(remote_path: str) -> str:
@@ -597,6 +638,39 @@ class SSHWindowsTransport:
             encode_powershell(script),
         ]
 
+    def _terminate_remote_script_pids(
+        self,
+        machine: dict[str, Any],
+        stderr: bytes | None,
+    ) -> None:
+        pids = remote_script_pids(stderr)
+        if not pids:
+            return
+        values = ",".join(str(pid) for pid in pids)
+        script = rf"""
+$targets=@({values})
+foreach($id in $targets){{
+  $row=Get-CimInstance Win32_Process -Filter ('ProcessId='+$id) -ErrorAction SilentlyContinue
+  if($null -ne $row -and $row.Name -eq 'powershell.exe'){{
+    try{{& (Join-Path $env:SystemRoot 'System32\taskkill.exe') /PID $id /T /F | Out-Null}}
+    catch{{try{{Stop-Process -Id $id -Force -ErrorAction Stop}}catch{{}}}}
+  }}
+  $exportPath=Join-Path $env:LOCALAPPDATA ('Temp\start-stop-lanbts-import-v1\records-'+$id+'.csv')
+  if([IO.File]::Exists($exportPath)){{try{{[IO.File]::Delete($exportPath)}}catch{{}}}}
+}}
+"""
+        try:
+            subprocess.run(
+                self._powershell_args(machine, script),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
     def _run_payload(
         self,
         machine: dict[str, Any],
@@ -624,6 +698,116 @@ class SSHWindowsTransport:
         if not isinstance(payload, dict):
             raise RemoteProtocolError("远端返回的数据格式无效")
         return payload
+
+    def run_stdin_payload(
+        self,
+        machine: dict[str, Any],
+        script: str,
+        *,
+        timeout: int,
+    ) -> dict[str, Any]:
+        """Run a fixed long read-only script through PowerShell stdin.
+
+        Windows OpenSSH applies the 8191-character process command-line limit
+        before ``-EncodedCommand`` reaches PowerShell.  Streaming the script on
+        stdin keeps the remote command itself short while preserving the same
+        strict-host-key and key-only SSH boundary.
+        """
+
+        args = self._ssh_args(machine) + [
+            "powershell.exe",
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-EncodedCommand",
+            encode_powershell(
+                stdin_powershell_loader_script(
+                    max(5, min(int(timeout) - 5, 175))
+                )
+            ),
+        ]
+        try:
+            result = subprocess.run(
+                args,
+                input=str(script).encode("utf-8"),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=max(1, min(int(timeout), 180)),
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            self._terminate_remote_script_pids(machine, exc.stderr)
+            raise RemoteRootError("实验电脑远端操作超时") from exc
+        except OSError as exc:
+            raise LocalProgramError("本机无法启动 SSH 客户端") from exc
+        if result.returncode != 0:
+            raise RemoteRootError("实验电脑远端读取失败")
+        payload = decode_base64_payload(result.stdout)
+        if not isinstance(payload, dict):
+            raise RemoteProtocolError("远端返回的数据格式无效")
+        return payload
+
+    def stream_stdin_script(
+        self,
+        machine: dict[str, Any],
+        script: str,
+        destination: Path,
+        *,
+        timeout: int = 3600,
+    ) -> bytes:
+        """Run a fixed stdin PowerShell script and stream stdout to one file."""
+
+        encoded_script = str(script).encode("utf-8")
+        if not encoded_script or len(encoded_script) > 1024 * 1024:
+            raise CollectionConfigurationError("远端流式脚本长度无效")
+        try:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if destination.exists():
+                raise LocalFilesystemError("本地流式输出文件发生冲突")
+            output_handle = destination.open("xb")
+        except FatalCollectionError:
+            raise
+        except OSError as exc:
+            raise LocalFilesystemError("无法创建本地流式输出文件") from exc
+        args = self._ssh_args(machine) + [
+            "powershell.exe",
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-EncodedCommand",
+            encode_powershell(
+                stdin_powershell_loader_script(
+                    max(5, min(int(timeout) - 5, 3595))
+                )
+            ),
+        ]
+        try:
+            with output_handle as output:
+                try:
+                    result = subprocess.run(
+                        args,
+                        input=encoded_script,
+                        stdout=output,
+                        stderr=subprocess.PIPE,
+                        timeout=max(1, min(int(timeout), 3600)),
+                        check=False,
+                    )
+                except subprocess.TimeoutExpired as exc:
+                    self._terminate_remote_script_pids(machine, exc.stderr)
+                    raise RemoteFileError("实验电脑远端数据解析超时") from exc
+                except OSError as exc:
+                    raise LocalProgramError("本机无法启动 SSH 客户端") from exc
+            if result.returncode != 0:
+                raise RemoteFileError("实验电脑远端数据解析失败")
+            if not destination.is_file() or destination.stat().st_size <= 0:
+                raise RemoteProtocolError("实验电脑远端数据解析结果为空")
+            return bytes(result.stderr)
+        except Exception:
+            try:
+                destination.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
 
     def check_connectivity(
         self,

@@ -49,6 +49,7 @@ class WorkbenchShellTests(unittest.TestCase):
         "start-stop.html": "/start-stop/analysis",
         "start-stop-config.html": "/start-stop",
         "start-stop-workstations.html": "/start-stop/workstations",
+        "start-stop-lanbts.html": "/start-stop/lanbts",
         "start-stop-cv-eis.html": "/start-stop/cv-eis",
         "start-stop-materials.html": "/start-stop/materials",
         "monitor.html": None,
@@ -65,8 +66,8 @@ class WorkbenchShellTests(unittest.TestCase):
                 parser = self.parse_page(name)
                 self.assertEqual(parser.sidebar_count, 1)
                 self.assertIn("/static/workbench.css", parser.stylesheets)
-                if name in {"start-stop.html", "start-stop-config.html", "start-stop-workstations.html", "start-stop-cv-eis.html", "start-stop-materials.html"}:
-                    expected_links = ["/start-stop", "/start-stop/workstations", "/start-stop/analysis", "/start-stop/cv-eis", "/start-stop/materials"]
+                if name in {"start-stop.html", "start-stop-config.html", "start-stop-workstations.html", "start-stop-lanbts.html", "start-stop-cv-eis.html", "start-stop-materials.html"}:
+                    expected_links = ["/start-stop", "/start-stop/workstations", "/start-stop/lanbts", "/start-stop/analysis", "/start-stop/cv-eis", "/start-stop/materials"]
                     expected_settings_links = []
                 else:
                     expected_links = ["/", "/steps", "/analysis"]
@@ -169,11 +170,20 @@ class WorkbenchShellTests(unittest.TestCase):
         self.assertNotIn("/api/audit", script)
         self.assertNotIn("/metadata", script)
 
-    def test_standalone_start_stop_analysis_contains_only_curve_inspection_tools(self) -> None:
+    def test_stability_analysis_separates_start_stop_and_constant_current_tools(self) -> None:
         parser = self.parse_page("start-stop.html")
         page = (STATIC / "start-stop.html").read_text(encoding="utf-8")
         script = (STATIC / "start-stop.js").read_text(encoding="utf-8")
+        stability_script = (STATIC / "start-stop-stability.js").read_text(encoding="utf-8")
+        stability_css = (STATIC / "start-stop-stability.css").read_text(encoding="utf-8")
         for element_id in (
+            "startStopAnalysisTab",
+            "constantCurrentAnalysisTab",
+            "startStopAnalysisView",
+            "constantCurrentAnalysisView",
+            "lanbtsStartStopSource",
+            "stabilityStartStopCount",
+            "stabilityConstantCurrentCount",
             "materialList",
             "materialSearch",
             "materialFilter",
@@ -201,6 +211,9 @@ class WorkbenchShellTests(unittest.TestCase):
             "liveComparisonMeta",
             "liveComparisonState",
             "refreshLiveComparison",
+            "exportHighlightedExcel",
+            "exportHighlightedPdf",
+            "highlightExportStatus",
         ):
             self.assertIn(element_id, parser.ids)
         for management_id in (
@@ -218,6 +231,18 @@ class WorkbenchShellTests(unittest.TestCase):
         ):
             self.assertNotIn(management_id, parser.ids)
         self.assertIn("此处选择只用于当前检查", page)
+        self.assertIn("稳定性分析", page)
+        self.assertIn("启停分析", page)
+        self.assertIn("恒流分析", page)
+        self.assertIn("明显不同的电流档", page)
+        self.assertIn("LANBTS 电压参照待确认", page)
+        self.assertIn("/static/start-stop-stability.css", parser.stylesheets)
+        self.assertIn("/static/start-stop-stability.js", parser.scripts)
+        self.assertIn("/api/start-stop/stability/catalog", stability_script)
+        self.assertIn("/api/start-stop/stability/chart", stability_script)
+        self.assertIn("data-stability-explorer", page)
+        self.assertIn(".stability-mode-tabs", stability_css)
+        self.assertNotIn("innerHTML", stability_script)
         self.assertIn("全选检查”不会改变总结图集", page)
         self.assertIn("最低点 &lt;15 s 异常", page)
         self.assertIn("/api/start-stop/materials", script)
@@ -232,7 +257,15 @@ class WorkbenchShellTests(unittest.TestCase):
         self.assertIn("已按正式规则接续", script)
         self.assertIn("未稳定文件不会正式入库", script)
         self.assertIn("highlightedSeries", script)
+        self.assertIn("/api/start-stop/chart-export", script)
+        self.assertIn('exportHighlighted("xlsx")', script)
+        self.assertIn('exportHighlighted("pdf")', script)
+        self.assertIn("正在测试曲线尚未正式入库", script)
+        self.assertIn("导出原始与处理数据 Excel", page)
+        self.assertIn("启停分析_当前高亮_原始与处理数据.xlsx", script)
+        self.assertIn("导出高亮 PDF 图", page)
         self.assertIn("MAX_CHART_SELECTION = 64", script)
+        self.assertIn("DEFAULT_CHART_SELECTION = 16", script)
         self.assertIn("MAX_HIGHLIGHTED_SERIES = 16", script)
         self.assertIn('const seriesLineStyles = ["", "9 4"]', script)
         self.assertIn("chartDasharray", script)
@@ -266,7 +299,7 @@ class WorkbenchShellTests(unittest.TestCase):
         self.assertIn("最多 16 条", page)
         self.assertIn("chart-highlight-halo", script)
         self.assertIn('access_mode === "lan_read_only"', script)
-        self.assertIn("局域网只读入口", script)
+        self.assertIn("局域网查看模式", script)
         self.assertIn('deployment_profile === "start_stop_repository"', script)
         self.assertIn("sqlite_blob_repository", script)
         self.assertIn("zoomChartByFactor", script)
@@ -278,7 +311,7 @@ class WorkbenchShellTests(unittest.TestCase):
         self.assertIn("start-stop-chart-plot-clip", script)
         self.assertIn("window.print()", script)
         self.assertIn("new URLSearchParams", script)
-        self.assertIn('startStopNavNumber.textContent = "03"', script)
+        self.assertIn('startStopNavNumber.textContent = "04"', script)
         self.assertNotIn('"Content-Type", "application/octet-stream"', script)
         self.assertNotIn('action: "prepare_upload"', script)
         self.assertIn("Start–stop Studio", page)
@@ -291,6 +324,7 @@ class WorkbenchShellTests(unittest.TestCase):
         for filename in (
             "start-stop-config.html",
             "start-stop-workstations.html",
+            "start-stop-lanbts.html",
             "start-stop.html",
             "start-stop-cv-eis.html",
             "start-stop-materials.html",
@@ -324,6 +358,8 @@ class WorkbenchShellTests(unittest.TestCase):
             "start-stop.js",
             "start-stop-config.js",
             "start-stop-workstations.js",
+            "start-stop-lanbts.js",
+            "start-stop-stability.js",
             "start-stop-cv-eis.js",
             "start-stop-materials.js",
         ):
@@ -353,7 +389,7 @@ class WorkbenchShellTests(unittest.TestCase):
             self.assertIn(element_id, parser.ids)
         self.assertIn("/static/start-stop-workstations.css", parser.stylesheets)
         self.assertIn("/static/start-stop-workstations.js", parser.scripts)
-        self.assertIn("六台工作站运行状态", page)
+        self.assertIn("六个活动任务槽位", page)
         self.assertIn("绿色正在运行，灰色空闲，红色离线", page)
         self.assertIn("运行状态来自文件连续写入", page)
         self.assertIn("尚未绑定具体 COM 口", page)
@@ -367,6 +403,53 @@ class WorkbenchShellTests(unittest.TestCase):
         self.assertIn("renderLivePreviewChart", script)
         self.assertIn('method: "GET"', script)
         self.assertNotIn('method: "POST"', script)
+        self.assertNotIn("innerHTML", script)
+
+    def test_lanbts_page_has_eight_channel_status_and_per_run_area_configuration(self) -> None:
+        parser = self.parse_page("start-stop-lanbts.html")
+        page = (STATIC / "start-stop-lanbts.html").read_text(encoding="utf-8")
+        script = (STATIC / "start-stop-lanbts.js").read_text(encoding="utf-8")
+        css = (STATIC / "start-stop-lanbts.css").read_text(encoding="utf-8")
+        for element_id in (
+            "lanbtsDischargingMetric",
+            "lanbtsChargingMetric",
+            "lanbtsCompletedMetric",
+            "lanbtsIdleMetric",
+            "lanbtsModeNote",
+            "lanbtsOverallState",
+            "lanbtsDeviceName",
+            "lanbtsDeviceMeta",
+            "lanbtsChannelGrid",
+            "refreshLanbts",
+            "saveLanbtsConfiguration",
+        ):
+            self.assertIn(element_id, parser.ids)
+        self.assertIn("/static/start-stop-lanbts.css", parser.stylesheets)
+        self.assertIn("/static/start-stop-lanbts.js", parser.scripts)
+        self.assertIn("蓝博八通道", page)
+        self.assertIn("材料与面积按本次 BTS 运行绑定", page)
+        self.assertIn("LANBTS 测得电压", page)
+        self.assertIn("数据说明与测试类型", page)
+        for status_label in ("放电", "充电", "测试完成", "空置"):
+            self.assertIn(status_label, page)
+        self.assertNotIn("BTS 文件", page)
+        self.assertNotIn("数据体积", page)
+        self.assertIn('lanbtsRequest("/api/start-stop/lanbts")', script)
+        self.assertIn('method: "PUT"', script)
+        self.assertIn("electrode_area_cm2", script)
+        self.assertIn("current / area", script)
+        self.assertIn("run_id", script)
+        self.assertIn("lanbts-core-metrics", script)
+        self.assertIn("lanbts-card-details", script)
+        self.assertIn("channelDisplayStatus", script)
+        self.assertIn("lanbtsState.payload?.can_edit", script)
+        self.assertNotIn("lanbtsFileMetric", script)
+        self.assertIn("@keyframes lanbts-breathe", css)
+        self.assertIn(".lanbts-channel-state.discharging", css)
+        self.assertIn(".lanbts-channel-state.charging", css)
+        self.assertIn(".lanbts-channel-state.completed", css)
+        self.assertIn("grid-template-columns: repeat(4", css)
+        self.assertIn("prefers-reduced-motion: reduce", css)
         self.assertNotIn("innerHTML", script)
 
     def test_standalone_configuration_page_owns_runtime_and_collection_configuration(self) -> None:
@@ -439,7 +522,7 @@ class WorkbenchShellTests(unittest.TestCase):
         self.assertIn("当前绘图规则", page)
         self.assertIn("原始实测电位 vs Hg/HgO（不做参比换算）", page)
         self.assertIn("实时数据预览", page)
-        self.assertIn("在 03 页叠加正在测试数据", page)
+        self.assertIn("在稳定性分析中叠加测试数据", page)
         self.assertIn("按正式启停规则识别完整循环", page)
         self.assertIn('configRequest("/api/start-stop/live-preview")', script)
         self.assertIn('window.location.assign("/start-stop/analysis?view=live")', script)
@@ -453,14 +536,14 @@ class WorkbenchShellTests(unittest.TestCase):
             bootstrap.index("loadCollectionConfig()"),
         )
         self.assertIn("局域网只读入口不读取实验机远程目录配置", bootstrap)
-        self.assertIn('startStopNavNumber.textContent = "03"', script)
+        self.assertIn('startStopNavNumber.textContent = "04"', script)
         for label in (
             "数据操作与实验机状态",
             "上传数据",
-            "从三台实验电脑下载并更新",
+            "从实验电脑与蓝博下载并更新",
             "按选择更新平台分析",
             "原始数据（未补偿）",
-            "仅新增／数据已更新",
+            "增量更新（保留已有材料结果）",
             "三台实验机连接状态",
             "检查全部连通性",
             "测试室 1",
@@ -505,7 +588,7 @@ class WorkbenchShellTests(unittest.TestCase):
         self.assertIn("progress.current_item", script)
         self.assertIn("RENDER_PROGRESS_STEPS", script)
         self.assertIn("function updateJobElapsed(job, isBusy)", script)
-        self.assertIn("function renderJobProgressSteps(progress, isRender)", script)
+        self.assertIn("function renderJobProgressSteps(progress, isRender, job = {})", script)
         self.assertIn("scrollIntoView", script)
         self.assertIn('removeAttribute("value")', script)
         self.assertLess(
@@ -595,7 +678,7 @@ class WorkbenchShellTests(unittest.TestCase):
         self.assertIn('body: JSON.stringify({ action: "render" })', script)
         self.assertIn("生成 PDF 图集", page)
         self.assertIn("export_pdf: true", script)
-        self.assertIn('render_data_mode: "both"', script)
+        self.assertIn('render_data_mode: materialsState.status?.analyzed_data_mode || "both"', script)
         self.assertNotIn("exportMenuButton", (STATIC / "start-stop-config.html").read_text(encoding="utf-8"))
         self.assertIn("beforeunload", script)
         self.assertNotIn("selectedSeries", script)
@@ -643,7 +726,7 @@ class WorkbenchShellTests(unittest.TestCase):
     def test_start_stop_program_uses_readable_responsive_typography(self) -> None:
         shared_css = (STATIC / "start-stop.css").read_text(encoding="utf-8")
         config_css = (STATIC / "start-stop-config.css").read_text(encoding="utf-8")
-        for page_name in ("start-stop.html", "start-stop-config.html", "start-stop-workstations.html", "start-stop-cv-eis.html", "start-stop-materials.html"):
+        for page_name in ("start-stop.html", "start-stop-config.html", "start-stop-workstations.html", "start-stop-lanbts.html", "start-stop-cv-eis.html", "start-stop-materials.html"):
             page = (STATIC / page_name).read_text(encoding="utf-8")
             self.assertIn('<body class="start-stop-app ', page)
         self.assertIn(".start-stop-app .workbench-page-heading h1", shared_css)
@@ -659,6 +742,7 @@ class WorkbenchShellTests(unittest.TestCase):
         for page_name, script_name in (
             ("start-stop-config.html", "start-stop-config.js"),
             ("start-stop-workstations.html", "start-stop-workstations.js"),
+            ("start-stop-lanbts.html", "start-stop-lanbts.js"),
             ("start-stop.html", "start-stop.js"),
             ("start-stop-cv-eis.html", "start-stop-cv-eis.js"),
             ("start-stop-materials.html", "start-stop-materials.js"),
@@ -673,10 +757,11 @@ class WorkbenchShellTests(unittest.TestCase):
                 self.assertIn("版本未知", script)
         self.assertIn(".start-stop-app .workbench-version-badge", shared_css)
 
-    def test_start_stop_program_has_its_own_five_page_navigation(self) -> None:
+    def test_start_stop_program_has_its_own_six_page_navigation(self) -> None:
         for name, active_path in (
             ("start-stop-config.html", "/start-stop"),
             ("start-stop-workstations.html", "/start-stop/workstations"),
+            ("start-stop-lanbts.html", "/start-stop/lanbts"),
             ("start-stop.html", "/start-stop/analysis"),
             ("start-stop-cv-eis.html", "/start-stop/cv-eis"),
             ("start-stop-materials.html", "/start-stop/materials"),
@@ -685,7 +770,7 @@ class WorkbenchShellTests(unittest.TestCase):
                 parser = self.parse_page(name)
                 self.assertEqual(
                     [link.get("href") for link in parser.links],
-                    ["/start-stop", "/start-stop/workstations", "/start-stop/analysis", "/start-stop/cv-eis", "/start-stop/materials"],
+                    ["/start-stop", "/start-stop/workstations", "/start-stop/lanbts", "/start-stop/analysis", "/start-stop/cv-eis", "/start-stop/materials"],
                 )
                 active = [
                     link for link in parser.links
@@ -699,11 +784,12 @@ class WorkbenchShellTests(unittest.TestCase):
                 self.assertIn('class="workbench-nav-number">03', page)
                 self.assertIn('class="workbench-nav-number">04', page)
                 self.assertIn('class="workbench-nav-number">05', page)
+                self.assertIn('class="workbench-nav-number">06', page)
                 self.assertNotIn("电化学测试工作台", page)
 
     def test_start_stop_pages_share_one_persistent_collapsible_sidebar(self) -> None:
         shell = (STATIC / "start-stop-shell.js").read_text(encoding="utf-8")
-        for name in ("start-stop-config.html", "start-stop-workstations.html", "start-stop.html", "start-stop-cv-eis.html", "start-stop-materials.html"):
+        for name in ("start-stop-config.html", "start-stop-workstations.html", "start-stop-lanbts.html", "start-stop.html", "start-stop-cv-eis.html", "start-stop-materials.html"):
             with self.subTest(page=name):
                 parser = self.parse_page(name)
                 page = (STATIC / name).read_text(encoding="utf-8")

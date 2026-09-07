@@ -1,17 +1,7 @@
-FROM python:3.12-slim-bookworm
+FROM python:3.12.13-slim-bookworm@sha256:4766d8b510c428e595d74b9cc5bbb2fae8e26316fffb4adc89908d79aacd58a2
 
 ARG APP_UID=501
 ARG APP_GID=20
-ARG APP_VERSION=0.6.0-dev.7.2
-ARG VCS_REF=unknown
-ARG BUILD_STATE=unknown
-
-LABEL org.opencontainers.image.title="Start-stop Analysis" \
-      org.opencontainers.image.description="Standalone electrochemical start-stop analysis service" \
-      org.opencontainers.image.version="${APP_VERSION}" \
-      org.opencontainers.image.revision="${VCS_REF}" \
-      io.start-stop-analysis.git-state="${BUILD_STATE}"
-
 ENV DEBIAN_FRONTEND=noninteractive \
     ECHEM_CONTAINER_MODE=1 \
     HOME=/Users/hive \
@@ -75,7 +65,14 @@ COPY --chown=${APP_UID}:${APP_GID} \
     static/start-stop-cv-eis.js \
     static/start-stop-materials.html \
     static/start-stop-materials.js \
+    static/start-stop-lanbts.css \
+    static/start-stop-lanbts.html \
+    static/start-stop-lanbts.js \
     static/start-stop-shell.js \
+    static/start-stop-client.js \
+    static/start-stop-plot-interaction.js \
+    static/start-stop-stability.css \
+    static/start-stop-stability.js \
     static/start-stop-workstations.css \
     static/start-stop-workstations.html \
     static/start-stop-workstations.js \
@@ -85,13 +82,28 @@ COPY --chown=${APP_UID}:${APP_GID} \
     static/workbench.css \
     ./static/
 COPY --chown=${APP_UID}:${APP_GID} static/icons/gear.svg ./static/icons/
-COPY --chown=${APP_UID}:${APP_GID} docker/collection-config.json ./docker/
+COPY --chown=${APP_UID}:${APP_GID} \
+    docker/collection-config.json \
+    docker/lanbts-config.json \
+    ./docker/
 COPY --chown=${APP_UID}:${APP_GID} docker/start_stop_analysis/*.py ./start_stop_analysis/
 COPY --chown=${APP_UID}:${APP_GID} \
     scripts/create_start_stop_backup.py \
     scripts/run_start_stop_backup_scheduler.py \
     scripts/write_start_stop_backup_status.py \
     ./scripts/
+
+# Release labels do not invalidate the operating-system and Python dependency layers.
+ARG APP_VERSION=0.7.0-dev.1
+ARG VCS_REF=unknown
+ARG BUILD_STATE=unknown
+ARG SOURCE_MANIFEST_SHA=unknown
+LABEL org.opencontainers.image.title="Start-stop Analysis" \
+      org.opencontainers.image.description="Standalone electrochemical start-stop analysis service" \
+      org.opencontainers.image.version="${APP_VERSION}" \
+      org.opencontainers.image.revision="${VCS_REF}" \
+      io.start-stop-analysis.git-state="${BUILD_STATE}" \
+      io.start-stop-analysis.source-manifest-sha256="${SOURCE_MANIFEST_SHA}"
 
 USER ${APP_UID}:${APP_GID}
 

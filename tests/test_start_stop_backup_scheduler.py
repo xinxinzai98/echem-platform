@@ -65,6 +65,29 @@ class StartStopBackupSchedulerTests(unittest.TestCase):
         self.assertIsNone(due)
         self.assertEqual(next_due, self.anchor + dt.timedelta(days=28))
 
+    def test_running_status_becomes_stale_after_twelve_hours(self) -> None:
+        self.assertEqual(scheduler.STALE_RUNNING_RECOVERY_STATE, "skipped")
+        payload = {
+            "state": "running",
+            "started_utc": self.anchor.isoformat(),
+        }
+
+        self.assertFalse(
+            scheduler._running_status_is_stale(
+                payload, self.anchor + dt.timedelta(hours=11)
+            )
+        )
+        self.assertTrue(
+            scheduler._running_status_is_stale(
+                payload, self.anchor + dt.timedelta(hours=12)
+            )
+        )
+        self.assertTrue(
+            scheduler._running_status_is_stale(
+                {"state": "running", "started_utc": ""}, self.anchor
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

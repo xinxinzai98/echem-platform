@@ -4,5 +4,10 @@
   "watch_roots": [
     "D:\\Path\\To\\ExperimentData",
     "E:\\Path\\To\\ArchivedExperimentData"
-  ]
+  ],
+  "start_stop_analysis_dir": "D:\\Path\\To\\StartStopAnalysis",
+  "start_stop_collection_script": "D:\\Path\\To\\DataCollection\\collect_echem_data.py",
+  "start_stop_python": "D:\\Path\\To\\StartStopAnalysis\\.venv\\Scripts\\python.exe",
+  "start_stop_node": "D:\\Path\\To\\node.exe",
+  "start_stop_job_timeout_seconds": 3600
 }

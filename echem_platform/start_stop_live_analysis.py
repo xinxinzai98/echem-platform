@@ -7,7 +7,7 @@ import unicodedata
 from pathlib import PurePosixPath
 from typing import Any, Iterable, Mapping, Sequence
 
-from .start_stop import _work_step_metadata
+from .start_stop_contracts import _work_step_metadata
 
 
 STEADY_WINDOW_S = 1.0

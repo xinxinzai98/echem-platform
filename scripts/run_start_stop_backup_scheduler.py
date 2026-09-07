@@ -23,6 +23,8 @@ from echem_platform.start_stop_backup import create_backup  # noqa: E402
 
 STATUS_WRITER = Path(__file__).with_name("write_start_stop_backup_status.py")
 INTERVAL = dt.timedelta(days=28)
+RUNNING_STALE_AFTER = dt.timedelta(hours=12)
+STALE_RUNNING_RECOVERY_STATE = "skipped"
 
 
 def _aware(value: str) -> dt.datetime:
@@ -123,6 +125,18 @@ def _already_attempted(
     return started is not None and due <= started < due + window
 
 
+def _running_status_is_stale(
+    payload: dict[str, Any],
+    now: dt.datetime,
+    *,
+    stale_after: dt.timedelta = RUNNING_STALE_AFTER,
+) -> bool:
+    if payload.get("state") != "running":
+        return False
+    started = _parse_optional(payload.get("started_utc"))
+    return started is None or now - started >= stale_after
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--database", type=Path, required=True)
@@ -154,6 +168,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         state = str(payload.get("state") or "never_run")
         if state not in {"never_run", "running", "completed", "failed", "skipped"}:
             state = "never_run"
+
+        if _running_status_is_stale(payload, now):
+            stale_started = _parse_optional(payload.get("started_utc"))
+            stale_due = _parse_optional(payload.get("due_utc"))
+            _publish_status(
+                args.status_file,
+                state=STALE_RUNNING_RECOVERY_STATE,
+                started=_iso(stale_started),
+                completed=_iso(now),
+                due=_iso(stale_due),
+                next_due=_iso(next_due),
+                exit_code=5,
+            )
+            payload = _read_status(args.status_file)
+            state = "failed"
 
         if due is not None and not _already_attempted(payload, due, window):
             started = _iso(now)

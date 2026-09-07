@@ -67,6 +67,17 @@ class ReleasePackageTests(unittest.TestCase):
             package(self.repo, self.root / "out", "0.7.0-dev.1")
         self.assertEqual(list((self.root / "out").iterdir()), [])
 
+    def test_empty_line_placeholder_allowed_but_state_content_rejected(self):
+        (self.repo / "state").mkdir()
+        keep = self.repo / "state/.gitkeep"
+        keep.write_bytes(b"\n")
+        self.commit()
+        package(self.repo, self.root / "out", "0.7.0-dev.1")
+        keep.write_bytes(b"private")
+        self.commit()
+        with self.assertRaisesRegex(ValueError, "Private state"):
+            package(self.repo, self.root / "out", "0.7.0-dev.2")
+
     def test_job_mode_is_a_safe_enum_not_an_untrusted_string_or_object(self):
         self.assertEqual(_sanitize_job_result({"render_data_mode":"raw"}), {"render_data_mode":"raw"})
         for value in ("private path", {}, [], None):

@@ -55,7 +55,8 @@ def package(repo: Path, output: Path, version: str):
                     raise ValueError("Unsafe source archive member")
                 if not member.isfile():
                     continue
-                placeholder = member.name == "state/.gitkeep" and member.size == 0
+                placeholder = (member.name == "state/.gitkeep" and member.size <= 2
+                               and archive.extractfile(member).read() in {b"", b"\n", b"\r\n"})
                 if member.name == MANIFEST_NAME or (not placeholder and any(part in {".ssh", "private_data", "private_fixtures", "state", "output", "outputs"} for part in path.parts)):
                     raise ValueError("Private state or reserved manifest in source tree: " + member.name)
                 if path.name == ".env" or path.suffix.lower() in {".sqlite3", ".msi", ".dll", ".exe", ".pem", ".key"}:

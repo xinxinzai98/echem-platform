@@ -615,3 +615,13 @@
   .lanbts-channel-state.discharging::before,
   .lanbts-channel-state.charging::before { animation: none; }
 }
+.lanbts-live-open { margin-top: 12px; width: 100%; }
+.lanbts-live-dialog { width: min(1240px, 92vw); max-height: 90vh; overflow: auto; padding: 24px; border: 1px solid #ccdadd; border-radius: 18px; color: #18343f; background: #fff; }
+.lanbts-live-dialog::backdrop { background: #10222b88; }
+.lanbts-live-heading { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 8px; }
+.lanbts-live-dialog .stability-chart-frame { height: 360px; }
+.lanbts-live-dialog [data-stability-chart] { width: 100%; height: 100%; }
+.lanbts-live-dialog .stability-summary-grid { margin-top: 16px; }
+.lanbts-live-dialog h2, .lanbts-live-dialog h3 { margin: 0 0 8px; }
+.lanbts-live-dialog p { line-height: 1.5; margin: 6px 0; }
+.lanbts-live-dialog select { font: inherit; padding: 9px; border: 1px solid #ccdadd; border-radius: 8px; }

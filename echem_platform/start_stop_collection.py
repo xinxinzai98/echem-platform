@@ -198,15 +198,28 @@ def encode_powershell(script: str) -> str:
     return base64.b64encode(script.encode("utf-16le")).decode("ascii")
 
 
-def stdin_powershell_loader_script(timeout_seconds: int = 180) -> str:
+def stdin_powershell_loader_script(timeout_seconds: int = 180, *, input_length: int | None = None) -> str:
     """Execute one stdin script with a remote watchdog and exact PID markers."""
 
     watchdog_seconds = max(5, min(int(timeout_seconds), 3595))
+    input_setup = "$source=[Console]::In.ReadToEnd();"
+    if input_length is not None:
+        if not 0 < int(input_length) <= 2 * 1024 * 1024:
+            raise CollectionConfigurationError("远端脚本帧长度无效")
+        input_setup = (
+            f"$expected={int(input_length)};$buffer=New-Object char[] $expected;$offset=0;"
+            "while($offset -lt $expected){$n=[Console]::In.Read($buffer,$offset,$expected-$offset);"
+            "if($n -le 0){throw 'truncated_script_frame'};$offset+=$n};"
+            "$source=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String((-join $buffer)));"
+        )
     return (
         "$exitCode=0;$watchdog=$null;"
         "[Console]::Error.WriteLine('__START_STOP_REMOTE_PID__'+$PID);"
         "[Console]::Error.Flush();"
-        "try{$watchdogSource='$target='+$PID+';Start-Sleep -Seconds "
+        # Read our input before spawning the watchdog: a Windows child can
+        # inherit the SSH input pipe and keep ReadToEnd waiting for its exit.
+        "try{" + input_setup +
+        "$watchdogSource='$target='+$PID+';Start-Sleep -Seconds "
         + str(watchdog_seconds)
         + ";Stop-Process -Id $target -Force -ErrorAction SilentlyContinue';"
         "$watchdogEncoded=[Convert]::ToBase64String("
@@ -216,7 +229,6 @@ def stdin_powershell_loader_script(timeout_seconds: int = 180) -> str:
         "'-EncodedCommand',$watchdogEncoded);"
         "[Console]::Error.WriteLine('__START_STOP_CHILD_PID__'+$watchdog.Id);"
         "[Console]::Error.Flush();"
-        "$source=[Console]::In.ReadToEnd();"
         " & ([ScriptBlock]::Create($source))}"
         "catch{[Console]::Error.WriteLine($_.Exception.Message);$exitCode=1}"
         "finally{if($null -ne $watchdog -and -not $watchdog.HasExited){"
@@ -714,6 +726,10 @@ foreach($id in $targets){{
         strict-host-key and key-only SSH boundary.
         """
 
+        encoded_script = str(script).encode("utf-8")
+        if not encoded_script or len(encoded_script) > 1024 * 1024:
+            raise CollectionConfigurationError("远端脚本长度无效")
+        framed_script = base64.b64encode(encoded_script)
         args = self._ssh_args(machine) + [
             "powershell.exe",
             "-NoLogo",
@@ -722,14 +738,14 @@ foreach($id in $targets){{
             "-EncodedCommand",
             encode_powershell(
                 stdin_powershell_loader_script(
-                    max(5, min(int(timeout) - 5, 175))
+                    max(5, min(int(timeout) - 5, 175)), input_length=len(framed_script)
                 )
             ),
         ]
         try:
             result = subprocess.run(
                 args,
-                input=str(script).encode("utf-8"),
+                input=framed_script,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 timeout=max(1, min(int(timeout), 180)),
@@ -760,6 +776,7 @@ foreach($id in $targets){{
         encoded_script = str(script).encode("utf-8")
         if not encoded_script or len(encoded_script) > 1024 * 1024:
             raise CollectionConfigurationError("远端流式脚本长度无效")
+        framed_script = base64.b64encode(encoded_script)
         try:
             destination.parent.mkdir(parents=True, exist_ok=True)
             if destination.exists():
@@ -777,7 +794,7 @@ foreach($id in $targets){{
             "-EncodedCommand",
             encode_powershell(
                 stdin_powershell_loader_script(
-                    max(5, min(int(timeout) - 5, 3595))
+                    max(5, min(int(timeout) - 5, 3595)), input_length=len(framed_script)
                 )
             ),
         ]
@@ -786,7 +803,7 @@ foreach($id in $targets){{
                 try:
                     result = subprocess.run(
                         args,
-                        input=encoded_script,
+                        input=framed_script,
                         stdout=output,
                         stderr=subprocess.PIPE,
                         timeout=max(1, min(int(timeout), 3600)),

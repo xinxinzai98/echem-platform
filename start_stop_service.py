@@ -79,6 +79,7 @@ from echem_platform.start_stop_workstations import (
     DEFAULT_POLL_SECONDS as WORKSTATION_POLL_SECONDS,
     WorkstationMonitor,
 )
+from echem_platform.start_stop_lanbts_live import LanbtsLivePreview
 
 
 APP_ROOT = Path(__file__).resolve().parent
@@ -104,6 +105,7 @@ GET_API_PATHS = frozenset(
         "/api/start-stop/connectivity",
         "/api/start-stop/workstations",
         "/api/start-stop/lanbts",
+        "/api/start-stop/lanbts/live",
         "/api/start-stop/collection-config",
         "/api/start-stop/auto-update",
         "/api/start-stop/live-preview",
@@ -111,6 +113,7 @@ GET_API_PATHS = frozenset(
 )
 POST_API_PATHS = frozenset(
     {
+        "/api/start-stop/lanbts/live",
         "/api/start-stop/materials",
         "/api/start-stop/jobs",
         "/api/start-stop/uploads",
@@ -151,6 +154,7 @@ STATIC_FILES = {
     "/static/start-stop-lanbts.css": "start-stop-lanbts.css",
     "/static/start-stop-lanbts.html": "start-stop-lanbts.html",
     "/static/start-stop-lanbts.js": "start-stop-lanbts.js",
+    "/static/start-stop-lanbts-live.js": "start-stop-lanbts-live.js",
 }
 ICON_PATH = re.compile(r"^/static/icons/([A-Za-z0-9][A-Za-z0-9_.-]*\.svg)$")
 RFC1918_NETWORKS = (
@@ -1484,6 +1488,7 @@ def create_handler(
     cv_eis_analyzer: CvEisRepositoryAnalyzer | None = None,
     workstation_monitor: WorkstationMonitor | None = None,
     lanbts_monitor: LanbtsMonitor | None = None,
+    lanbts_live: LanbtsLivePreview | None = None,
 ):
     if lan_no_auth and not lan_read_only:
         raise ValueError("免登录模式仅可用于 LAN 只读服务。")
@@ -1985,6 +1990,12 @@ def create_handler(
                             ),
                         }
                     )
+                elif path == "/api/start-stop/lanbts/live":
+                    if query:
+                        raise StartStopRequestError("蓝博快照接口不接受查询参数。")
+                    if lanbts_live is None:
+                        raise StartStopRequestError("蓝博实时快照未配置。", 503)
+                    self.send_json(lanbts_live.snapshot())
                 elif path == "/api/start-stop/auto-update":
                     if lan_read_only:
                         raise StartStopRequestError(
@@ -2204,7 +2215,13 @@ def create_handler(
                     return
                 self._require_local_json_request()
                 payload = self.read_json()
-                if path == "/api/start-stop/connectivity/check":
+                if path == "/api/start-stop/lanbts/live":
+                    if set(payload) != {"run_id"} or not isinstance(payload.get("run_id"), str) or len(payload["run_id"]) > 128:
+                        raise StartStopRequestError("必须提供一个有效的本次测试 run_id。")
+                    if lanbts_live is None:
+                        raise StartStopRequestError("蓝博实时快照未配置。", 503)
+                    self.send_json(lanbts_live.request(payload["run_id"]))
+                elif path == "/api/start-stop/connectivity/check":
                     unknown = sorted(set(payload) - {"machine_id"})
                     if unknown:
                         raise StartStopRequestError(
@@ -2793,6 +2810,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     live_preview_state_file: LivePreviewStateFile | None = None
     workstation_monitor: WorkstationMonitor | None = None
     lanbts_monitor: LanbtsMonitor | None = None
+    lanbts_live: LanbtsLivePreview | None = None
     safety_publisher: RuntimeSafetyPublisher | None = None
     server: StartStopHTTPServer | None = None
     try:
@@ -2895,6 +2913,10 @@ def main(argv: Iterable[str] | None = None) -> int:
             live_preview_state_file = LivePreviewStateFile(
                 Path(workstation_state_file).with_name("live-preview.json")
             )
+            lanbts_live = LanbtsLivePreview(
+                lanbts_monitor, Path(lanbts_state_file).with_name("lanbts-live.json"),
+                Path(args.scratch_dir).expanduser(), database=None if args.lan_read_only else workspace.database,
+            )
             live_preview_scheduler = (
                 LivePreviewScheduler(
                     workspace.database,
@@ -2930,6 +2952,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                 cv_eis_analyzer=cv_eis_analyzer,
                 workstation_monitor=workstation_monitor,
                 lanbts_monitor=lanbts_monitor,
+                lanbts_live=lanbts_live,
             )
             server = StartStopHTTPServer((bind, int(args.port)), handler)
             if not args.lan_read_only and callable(getattr(workspace, "_safety_status", None)):
@@ -2951,6 +2974,8 @@ def main(argv: Iterable[str] | None = None) -> int:
             safety_publisher.start()
         if lanbts_monitor is not None:
             lanbts_monitor.start()
+        if lanbts_live is not None:
+            lanbts_live.start()
         if live_preview_scheduler is not None:
             live_preview_scheduler.start()
         if auto_update_scheduler is not None:
@@ -2959,6 +2984,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     except KeyboardInterrupt:
         pass
     finally:
+        if lanbts_live is not None:
+            lanbts_live.close()
         if safety_publisher is not None:
             safety_publisher.close()
         try:

@@ -619,7 +619,10 @@ class StabilityExplorer {
   }
 }
 
+globalThis.StartStopStabilityExplorer = StabilityExplorer;
+
 async function initializeStabilityAnalysis() {
+  if (!document.querySelector("#stabilityStartStopCount")) return;
   const viewTabs = [...document.querySelectorAll("[data-stability-view]")];
   viewTabs.forEach((button, index) => {
     button.addEventListener("click", () => setStabilityView(button.dataset.stabilityView));

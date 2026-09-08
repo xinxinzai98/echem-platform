@@ -60,7 +60,7 @@ if ($LASTEXITCODE -ne 0) {
 
 if ($ComposeArguments.Count -gt 0 -and $ComposeArguments[0] -eq "check") {
     $ImageRepository = Get-DotEnvValue -Name "ECHEM_IMAGE_REPOSITORY" -DefaultValue "start-stop-analysis"
-    $ImageTag = Get-DotEnvValue -Name "ECHEM_IMAGE_TAG" -DefaultValue "0.7.0-dev.1-windows"
+    $ImageTag = Get-DotEnvValue -Name "ECHEM_IMAGE_TAG" -DefaultValue "0.7.0-dev.2-windows"
     $DatabaseVolume = Get-DotEnvValue -Name "ECHEM_DATABASE_VOLUME_NAME" -DefaultValue "start-stop-analysis-database"
     $Image = "{0}:{1}" -f $ImageRepository, $ImageTag
     & $docker.Source run `
@@ -85,7 +85,7 @@ if ($ComposeArguments.Count -gt 0 -and $ComposeArguments[0] -eq "check") {
 
 if ($ComposeArguments.Count -gt 0 -and $ComposeArguments[0] -eq "backup-status") {
     $ImageRepository = Get-DotEnvValue -Name "ECHEM_IMAGE_REPOSITORY" -DefaultValue "start-stop-analysis"
-    $ImageTag = Get-DotEnvValue -Name "ECHEM_IMAGE_TAG" -DefaultValue "0.7.0-dev.1-windows"
+    $ImageTag = Get-DotEnvValue -Name "ECHEM_IMAGE_TAG" -DefaultValue "0.7.0-dev.2-windows"
     $Image = "{0}:{1}" -f $ImageRepository, $ImageTag
     $StatusArguments = @(
         "run",
@@ -114,7 +114,7 @@ if ($ComposeArguments.Count -gt 0 -and $ComposeArguments[0] -eq "backup-status")
 
 if ($ComposeArguments.Count -gt 0 -and $ComposeArguments[0] -eq "backup") {
     $ImageRepository = Get-DotEnvValue -Name "ECHEM_IMAGE_REPOSITORY" -DefaultValue "start-stop-analysis"
-    $ImageTag = Get-DotEnvValue -Name "ECHEM_IMAGE_TAG" -DefaultValue "0.7.0-dev.1-windows"
+    $ImageTag = Get-DotEnvValue -Name "ECHEM_IMAGE_TAG" -DefaultValue "0.7.0-dev.2-windows"
     $DatabaseVolume = Get-DotEnvValue -Name "ECHEM_DATABASE_VOLUME_NAME" -DefaultValue "start-stop-analysis-database"
     $BackupCpuLimit = Get-DotEnvValue -Name "ECHEM_BACKUP_CPU_LIMIT" -DefaultValue "1.0"
     $ConfiguredBackupDir = Get-DotEnvValue -Name "ECHEM_BACKUP_DIR" -DefaultValue "./state/docker/backups"

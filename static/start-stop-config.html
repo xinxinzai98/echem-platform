@@ -205,6 +205,7 @@
             <div>
               <span class="eyebrow">Live data preview</span>
               <h3 id="livePreviewTitle">实时数据预览</h3>
+              <p>蓝博八通道也沿用此开关：每 5 分钟读取正在测试的 BTS 快照，按同一次测试接续并计算。点击蓝博通道卡片的“查看本次测试数据”查看；未结束循环暂不计入完整循环统计。</p>
               <p>开启后立即执行一次，之后每 5 分钟识别正在写入的启停文件、抓取只读快照，并按正式启停规则识别完整循环、计算末端电位与异常、接续累计时间。结果只临时叠加到 04 稳定性分析的启停视图，不写入正式数据库。</p>
               <div class="live-preview-actions">
                 <button id="toggleLivePreview" class="auto-update-toggle live-preview-toggle" type="button" aria-pressed="false">开启实时预览</button>

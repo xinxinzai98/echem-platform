@@ -26,6 +26,7 @@
 !static/start-stop-lanbts.css
 !static/start-stop-lanbts.html
 !static/start-stop-lanbts.js
+!static/start-stop-lanbts-live.js
 !static/start-stop-shell.js
 !static/start-stop-client.js
 !static/start-stop-plot-interaction.js

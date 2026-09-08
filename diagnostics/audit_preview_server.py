@@ -73,6 +73,17 @@ if __name__ == "__main__":
             stations, lanbts, connectivity, preview = fixtures()
             monitor_args = {"workstation_monitor":stations,"lanbts_monitor":lanbts,
                             "connectivity_monitor":connectivity,"live_preview_snapshot_provider":preview}
+            from echem_platform.start_stop_lanbts_live import LanbtsLivePreview, analyze_snapshot
+            from tests.test_start_stop_stability import start_stop_rows, csv_bytes
+            channel=next(row for row in lanbts.snapshot()['channels'] if row.get('status')=='discharging')
+            rows=start_stop_rows()
+            live=LanbtsLivePreview(lanbts,root/'lanbts-live-fixture.json',root/'scratch')
+            item=analyze_snapshot(csv_bytes(rows),{'capture_kind':'live_read_only_snapshot',
+                'downsample_stride':1,'record_count':len(rows),'exported_point_count':len(rows),
+                'snapshot_sha256':'a'*64,'captured_source_size':1000},channel,
+                {'analysis_mode':'start_stop','protocol_current_levels_ma':[-300,30], 'protocol':channel['protocol']})
+            live._write(last_status='completed',enabled=True,message='仅合成测试样例',preview={'items':[item],'errors':[]})
+            monitor_args['lanbts_live']=live
         handler = create_handler(workspace, lan_read_only=True, lan_no_auth=True,
                                  public_host="127.0.0.1", public_port=args.port,
                                  cv_eis_analyzer=CvEisRepositoryAnalyzer(ReadOnlyCvEisDatabase(root/"repository.sqlite3")), **monitor_args)

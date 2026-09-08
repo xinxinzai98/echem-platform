@@ -865,7 +865,7 @@ class CollectorTestCase(unittest.TestCase):
 
         command = run.call_args.args[0]
         self.assertTrue(result["ok"])
-        self.assertEqual(run.call_args.kwargs["input"], script.encode("utf-8"))
+        self.assertEqual(base64.b64decode(run.call_args.kwargs["input"]), script.encode("utf-8"))
         self.assertIn("-EncodedCommand", command)
         self.assertNotIn(script, command)
         self.assertNotIn("D:\\LANBTS\\Data", " ".join(command))

@@ -68,6 +68,7 @@ COPY --chown=${APP_UID}:${APP_GID} \
     static/start-stop-lanbts.css \
     static/start-stop-lanbts.html \
     static/start-stop-lanbts.js \
+    static/start-stop-lanbts-live.js \
     static/start-stop-shell.js \
     static/start-stop-client.js \
     static/start-stop-plot-interaction.js \
@@ -94,7 +95,7 @@ COPY --chown=${APP_UID}:${APP_GID} \
     ./scripts/
 
 # Release labels do not invalidate the operating-system and Python dependency layers.
-ARG APP_VERSION=0.7.0-dev.1
+ARG APP_VERSION=0.7.0-dev.2
 ARG VCS_REF=unknown
 ARG BUILD_STATE=unknown
 ARG SOURCE_MANIFEST_SHA=unknown

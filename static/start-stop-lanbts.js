@@ -221,6 +221,10 @@ function renderLanbtsChannel(channel) {
   addCompactMetric(compactMetrics, "工步", `${formatInteger(channel.step_no)} · ${channel.state_label || "未知"}`);
   addCompactMetric(compactMetrics, "已运行", formatElapsed(channel.elapsed_s));
   card.append(compactMetrics);
+  const previewButton = lanbtsElement("button", "secondary-outline-button lanbts-live-open", "查看本次测试数据");
+  previewButton.type = "button";
+  previewButton.addEventListener("click", () => globalThis.openLanbtsLive(channel));
+  card.append(previewButton);
 
   const details = lanbtsElement("details", "lanbts-card-details");
   details.append(lanbtsElement("summary", "", lanbtsState.payload?.can_edit ? "文件详情与材料配置" : "查看文件详情"));

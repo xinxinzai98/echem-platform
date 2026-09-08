@@ -10,6 +10,7 @@
   <link rel="stylesheet" href="/static/workbench.css">
   <link rel="stylesheet" href="/static/start-stop.css">
   <link rel="stylesheet" href="/static/start-stop-lanbts.css">
+  <link rel="stylesheet" href="/static/start-stop-stability.css">
   <script src="/static/start-stop-shell.js"></script>
   <script src="/static/start-stop-client.js"></script>
 </head>
@@ -147,6 +148,46 @@
       </main>
     </div>
   </div>
+  <dialog id="lanbtsLiveDialog" class="lanbts-live-dialog" aria-labelledby="lanbtsLiveTitle">
+    <header class="lanbts-live-heading">
+      <div><h2 id="lanbtsLiveTitle">本次测试数据</h2><p id="lanbtsLiveMeta"></p></div>
+      <button id="closeLanbtsLive" type="button" class="secondary-outline-button">关闭</button>
+    </header>
+    <p>只读取已落盘记录，不等待测试结束；仅接续本次 BTS，不合并其他文件。已开启实时预览时每 5 分钟更新。</p>
+    <div class="lanbts-live-heading">
+      <span id="lanbtsLiveStatus" role="status"></span>
+      <button id="captureLanbtsLive" class="primary-button" type="button" hidden>读取快照并计算</button>
+    </div>
+    <div id="lanbtsLiveExplorer">
+      <div hidden>
+        <input data-stability-search aria-label="本次测试筛选">
+        <select data-stability-protocol aria-label="本次测试工步"></select>
+        <span data-stability-selection></span><button data-stability-select-all type="button">选择</button><button data-stability-clear type="button">清空</button>
+        <div data-stability-series-list></div>
+      </div>
+      <div class="lanbts-live-heading">
+        <div><h3 data-stability-chart-title>全程电压</h3><p data-stability-chart-description></p></div>
+        <label>查看指标 <select data-stability-metric>
+          <option value="overview">全程电压</option><option value="current">实测电流</option>
+          <option value="current_density">实测电流密度（需面积）</option>
+          <option value="stress_endpoint">已完成循环：高负载末端</option>
+          <option value="recovery_endpoint">已完成循环：低负载末端</option>
+          <option value="negative_shift">已完成循环：电压负移</option>
+          <option value="minimum_time">已完成循环：异常判断</option>
+        </select></label>
+      </div>
+      <p data-stability-boundary class="workspace-notice"></p>
+      <div class="stability-chart-frame">
+        <svg data-stability-chart role="img" aria-label="蓝博本次测试实时曲线"></svg>
+        <p data-stability-empty>正在读取快照…</p>
+      </div>
+      <div data-stability-legend class="stability-chart-legend"></div>
+      <div data-stability-summary class="stability-summary-grid"></div>
+    </div>
+  </dialog>
+  <script src="/static/start-stop-plot-interaction.js"></script>
+  <script src="/static/start-stop-stability.js"></script>
+  <script src="/static/start-stop-lanbts-live.js"></script>
   <script src="/static/start-stop-lanbts.js"></script>
 </body>
 </html>

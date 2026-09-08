@@ -267,6 +267,7 @@ class MinimalServiceImportTests(unittest.TestCase):
                 "echem_platform.start_stop_live_preview",
                 "echem_platform.start_stop_lanbts",
                 "echem_platform.start_stop_workstations",
+                "echem_platform.start_stop_lanbts_live",
             ],
         )
 

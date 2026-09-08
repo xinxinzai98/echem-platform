@@ -175,14 +175,83 @@ def lanbts_record_export_script(
     expected_size: int,
     expected_ticks: int,
     area_cm2: float | None,
+    live_snapshot: bool = False,
 ) -> str:
     """Build the fixed remote read-only BTS-to-CSV extraction script."""
 
-    install = ps_literal(str(config["installation_root"]))
-    system_root = ps_literal(str(config["system_root"]))
-    path = ps_literal(str(data_path))
+    def utf8_literal(value):
+        encoded = base64.b64encode(str(value).encode('utf-8')).decode('ascii')
+        return "([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('" + encoded + "')))"
+    install = utf8_literal(config["installation_root"])
+    system_root = utf8_literal(config["system_root"])
+    path = utf8_literal(data_path)
     area = _area_literal(area_cm2)
-    return rf"""
+    snapshot_setup = r"""
+$sourceDataPath=$dataPath
+# Only expired copies created by this feature, never instrument files.
+foreach($old in @(Get-ChildItem -LiteralPath $probeRoot -Directory -Filter 'live-*')){
+  if($old.Name -match '^live-[0-9a-f]{32}$' -and
+     -not ($old.Attributes -band [IO.FileAttributes]::ReparsePoint) -and
+     $old.LastWriteTimeUtc -lt [DateTime]::UtcNow.AddMinutes(-10)){
+    try{
+      $oldSnapshot=Join-Path $old.FullName 'snapshot.bts'
+      if([IO.File]::Exists($oldSnapshot)){[IO.File]::Delete($oldSnapshot)}
+      [IO.Directory]::Delete($old.FullName)
+    }catch [IO.IOException]{}
+  }
+}
+$liveDirectory=Join-Path $probeRoot ('live-'+[Guid]::NewGuid().ToString('N'))
+[void][IO.Directory]::CreateDirectory($liveDirectory)
+$snapshotPath=Join-Path $liveDirectory 'snapshot.bts'
+$captured=$false
+for($attempt=0;$attempt -lt 3;$attempt++){
+  $inputFile=[IO.File]::Open($sourceDataPath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite)
+  try{
+    $captureSize=[int64]$inputFile.Length
+    if($captureSize -le 0 -or $captureSize -gt 536870912){throw 'live_snapshot_size_limit'}
+    $captureInfo=Get-Item -LiteralPath $sourceDataPath
+    $captureTicks=[int64]$captureInfo.LastWriteTimeUtc.Ticks
+    $captureModified=$captureInfo.LastWriteTimeUtc.ToString('o')
+    $outputFile=[IO.File]::Open($snapshotPath,[IO.FileMode]::Create,[IO.FileAccess]::Write,[IO.FileShare]::None)
+    try{
+      $buffer=New-Object byte[] 1048576
+      $remaining=$captureSize
+      while($remaining -gt 0){
+        $n=$inputFile.Read($buffer,0,[int][Math]::Min($remaining,$buffer.Length))
+        if($n -le 0){throw 'live_source_truncated'}
+        $outputFile.Write($buffer,0,$n); $remaining-=$n
+      }
+    }finally{$outputFile.Dispose()}
+    $snapshotSha=(Get-FileHash -LiteralPath $snapshotPath -Algorithm SHA256).Hash.ToLower()
+    # Re-read the same fixed prefix. Appending is allowed; rewriting it is not.
+    $inputFile.Position=0
+    $hash=[Security.Cryptography.SHA256]::Create()
+    try{
+      $remaining=$captureSize
+      while($remaining -gt 0){
+        $n=$inputFile.Read($buffer,0,[int][Math]::Min($remaining,$buffer.Length))
+        if($n -le 0){throw 'live_source_truncated'}
+        [void]$hash.TransformBlock($buffer,0,$n,$buffer,0); $remaining-=$n
+      }
+      [void]$hash.TransformFinalBlock([byte[]]@(),0,0)
+      $verifiedSha=([BitConverter]::ToString($hash.Hash)).Replace('-','').ToLower()
+    }finally{$hash.Dispose()}
+    if($snapshotSha -eq $verifiedSha){$captured=$true;break}
+  }finally{$inputFile.Dispose()}
+}
+if(-not $captured){throw 'live_source_changed_during_snapshot'}
+$dataPath=$snapshotPath
+$expectedSize=$captureSize
+$expectedTicks=[int64](Get-Item -LiteralPath $snapshotPath).LastWriteTimeUtc.Ticks
+""" if live_snapshot else ""
+    snapshot_metadata = r"""
+  capture_kind='live_read_only_snapshot'
+  snapshot_sha256=$snapshotSha
+  captured_source_size=$captureSize
+  captured_source_ticks=$captureTicks
+  captured_source_modified_utc=$captureModified
+""" if live_snapshot else ""
+    script = rf"""
 $ProgressPreference='SilentlyContinue'
 $InformationPreference='SilentlyContinue'
 $WarningPreference='SilentlyContinue'
@@ -216,6 +285,7 @@ if(-not (Test-Path -LiteralPath $configTarget -PathType Leaf) -or
    (Get-Item -LiteralPath $configTarget).Length -ne (Get-Item -LiteralPath $configSource).Length){{
   Copy-Item -LiteralPath $configSource -Destination $configTarget -Force
 }}
+{snapshot_setup}
 $before=Get-Item -LiteralPath $dataPath -ErrorAction Stop
 if([int64]$before.Length -ne $expectedSize -or [int64]$before.LastWriteTimeUtc.Ticks -ne $expectedTicks){{
   throw 'source_changed_before_extract'
@@ -299,6 +369,7 @@ try{{
     )
     $writer.WriteLine([string]::Join(',',$values))
     $exported++
+    {"if(($exported % 4096) -eq 0 -and $writer.BaseStream.Position -gt 134217728){throw 'live_csv_size_limit'}" if live_snapshot else ""}
       }}
     }}
   }}
@@ -317,6 +388,7 @@ if([int64]$after.Length -ne $expectedSize -or
   throw 'source_changed_after_extract'
 }}
 $meta=[pscustomobject][ordered]@{{
+{snapshot_metadata}
   ok=$true
   source_size=[int64]$after.Length
   source_ticks=[int64]$after.LastWriteTimeUtc.Ticks
@@ -336,6 +408,31 @@ $encoded=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json))
 [Console]::Error.Flush()
 [Environment]::Exit(0)
 """
+    if live_snapshot:
+        # The SDK sees only our verified copy, never the instrument's open BTS.
+        body = script.replace("[Environment]::Exit(0)", "")
+        return "try {\n" + body + r"""
+}finally{
+  if($reader -is [IDisposable]){$reader.Dispose()}
+  $reader=$null
+  [GC]::Collect();[GC]::WaitForPendingFinalizers()
+  if($liveDirectory -and [IO.Directory]::Exists($liveDirectory)){
+    try{
+      if($snapshotPath -and [IO.File]::Exists($snapshotPath)){[IO.File]::Delete($snapshotPath)}
+      [IO.Directory]::Delete($liveDirectory)
+    }catch [IO.IOException]{
+      # The SDK may retain its own handle until process exit. A later capture
+      # removes this expired owned copy; cleanup must not discard valid data.
+      [Console]::Error.WriteLine('live_snapshot_cleanup_deferred')
+    }
+  }
+  if($exportPath -and [IO.File]::Exists($exportPath)){[IO.File]::Delete($exportPath)}
+  if($lockAcquired){$readMutex.ReleaseMutex()}
+  if($readMutex){$readMutex.Dispose()}
+}
+# Return to the stdin loader so it can stop its watchdog before process exit.
+"""
+    return script
 
 
 def _quantile(sorted_values: list[float], fraction: float) -> float:

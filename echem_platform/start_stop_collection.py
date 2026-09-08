@@ -566,8 +566,9 @@ $json = $payload | ConvertTo-Json -Compress -Depth 2
 class SSHWindowsTransport:
     """Read-only OpenSSH transport for Windows PowerShell sources."""
 
-    def __init__(self, *, known_hosts_file: Path | None = None) -> None:
+    def __init__(self, *, known_hosts_file: Path | None = None, multiplex: bool = True) -> None:
         self.known_hosts_file = known_hosts_file
+        self.multiplex = bool(multiplex)
 
     def _ssh_args(self, machine: dict[str, Any]) -> list[str]:
         try:
@@ -606,11 +607,11 @@ class SSHWindowsTransport:
             "-o",
             "ServerAliveCountMax=2",
             "-o",
-            "ControlMaster=auto",
+            "ControlMaster=auto" if self.multiplex else "ControlMaster=no",
             "-o",
             "ControlPersist=90",
             "-o",
-            f"ControlPath=/tmp/start-stop-ssh-{os.getpid()}-%C",
+            f"ControlPath=/tmp/start-stop-ssh-{os.getpid()}-%C" if self.multiplex else "ControlPath=none",
             "-o",
             "StrictHostKeyChecking=yes",
         ]
@@ -745,7 +746,7 @@ foreach($id in $targets){{
         try:
             result = subprocess.run(
                 args,
-                input=framed_script,
+                input=framed_script+b"\n",
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 timeout=max(1, min(int(timeout), 180)),
@@ -803,7 +804,7 @@ foreach($id in $targets){{
                 try:
                     result = subprocess.run(
                         args,
-                        input=framed_script,
+                        input=framed_script+b"\n",
                         stdout=output,
                         stderr=subprocess.PIPE,
                         timeout=max(1, min(int(timeout), 3600)),

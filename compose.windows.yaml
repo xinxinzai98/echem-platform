@@ -81,7 +81,7 @@ services:
       - "400000000"
 
   backup-scheduler:
-    image: ${ECHEM_IMAGE_REPOSITORY:-start-stop-analysis}:${ECHEM_IMAGE_TAG:-0.7.0-dev.2-windows}
+    image: ${ECHEM_IMAGE_REPOSITORY:-start-stop-analysis}:${ECHEM_IMAGE_TAG:-0.7.0-dev.3-windows}
     container_name: start-stop-analysis-backup-scheduler
     restart: unless-stopped
     user: "501:20"

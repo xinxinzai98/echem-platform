@@ -62,14 +62,15 @@
       if (item) {
         const stale=Date.now()-Date.parse(item.captured_at_utc)>600000;
         const failed=payload.current_run_id===selected && payload.last_status==='failed';
-        status.textContent=`${stale||failed?'缓存快照 · ':''}${new Date(item.captured_at_utc).toLocaleString('zh-CN')} · ${item.connection.complete_records.toLocaleString()} 条完整记录 · ${item.in_progress?`末尾循环 ${item.pending_cycle} 待确认闭合`:'测试已结束'}${failed?' · 本次刷新失败，保留上次结果':''}`;
+        const phase=item.in_progress?(item.analysis_mode==='constant_current'?'恒流测试进行中':item.pending_cycle==null?'本次测试进行中':`末尾循环 ${item.pending_cycle} 待确认闭合`):'测试已结束';
+        status.textContent=`${stale||failed?'缓存快照 · ':''}${new Date(item.captured_at_utc).toLocaleString('zh-CN')} · ${item.connection.complete_records.toLocaleString()} 条完整记录 · ${phase}${failed?' · 本次刷新失败，保留上次结果':''}`;
         if (chart.item?.captured_at_utc!==item.captured_at_utc || chart.item?.run_id!==item.run_id) chart.show(item);
       } else {
         chart.clear();
         chart.elements.empty.textContent=payload.last_status==='running'?'正在读取并接续计算…':payload.can_capture?'尚无快照，请点击“读取快照并计算”。':'尚无本次测试快照，请在服务器本机开启实时预览或读取一次。';
         status.textContent=payload.message || '本次测试尚未生成快照';
       }
-      if(payload.last_status==='running' && payload.current_run_id===selected) status.textContent+=' · 正在读取新快照';
+      if(payload.last_status==='running' && payload.current_run_id===selected) status.textContent+=` · ${payload.message||'正在读取新快照'}`;
     } catch(error) {
       if(id===requestId && !controller.signal.aborted) status.textContent=`读取失败：${error.message}；现有曲线仅为缓存。`;
     } finally { if(id===requestId) schedule(); }

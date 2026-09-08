@@ -61,7 +61,7 @@ if [ "${ECHEM_IMAGE_TAG_FROM_GIT:-0}" = "1" ] && [ -z "${ECHEM_IMAGE_TAG:-}" ]; 
   if [ "${ECHEM_GIT_STATE:-unknown}" != "clean" ]; then
     tag_suffix="-${ECHEM_GIT_STATE:-unknown}"
   fi
-  ECHEM_IMAGE_TAG="${ECHEM_IMAGE_VERSION:-0.7.0-dev.2}-${ECHEM_GIT_SHA}${tag_suffix}"
+  ECHEM_IMAGE_TAG="${ECHEM_IMAGE_VERSION:-0.7.0-dev.3}-${ECHEM_GIT_SHA}${tag_suffix}"
   export ECHEM_IMAGE_TAG
 fi
 
@@ -88,7 +88,7 @@ if [ "${1:-}" = "check" ]; then
     --user 501:20 \
     --entrypoint python3 \
     -v "$project_dir/state/docker/database:/app/state/database:ro" \
-    "${ECHEM_IMAGE_REPOSITORY:-start-stop-analysis}:${ECHEM_IMAGE_TAG:-0.7.0-dev.2}" \
+    "${ECHEM_IMAGE_REPOSITORY:-start-stop-analysis}:${ECHEM_IMAGE_TAG:-0.7.0-dev.3}" \
     /app/scripts/create_start_stop_backup.py \
     --database /app/state/database/start-stop.sqlite3 \
     --check-live \

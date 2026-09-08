@@ -122,6 +122,17 @@ class LanbtsLiveTests(unittest.TestCase):
             authorization=VALID_AUTHORIZATION,exploding_body=True)
         self.assertEqual(status,403)
 
+    def test_transient_read_failure_is_bounded_and_read_is_retried(self):
+        from echem_platform.start_stop_collection import RemoteFileError
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as directory:
+            monitor=SimpleNamespace(active_probe=False,snapshot=lambda:{'channels':[]})
+            manager=LanbtsLivePreview(monitor,Path(directory)/'cache.json',directory)
+            read=mock.Mock(side_effect=[RemoteFileError('fixture'),{'ok':True}])
+            with mock.patch.object(manager._stop,'wait',return_value=False):
+                self.assertEqual(manager._retry_read(read),{'ok':True})
+            self.assertEqual(read.call_count,2)
+
     def test_manager_refresh_replaces_cache_and_failure_preserves_last_good(self):
         import base64
         from echem_platform.start_stop_lanbts import _run_id
@@ -137,8 +148,11 @@ class LanbtsLiveTests(unittest.TestCase):
             def run_stdin_payload(self,*args,**kwargs): return {'ok':True,'channels':[raw]}
             def stream_stdin_script(self,config,script,path,**kwargs):
                 if self.fail: raise RuntimeError('fixture transport failure')
-                path.write_bytes(csv_bytes(rows))
-                return b'__START_STOP_LANBTS_META__'+base64.b64encode(__import__('json').dumps(metadata).encode())
+                import re
+                from tests.test_start_stop_lanbts_live_cache import page_bytes,metadata as page_meta
+                start=int(re.search(r'::Export\(\$cache,\$writer,(\d+),',script).group(1))
+                path.write_bytes(page_bytes(rows[start:],start))
+                return b'__START_STOP_LANBTS_META__'+base64.b64encode(__import__('json').dumps(page_meta(start,len(rows),len(rows))).encode())
         with tempfile.TemporaryDirectory() as directory:
             monitor=SimpleNamespace(active_probe=True,machine_config=config,snapshot=lambda:{'channels':[self.channel]})
             manager=LanbtsLivePreview(monitor,Path(directory)/'cache.json',directory,database=object(),transport_factory=Transport)

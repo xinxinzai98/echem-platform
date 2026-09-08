@@ -5,6 +5,7 @@ import csv
 import datetime as dt
 import io
 import itertools
+import hashlib
 import logging
 import math
 import ntpath
@@ -15,6 +16,7 @@ import time
 from pathlib import Path
 
 from .start_stop_collection import SSHWindowsTransport
+from .start_stop_collection import RemoteFileError, RemoteRootError
 from .start_stop_contracts import StartStopWorkspaceError
 from .start_stop_lanbts import _run_id, lanbts_probe_script
 from .start_stop_lanbts_import import (
@@ -23,6 +25,8 @@ from .start_stop_lanbts_import import (
 )
 from .start_stop_live_preview import LivePreviewStateFile
 from .start_stop_stability import _read_rows, _start_stop_cycles, _constant_summary, _downsample
+from .start_stop_lanbts_paged import paged_export_script
+from .start_stop_lanbts_live_cache import LiveRunCache
 
 LOG = logging.getLogger(__name__)
 INTERVAL_SECONDS = 300
@@ -174,6 +178,8 @@ class LanbtsLivePreview:
         self._thread = None
         self._worker = None
         self._attempts = {}
+        if self.active and self.state.snapshot().get('last_status')=='running':
+            self._write(last_status='interrupted',message='服务已重启；下一次抓取会从已验证的记录位置继续。')
 
     def snapshot(self):
         with self._lock:
@@ -211,8 +217,8 @@ class LanbtsLivePreview:
     def _capture(self, channel):
         try:
             config = self.monitor.machine_config
-            transport = self.transport_factory(known_hosts_file=Path(config['known_hosts_file']).expanduser())
-            raw = transport.run_stdin_payload(config, lanbts_probe_script(config), timeout=30)
+            transport = self.transport_factory(known_hosts_file=Path(config['known_hosts_file']).expanduser(), multiplex=False)
+            raw = self._retry_read(lambda: transport.run_stdin_payload(config, lanbts_probe_script(config), timeout=30))
             match = next((row for row in raw.get('channels', []) if
                 _run_id(config['id'], int(row['channel']), str(row.get('data_path', '')),
                         str(row.get('test_start_local', ''))) == channel['run_id']), None)
@@ -225,16 +231,36 @@ class LanbtsLivePreview:
             self.scratch_dir.mkdir(parents=True, exist_ok=True)
             if shutil.disk_usage(self.scratch_dir).free < 256 * 1024 * 1024:
                 raise ValueError('预览临时空间不足')
+            key=hashlib.sha256(channel['run_id'].encode()).hexdigest()
+            cache=LiveRunCache(self.scratch_dir/'lanbts-live-records'/f'{key}.sqlite3')
+            state=cache.state()
+            target=state.get('target_slots',0) if state.get('end_slot',0)<state.get('target_slots',0) else 0
+            reset=False;resets=0;newly_read=0
             with tempfile.TemporaryDirectory(prefix='lanbts-live-', dir=self.scratch_dir) as directory:
-                path = Path(directory) / 'records.csv'
-                script = lanbts_record_export_script(config, data_path=source, expected_size=0,
-                    expected_ticks=0, area_cm2=channel.get('configuration', {}).get('electrode_area_cm2'), live_snapshot=True)
-                meta = _decode_export_metadata(transport.stream_stdin_script(config, script, path, timeout=180))
-                if path.stat().st_size > MAX_CSV_BYTES:
-                    raise ValueError('快照超过网页预览上限，请使用正式下载分析')
-                profile = _profile_normalized_csv(path)
-                classification = classify_lanbts_stability(process_rows=meta.get('process', []), measured_profile=profile)
-                item = analyze_snapshot(path.read_bytes(), meta, channel, classification)
+                for page in range(512):
+                    if self._stop.is_set():raise RuntimeError('Live reader is stopping')
+                    path=Path(directory)/f'page-{page}.csv'
+                    start=0 if reset else state.get('end_slot',0)
+                    script=paged_export_script(config,data_path=source,start_slot=start,
+                        prefix_sha='' if reset else state.get('records_sha256',''),
+                        context_sha='' if reset else state.get('context_sha256',''),target_slots=target)
+                    meta=_decode_export_metadata(self._retry_read(lambda: transport.stream_stdin_script(config,script,path,timeout=90)))
+                    if meta.get('reset_required'):
+                        resets+=1
+                        if resets>1:raise ValueError('Source changed repeatedly during capture')
+                        reset=True;target=0;newly_read=0;path.unlink();continue
+                    if path.stat().st_size>16*1024*1024:raise ValueError('Record page exceeds limit')
+                    if not target:target=int(meta['total_slots'])
+                    meta['target_slots']=target
+                    state=cache.ingest(path,meta,reset=reset);reset=False;path.unlink()
+                    newly_read+=int(meta['exported_point_count'])
+                    self._write(last_status='running',current_run_id=channel['run_id'],
+                        message=f'通道 {channel["channel"]}：已接续读取 {state["end_slot"]:,} / {target:,} 个记录位置，正在计算…',
+                        progress={'completed':state['end_slot'],'total':target,'new_records':newly_read})
+                    if state['end_slot']>=target:break
+                    if state['end_slot']<=start:raise ValueError('Record cursor did not advance')
+                else:raise ValueError('Too many record pages')
+            item=cache.item(channel,newly_read=newly_read)
             current = {row.get('run_id') for row in self.monitor.snapshot().get('channels', [])}
             if channel['run_id'] not in current:
                 raise ValueError('测试已切换，旧结果不会替代新测试')
@@ -255,6 +281,12 @@ class LanbtsLivePreview:
             self._thread = threading.Thread(target=self._loop, daemon=True, name='lanbts-live-scheduler')
             self._thread.start()
 
+    def _retry_read(self, read):
+        for attempt in range(3):
+            try:return read()
+            except (RemoteFileError, RemoteRootError):
+                if attempt==2 or self._stop.wait(1):raise
+
     def _loop(self):
         while not self._stop.wait(5):
             try:
@@ -265,7 +297,7 @@ class LanbtsLivePreview:
                     continue
                 channels = self.monitor.snapshot().get('channels', [])
                 previews = {item['run_id']: item for item in self.snapshot()['preview']['items']}
-                for channel in channels:
+                for channel in sorted(channels,key=lambda row:(self._attempts.get(row.get('run_id'),-math.inf),row.get('data_size_bytes',0))):
                     run_id = channel.get('run_id')
                     needs_final_snapshot = channel.get('status') == 'completed' and previews.get(run_id, {}).get('in_progress')
                     if run_id and (channel.get('status') in {'charging', 'discharging'} or needs_final_snapshot) and time.monotonic() - self._attempts.get(run_id, -math.inf) >= INTERVAL_SECONDS:

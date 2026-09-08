@@ -24,6 +24,8 @@ python scripts/package_start_stop_release.py --version 0.7.0-dev.1 --output outp
 
 普通代码更新不执行无条件全量备份。若本次涉及数据库结构或内容修复，则必须先完成并验证备份，不得因为耗时跳过。
 
+工作区 `/app/scratch` 使用独立磁盘卷 `start-stop-analysis-scratch`，可通过 `ECHEM_SCRATCH_VOLUME_NAME` 指定名称；不再使用 4 GiB tmpfs 限额，也不以提高容器内存上限替代磁盘容量。该卷只保存可重建工作缓存，不属于原始数据库或备份。
+
 ## 离线基础镜像
 
 主机无法直接连接 Docker Hub 时，可在可联网端下载官方 OCI 组件，逐项核对固定摘要后导入。多架构 index 的目标平台必须连同对应 attestation 一起保存，否则 Docker 可能报缺少内容。

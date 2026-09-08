@@ -87,9 +87,9 @@ services:
       - local_runtime
     tmpfs:
       - /tmp:size=${ECHEM_LOCAL_TMP_SIZE:-256m},mode=1777
-      - /app/scratch:size=${ECHEM_LOCAL_SCRATCH_SIZE:-4g},mode=0700,uid=501,gid=20
       - /Users/hive/.cache:size=${ECHEM_LOCAL_CACHE_SIZE:-128m},mode=0700,uid=501,gid=20
     volumes:
+      - start_stop_scratch:/app/scratch
       - ./state/docker/database:/app/state/database
       # Mount the cache parent so atomic `current` swaps remain visible to LAN readers.
       - ${ECHEM_PUBLISHED_DIR:-./state/docker/published}:/app/state/published-cache
@@ -211,6 +211,10 @@ services:
       timeout: ${ECHEM_HEALTHCHECK_TIMEOUT:-5s}
       retries: ${ECHEM_HEALTHCHECK_RETRIES:-3}
       start_period: ${ECHEM_HEALTHCHECK_START_PERIOD:-30s}
+
+volumes:
+  start_stop_scratch:
+    name: ${ECHEM_SCRATCH_VOLUME_NAME:-start-stop-analysis-scratch}
 
 networks:
   local_runtime:

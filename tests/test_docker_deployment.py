@@ -155,9 +155,9 @@ class DockerDeploymentTests(unittest.TestCase):
             local,
         )
         self.assertIn("/app/state/published-cache/current", local)
-        self.assertIn(
-            "/app/scratch:size=${ECHEM_LOCAL_SCRATCH_SIZE:-4g}", local
-        )
+        self.assertIn("start_stop_scratch:/app/scratch", local)
+        self.assertNotIn("/app/scratch:size=", local)
+        self.assertIn("${ECHEM_SCRATCH_VOLUME_NAME:-start-stop-analysis-scratch}", compose)
         self.assertIn("source: ${ECHEM_BACKUP_DIR:-./state/docker/backups}", local)
         self.assertIn("target: /app/state/backups", local)
         self.assertIn("read_only: true", local)

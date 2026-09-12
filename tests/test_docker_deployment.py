@@ -117,10 +117,10 @@ class DockerDeploymentTests(unittest.TestCase):
         self.assertIn("name: start-stop-analysis", compose)
         self.assertIn(
             "image: ${ECHEM_IMAGE_REPOSITORY:-start-stop-analysis}:"
-            "${ECHEM_IMAGE_TAG:-0.7.0-dev.4}",
+            "${ECHEM_IMAGE_TAG:-0.7.0-dev.5}",
             compose,
         )
-        self.assertIn("APP_VERSION: ${ECHEM_IMAGE_VERSION:-0.7.0-dev.4}", common)
+        self.assertIn("APP_VERSION: ${ECHEM_IMAGE_VERSION:-0.7.0-dev.5}", common)
         self.assertIn("VCS_REF: ${ECHEM_GIT_SHA:-unknown}", common)
         self.assertIn("BUILD_STATE: ${ECHEM_GIT_STATE:-unknown}", common)
         self.assertIn("container_name: start-stop-analysis-local", local)
@@ -309,8 +309,8 @@ class DockerDeploymentTests(unittest.TestCase):
         self.assertIn("- /tmp/collection-config.windows.json", override)
         self.assertNotIn("chmod 600 /Users/hive/.ssh/", override)
         self.assertIn("ECHEM_LAN_IP=192.168.110.225", environment)
-        self.assertIn("ECHEM_IMAGE_VERSION=0.7.0-dev.4", environment)
-        self.assertIn("ECHEM_IMAGE_TAG=0.7.0-dev.4-windows", environment)
+        self.assertIn("ECHEM_IMAGE_VERSION=0.7.0-dev.5", environment)
+        self.assertIn("ECHEM_IMAGE_TAG=0.7.0-dev.5-windows", environment)
         self.assertIn("ECHEM_BACKUP_CPU_LIMIT=1.0", environment)
         self.assertIn("ECHEM_BACKUP_STATUS_VOLUME_NAME=", environment)
         self.assertIn("ECHEM_BACKUP_SCHEDULE_ENABLED=1", environment)

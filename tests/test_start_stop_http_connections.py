@@ -1,6 +1,7 @@
 """Exercise real HTTP framing and bounded connections using isolated loopback sockets."""
 from contextlib import contextmanager
 import http.client
+import hashlib
 import json
 from pathlib import Path
 import queue
@@ -227,6 +228,35 @@ class HTTPConnectionTests(unittest.TestCase):
                 self.assertEqual((result.status, json.loads(result.read())), (200, {"ok": True}))
             finally:
                 client.close()
+
+    def test_large_download_progress_can_exceed_socket_write_timeout(self):
+        payload = b"synthetic-download" * (256 * 1024)
+        with running_server() as (server, _, host, _):
+            handler = server.RequestHandlerClass
+            handler.timeout = 0.25
+            setup = handler.setup
+
+            def small_send_buffer(self):
+                setup(self)
+                self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
+
+            handler.setup = small_send_buffer
+            handler.do_GET = lambda self: self.send_bytes_download(payload, "fixture.bin", "application/octet-stream")
+            with socket.create_connection(server.server_address, timeout=3) as sock:
+                sock.sendall(wire_request("GET", "/download", f"{host}:{server.server_port}"))
+                result = http.client.HTTPResponse(sock)
+                result.begin()
+                self.assertEqual(result.status, 200)
+                digest = hashlib.sha256()
+                size = 0
+                started = time.monotonic()
+                while chunk := result.read1(8192):
+                    digest.update(chunk)
+                    size += len(chunk)
+                    time.sleep(0.002)
+                self.assertGreater(time.monotonic() - started, handler.timeout)
+                self.assertEqual(size, len(payload))
+                self.assertEqual(digest.digest(), hashlib.sha256(payload).digest())
 
     def test_completed_keep_alive_connection_expires_when_idle(self):
         with running_server(header_timeout=0.15) as (server, _, host, _), socket.create_connection(server.server_address, timeout=2) as sock:

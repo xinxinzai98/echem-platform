@@ -1727,6 +1727,13 @@ def create_handler(
             self.send_header("Referrer-Policy", "no-referrer")
             self.send_header("X-Frame-Options", "DENY")
 
+        def _write_response_bytes(self, data: bytes) -> None:
+            # sendall's socket timeout covers the whole write, not just stalls.
+            # Bound each write so a progressing large download can exceed it.
+            view = memoryview(data)
+            for offset in range(0, len(view), 64 * 1024):
+                self.wfile.write(view[offset:offset + 64 * 1024])
+
         def send_json(self, payload: Any, status: int = HTTPStatus.OK) -> None:
             raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
             data, compressed = self._compressible_payload(raw)
@@ -1739,7 +1746,7 @@ def create_handler(
                 self.send_header("Vary", "Accept-Encoding")
             self._send_common_headers()
             self.end_headers()
-            self.wfile.write(data)
+            self._write_response_bytes(data)
 
         def send_error_json(self, status: int, message: str) -> None:
             self.close_connection = True
@@ -1762,7 +1769,7 @@ def create_handler(
             )
             self._send_common_headers()
             self.end_headers()
-            self.wfile.write(data)
+            self._write_response_bytes(data)
 
         def send_static(self, relative: str) -> None:
             root = STATIC_ROOT.resolve()
@@ -1821,7 +1828,7 @@ def create_handler(
                 "form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
             )
             self.end_headers()
-            self.wfile.write(data)
+            self._write_response_bytes(data)
 
         def send_file_download(self, path: Path, filename: str) -> None:
             size = path.stat().st_size
@@ -1835,7 +1842,7 @@ def create_handler(
             self.end_headers()
             with path.open("rb") as source:
                 while chunk := source.read(1024 * 1024):
-                    self.wfile.write(chunk)
+                    self._write_response_bytes(chunk)
 
         def send_bytes_download(
             self,
@@ -1854,7 +1861,7 @@ def create_handler(
             self.send_header("Cache-Control", "no-store")
             self._send_common_headers()
             self.end_headers()
-            self.wfile.write(data)
+            self._write_response_bytes(data)
 
         def _require_local_json_request(self) -> None:
             if lan_read_only:

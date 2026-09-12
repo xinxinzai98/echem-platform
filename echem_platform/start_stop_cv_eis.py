@@ -11,6 +11,7 @@ import json
 import math
 import re
 import sqlite3
+import statistics
 import threading
 import unicodedata
 from dataclasses import dataclass, replace
@@ -307,28 +308,62 @@ def extract_high_frequency_rs(eis: EisData) -> dict[str, float | str]:
 
 def return_scan_indices(cv: CvData) -> tuple[int, int]:
     potential = cv.potential_v
-    initial = sum(potential[: min(5, len(potential))]) / min(5, len(potential))
-    minimum = min(potential)
-    excursion = initial - minimum
-    if excursion < 0.05:
-        raise CvEisAnalysisError("CV 未形成可识别的阴极扫描转折。", 422)
-    ordered = sorted(set(potential))
-    typical_step = min(
-        (abs(right - left) for left, right in zip(ordered, ordered[1:]) if right != left),
-        default=1e-4,
-    )
-    tolerance = max(typical_step * 0.75, 1e-6)
-    candidates = [
-        index
-        for index, value in enumerate(potential[:-20])
-        if value <= minimum + tolerance
-    ]
-    if not candidates:
-        raise CvEisAnalysisError("CV 回扫起点无法确认。", 422)
-    start = candidates[-1]
-    if len(potential) - start < 20 or potential[-1] - potential[start] < 0.05:
+    if len(potential) < 20:
         raise CvEisAnalysisError("CV 回扫数据不完整。", 422)
-    return start, len(potential)
+    # Preserve the existing 50 mV excursion and 20-point quality gates. Use
+    # local extrema in acquisition order: different cycles need not reach the
+    # same voltage. Small reversals do not establish another qualified sweep;
+    # all original samples within the selected branch remain unchanged.
+    excursion = 0.05
+    rounding = 4 * max(math.ulp(value) for value in potential)
+    direction = 0
+    low = high = extreme = preceding_high = 0
+    return_start: int | None = None
+    complete: tuple[int, int] | None = None
+    for index, value in enumerate(potential):
+        if direction == 0:
+            if value <= potential[low]:
+                low = index
+            if value >= potential[high]:
+                high = index
+            if potential[high] - value >= excursion - rounding:
+                direction, preceding_high, extreme = -1, high, low
+            elif value - potential[low] >= excursion - rounding:
+                direction, extreme = 1, high
+        elif direction < 0:
+            if value <= potential[extreme]:
+                extreme = index
+            elif value - potential[extreme] >= excursion - rounding:
+                return_start, extreme, direction = extreme, index, 1
+        else:
+            if value >= potential[extreme]:
+                extreme = index
+            elif potential[extreme] - value >= excursion - rounding:
+                if return_start is not None and extreme - return_start + 1 >= 20:
+                    complete = return_start, extreme + 1
+                preceding_high, extreme, direction = extreme, index, -1
+                return_start = None
+
+    if direction > 0 and return_start is not None:
+        # At EOF a rising tail alone does not prove a complete return. Without
+        # a following turn, require it to close the observed cathodic excursion
+        # to its preceding upper potential, within one measured scan increment
+        # (exports can omit the upper endpoint). Do not infer a programmed final
+        # potential from unknown vendor metadata.
+        increments = [
+            right - left
+            for left, right in zip(potential[return_start:extreme], potential[return_start + 1:extreme + 1])
+            if right - left > rounding
+        ]
+        resolution = statistics.median(increments) if increments else 0.0
+        if (
+            extreme - return_start + 1 >= 20
+            and potential[extreme] >= potential[preceding_high] - resolution - rounding
+        ):
+            complete = return_start, extreme + 1
+    if complete is None:
+        raise CvEisAnalysisError("CV 没有可确认的完整阴极回扫；请提供完成回扫的数据。", 422)
+    return complete
 
 
 def _interpolate_crossing(
@@ -424,6 +459,7 @@ def analyze_pair(cv: CvData, eis: EisData | None) -> dict[str, Any]:
         "instrument": cv.instrument,
         "area_cm2": cv.area_cm2,
         "return_scan_points": len(potential),
+        "return_scan_omitted_tail_points": len(cv.potential_v) - end,
         "overpotentials": overpotentials,
         "points": points,
     }
@@ -753,6 +789,12 @@ class CvEisRepositoryAnalyzer:
                     record["warnings"].append(str(exc))
                     records.append(record)
                     continue
+                if analysis["return_scan_omitted_tail_points"]:
+                    record["warnings"].append(
+                        "已选择最后一次完整阴极回扫；其后 {} 个记录点未纳入本次计算。".format(
+                            analysis["return_scan_omitted_tail_points"]
+                        )
+                    )
                 density_basis = analysis["current_basis"] == "density"
                 density_ready = density_basis and bool(analysis["overpotentials"])
                 if eis_source is None:
@@ -803,7 +845,7 @@ class CvEisRepositoryAnalyzer:
                     "points": analysis["points"],
                     "overpotentials": analysis["overpotentials"],
                     "rules": {
-                        "scan": "last_cathodic_turn_return_branch",
+                        "scan": "last_complete_cathodic_return_branch",
                         "ir_fraction": IR_COMPENSATION_FRACTION,
                         "rhe_offset_v": RHE_OFFSET_V,
                         "rs_method": analysis["rs"]["method"] if analysis["rs"] else None,
@@ -836,7 +878,7 @@ class CvEisRepositoryAnalyzer:
             "rules": {
                 "rhe_offset_v": RHE_OFFSET_V,
                 "ir_fraction": IR_COMPENSATION_FRACTION,
-                "scan": "CV 最后一次阴极转折后的回扫",
+                "scan": "CV 最后一次完整阴极回扫",
                 "rs": "EIS 从最高频向低频的首个 Z''=0 交点",
             },
             "counts": {

@@ -21,6 +21,7 @@ from echem_platform.start_stop_cv_eis import (
     extract_high_frequency_rs,
     parse_cv_text,
     parse_eis_text,
+    return_scan_indices,
 )
 
 
@@ -103,6 +104,108 @@ def chi_eis() -> bytes:
 
 
 class StartStopCvEisTests(unittest.TestCase):
+    def cv_from_scans(self, *scans):
+        lines = [f"CSStudioFile,ID_CV,{corrtest_header()}", "E(V)\ti(A/cm²)\tT(s)"]
+        for potential, gain in scans:
+            for value in potential:
+                lines.append(f"{value:.8f}\t{gain * min(0.0, value + 0.9268):.8f}\t{len(lines)}")
+        return parse_cv_text(("\n".join(lines) + "\n").encode())
+
+    def test_last_local_turn_is_selected_when_cycles_reach_different_minima(self):
+        first = [-0.85 - i * 0.005 for i in range(61)]
+        first += [-1.15 + i * 0.005 for i in range(1, 61)]
+        for second_minimum in (-1.14, -1.15, -1.16):
+            with self.subTest(second_minimum=second_minimum):
+                count = round((-0.85 - second_minimum) / 0.005)
+                second = [-0.85 - i * 0.005 for i in range(count + 1)]
+                second += [second_minimum + i * 0.005 for i in range(1, count + 1)]
+                cv = self.cv_from_scans((first, 1), (second, 2))
+                start, end = return_scan_indices(cv)
+                self.assertEqual((start, end), (len(first) + count, len(first) + len(second)))
+                analysis = analyze_pair(cv, parse_eis_text(corrtest_eis()))
+                eta100 = next(row for row in analysis["overpotentials"] if row["target_ma_cm2"] == 100)
+                self.assertAlmostEqual(eta100["raw_eta_mv"], 50.0, places=6)
+
+    def test_complete_branch_ends_before_following_incomplete_scan(self):
+        first = [-0.85 - i * 0.005 for i in range(61)]
+        first += [-1.15 + i * 0.005 for i in range(1, 61)]
+        outward = [-0.85 - i * 0.005 for i in range(1, 59)]
+        partial_return = [-1.14 + i * 0.005 for i in range(1, 31)]
+        for trailing in (outward, outward + partial_return):
+            with self.subTest(trailing_points=len(trailing)):
+                cv = self.cv_from_scans((first, 1), (trailing, 2))
+                self.assertEqual(return_scan_indices(cv), (60, len(first)))
+                result = analyze_pair(cv, parse_eis_text(corrtest_eis()))
+                self.assertEqual(result["return_scan_points"], 61)
+                self.assertEqual(result["return_scan_omitted_tail_points"], len(trailing))
+
+    def test_unclosed_single_return_is_rejected_even_with_many_points_and_50mv_excursion(self):
+        outward = [-0.85 - i * 0.005 for i in range(61)]
+        incomplete = outward + [-1.15 + i * 0.005 for i in range(1, 41)]
+        with self.assertRaisesRegex(CvEisAnalysisError, "完整阴极回扫"):
+            analyze_pair(self.cv_from_scans((incomplete, 1)), parse_eis_text(corrtest_eis()))
+
+    def test_catalog_explains_selection_before_an_incomplete_trailing_scan(self):
+        from echem_platform.start_stop_database import StartStopDatabase
+
+        lines = corrtest_cv().decode().splitlines()
+        for index in range(1, 41):
+            value = -0.85 - index * 0.005
+            lines.append(f"{value:.6f}\t{2 * min(0., value + 0.9268):.8f}\t{20 + index * .1}")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            database = StartStopDatabase(root / "repository.sqlite3")
+            for name, content in (("her-cv.txt", "\n".join(lines).encode()), ("her-eis.txt", corrtest_eis())):
+                source = root / name
+                source.write_bytes(content)
+                database.ingest_staged_file(source, {
+                    "machine_id": "lab", "root_label": "data", "remote_path": f"D:\\sample\\{name}",
+                    "repository_path": f"lab/data/sample/{name}", "size": len(content),
+                    "last_write_ticks": 123, "last_write_utc": "2026-09-01T00:00:00Z", "is_candidate": False,
+                })
+            analyzer = CvEisRepositoryAnalyzer(database)
+            record = analyzer.catalog()["materials"][0]
+            self.assertEqual(record["status"], "ready")
+            self.assertEqual(record["return_scan_points"], 61)
+            self.assertTrue(any("40 个记录点未纳入" in warning for warning in record["warnings"]))
+            self.assertEqual(
+                analyzer.curve(record["analysis_id"])["rules"]["scan"],
+                "last_complete_cathodic_return_branch",
+            )
+
+    def test_return_endpoint_can_omit_one_measured_increment_but_not_a_partial_tail(self):
+        outward = [-0.85 - i * 0.005 for i in range(61)]
+        complete = outward + [-1.15 + i * 0.005 for i in range(1, 60)]
+        self.assertEqual(return_scan_indices(self.cv_from_scans((complete, 1))), (60, len(complete)))
+        with self.assertRaisesRegex(CvEisAnalysisError, "完整阴极回扫"):
+            return_scan_indices(self.cv_from_scans((complete[:-2], 1)))
+
+    def test_plateau_and_small_direction_noise_preserve_the_original_return_samples(self):
+        outward = [-0.85 - i * 0.005 for i in range(61)]
+        outward[20] = outward[19] + 0.001  # isolated reversal during cathodic scan
+        plateau = [-1.15, -1.149, -1.15, -1.15]
+        returning = [-1.15 + i * 0.005 for i in range(1, 61)]
+        returning[20] = returning[19] - 0.001  # isolated reversal during return
+        potential = outward + plateau + returning
+        cv = self.cv_from_scans((potential, 1))
+        expected_start = len(outward) + len(plateau) - 1
+        self.assertEqual(return_scan_indices(cv), (expected_start, len(potential)))
+        result = analyze_pair(cv, None)
+        self.assertEqual(result["return_scan_points"], len(potential) - expected_start)
+        self.assertEqual(
+            [point["raw_e_rhe_v"] for point in result["points"]],
+            [value + 0.9268 for value in cv.potential_v[expected_start:]],
+        )
+
+    def test_initial_anodic_scan_does_not_count_as_a_cathodic_return(self):
+        anodic = [-1.0 + i * 0.005 for i in range(61)]
+        with self.assertRaisesRegex(CvEisAnalysisError, "完整阴极回扫"):
+            return_scan_indices(self.cv_from_scans((anodic, 1)))
+        cathodic = [-0.7 - i * 0.005 for i in range(1, 81)]
+        returning = [-1.1 + i * 0.005 for i in range(1, 81)]
+        cv = self.cv_from_scans((anodic + cathodic + returning, 1))
+        self.assertEqual(return_scan_indices(cv), (len(anodic) + len(cathodic) - 1, len(cv.potential_v)))
+
     def test_corrtest_pair_uses_return_scan_high_frequency_rs_and_90_percent_ir(self):
         cv = parse_cv_text(corrtest_cv())
         eis = parse_eis_text(corrtest_eis())

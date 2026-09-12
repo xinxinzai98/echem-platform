@@ -33,9 +33,11 @@ async function stabilityRequest(url, options = {}) {
 }
 
 function stabilityNumber(value, digits = 3) {
+  if (value === null || value === undefined || String(value).trim() === "") return "—";
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return "—";
-  return parsed.toFixed(digits).replace(/\.?0+$/, "");
+  const text = parsed.toFixed(digits);
+  return digits === 0 ? text : text.replace(/\.?0+$/, "");
 }
 
 function stabilityInteger(value) {

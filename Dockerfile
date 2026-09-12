@@ -95,7 +95,7 @@ COPY --chown=${APP_UID}:${APP_GID} \
     ./scripts/
 
 # Release labels do not invalidate the operating-system and Python dependency layers.
-ARG APP_VERSION=0.7.0-dev.3
+ARG APP_VERSION=0.7.0-dev.4
 ARG VCS_REF=unknown
 ARG BUILD_STATE=unknown
 ARG SOURCE_MANIFEST_SHA=unknown

@@ -16,6 +16,7 @@ import errno
 import fcntl
 import gzip
 import hashlib
+import io
 import ipaddress
 import json
 import math
@@ -23,6 +24,7 @@ import mimetypes
 import os
 import re
 import secrets
+import socket
 import stat
 import sys
 import tempfile
@@ -1466,9 +1468,49 @@ def _public_service_identity() -> dict[str, str]:
     }
 
 
+class _DeadlineSocketReader(io.RawIOBase):
+    """Apply the remaining read budget to every recv, including partial lines."""
+
+    def __init__(self, connection: socket.socket, idle_timeout: float):
+        self.connection = connection
+        self.idle_timeout = idle_timeout
+        self.deadline = time.monotonic() + idle_timeout
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer) -> int:
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("HTTP request read deadline exceeded")
+        self.connection.settimeout(min(self.idle_timeout, remaining))
+        return self.connection.recv_into(buffer)
+
+
 class StartStopHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+    max_connections = 32
+
+    def __init__(self, *args, **kwargs):
+        self._connection_slots = threading.BoundedSemaphore(self.max_connections)
+        super().__init__(*args, **kwargs)
+
+    def process_request(self, request, client_address) -> None:
+        if not self._connection_slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._connection_slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._connection_slots.release()
 
 
 def create_handler(
@@ -1548,6 +1590,31 @@ def create_handler(
     class Handler(BaseHTTPRequestHandler):
         server_version = "StartStopRepository/1.0"
         protocol_version = "HTTP/1.1"
+        timeout = 30.0
+        header_timeout = 15.0
+        json_body_timeout = 30.0
+        upload_body_timeout = 300.0
+
+        def setup(self) -> None:
+            super().setup()
+            self.rfile.close()
+            self._request_reader = _DeadlineSocketReader(self.connection, self.timeout)
+            self.rfile = io.BufferedReader(self._request_reader)
+
+        def handle_one_request(self) -> None:
+            self._request_body_consumed = False
+            self._request_reader.deadline = time.monotonic() + self.header_timeout
+            super().handle_one_request()
+
+        def parse_request(self) -> bool:
+            parsed = super().parse_request()
+            self.connection.settimeout(self.timeout)
+            return parsed
+
+        def _begin_body_read(self, timeout: float) -> None:
+            reader = getattr(self, "_request_reader", None)
+            if reader is not None:
+                reader.deadline = time.monotonic() + timeout
 
         def _accepts_gzip(self) -> bool:
             for value in self.headers.get_all("Accept-Encoding", []):
@@ -1643,6 +1710,18 @@ def create_handler(
             return True
 
         def _send_common_headers(self) -> None:
+            # A response must never leave an unread body on a reusable stream.
+            # GET routes do not consume bodies, even when their response is 200.
+            if not getattr(self, "_request_body_consumed", False) and (
+                self.headers.get_all("Transfer-Encoding", [])
+                or any(value.strip() != "0" for value in self.headers.get_all("Content-Length", []))
+            ):
+                self.close_connection = True
+            if getattr(self, "close_connection", False):
+                self.send_header("Connection", "close")
+            connection = getattr(self, "connection", None)
+            if connection is not None:
+                connection.settimeout(self.timeout)
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Cross-Origin-Resource-Policy", "same-origin")
             self.send_header("Referrer-Policy", "no-referrer")
@@ -1663,9 +1742,11 @@ def create_handler(
             self.wfile.write(data)
 
         def send_error_json(self, status: int, message: str) -> None:
+            self.close_connection = True
             self.send_json({"error": message}, status)
 
         def send_auth_required(self) -> None:
+            self.close_connection = True
             data = json.dumps(
                 {"error": "需要局域网访问认证。"},
                 ensure_ascii=False,
@@ -1876,6 +1957,7 @@ def create_handler(
             )
             temporary = Path(temporary_name)
             try:
+                self._begin_body_read(self.upload_body_timeout)
                 remaining = length
                 with os.fdopen(descriptor, "wb") as output:
                     while remaining:
@@ -1886,6 +1968,7 @@ def create_handler(
                         remaining -= len(chunk)
                     output.flush()
                     os.fsync(output.fileno())
+                self._request_body_consumed = True
                 return workspace.upload_file(
                     temporary,
                     filename=metadata["filename"],
@@ -1894,6 +1977,8 @@ def create_handler(
                     last_modified=metadata["last_modified"],
                     size_bytes=metadata["size"],
                 )
+            except TimeoutError as exc:
+                raise StartStopRequestError("上传内容读取超时，请重新上传。", HTTPStatus.REQUEST_TIMEOUT) from exc
             finally:
                 temporary.unlink(missing_ok=True)
 
@@ -1901,14 +1986,21 @@ def create_handler(
             lengths = self.headers.get_all("Content-Length", [])
             if len(lengths) != 1:
                 raise StartStopRequestError("请求必须且只能声明一个 Content-Length。")
-            try:
-                length = int(lengths[0])
-            except ValueError as exc:
-                raise StartStopRequestError("Content-Length 无效。") from exc
+            if re.fullmatch(r"[0-9]+", lengths[0]) is None:
+                raise StartStopRequestError("Content-Length 无效。")
+            length = int(lengths[0])
             if length <= 0 or length > MAX_JSON_REQUEST_BYTES:
                 raise StartStopRequestError("请求内容为空或过大。", HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+            self._begin_body_read(self.json_body_timeout)
             try:
-                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                raw = self.rfile.read(length)
+            except TimeoutError as exc:
+                raise StartStopRequestError("请求内容读取超时，请重试。", HTTPStatus.REQUEST_TIMEOUT) from exc
+            if len(raw) != length:
+                raise StartStopRequestError("请求内容在 Content-Length 之前意外结束。")
+            self._request_body_consumed = True
+            try:
+                payload = json.loads(raw.decode("utf-8"))
             except UnicodeDecodeError as exc:
                 raise StartStopRequestError("请求 JSON 必须使用 UTF-8。") from exc
             if not isinstance(payload, dict):

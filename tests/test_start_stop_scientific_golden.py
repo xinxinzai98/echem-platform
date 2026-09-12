@@ -114,6 +114,7 @@ def make_standard_cycle(
     minimum_time_s: float = 20.0,
     sample_interval_s: float = 0.1,
     phase_duration_s: float = 30.0,
+    reverse_sample_interval_s: float | None = None,
 ) -> pd.DataFrame:
     cathodic_times = np.arange(0.0, phase_duration_s, sample_interval_s)
     closest = int(np.argmin(np.abs(cathodic_times - 15.0)))
@@ -125,7 +126,7 @@ def make_standard_cycle(
     reverse_times = np.arange(
         phase_duration_s,
         phase_duration_s * 2.0,
-        sample_interval_s,
+        sample_interval_s if reverse_sample_interval_s is None else reverse_sample_interval_s,
     )
     cathodic_potential = np.full(len(cathodic_times), -0.8)
     cathodic_potential[minimum_index] = -1.0
@@ -324,6 +325,109 @@ class ReferenceElectrodeAndEndpointGoldenTests(unittest.TestCase):
                     phase_duration_s,
                     places=9,
                 )
+
+    def test_phase_sampling_controls_endpoints_initial_values_and_final_qa(self):
+        cases = ((0.1, 0.1), (2.0, 2.0), (2.0, 0.1), (0.1, 2.0))
+        for test_type in ("standard_start_stop", "variable_start_stop", "adt_start_stop"):
+            for cathodic_step, reverse_step in cases:
+                with self.subTest(test_type=test_type, steps=(cathodic_step, reverse_step)):
+                    frame = make_standard_cycle(
+                        sample_interval_s=cathodic_step,
+                        reverse_sample_interval_s=reverse_step,
+                    )
+                    cathodic = frame["current_a_cm2"] < 0
+                    frame.loc[cathodic, "potential_hghgo_v"] = (
+                        -0.8 - 0.001 * frame.loc[cathodic, "time_s"]
+                    )
+                    frame.loc[~cathodic, "potential_hghgo_v"] = (
+                        -0.2 + 0.001 * (frame.loc[~cathodic, "time_s"] - 30.0)
+                    )
+                    pairs, profile = ANALYSIS.build_complete_cycle_pairs(frame, test_type)
+                    cycles, overview, _, series, segments, _ = analyze_one_frame(
+                        frame, test_type=test_type
+                    )
+                    self.assertEqual(len(pairs), 1)
+                    self.assertEqual(profile["incomplete_cycle_candidates"], 0)
+                    row = cycles.iloc[0]
+                    for phase, step, base, slope in (
+                        ("cathodic", cathodic_step, -0.8, -0.001),
+                        ("reverse", reverse_step, -0.2, 0.001),
+                    ):
+                        endpoint_elapsed = 28.0 if step == 2.0 else 29.45
+                        initial_elapsed = 2.0 if step == 2.0 else 0.95
+                        self.assertAlmostEqual(row[f"{phase}_sample_interval_s"], step)
+                        self.assertAlmostEqual(row[f"{phase}_endpoint_window_s"], max(1.0, step))
+                        self.assertEqual(row[f"{phase}_last1s_point_count"], 1 if step == 2.0 else 10)
+                        self.assertAlmostEqual(
+                            row[f"{phase}_last1s_median_raw_v"], base + slope * endpoint_elapsed
+                        )
+                        self.assertAlmostEqual(
+                            row[f"{phase}_initial_raw_median_v"], base + slope * initial_elapsed
+                        )
+                        self.assertAlmostEqual(row[f"{phase}_phase_duration_s"], 30.0)
+                        self.assertAlmostEqual(segments.iloc[0][f"median_{phase}_phase_duration_s"], 30.0)
+                        min_phase, min_endpoint = ANALYSIS.sampling_point_requirements(step, test_type)
+                        self.assertEqual(row[f"{phase}_minimum_phase_point_count"], min_phase)
+                        self.assertEqual(row[f"{phase}_minimum_endpoint_point_count"], min_endpoint)
+                    expected_statistic = (
+                        "按各阶段采样间隔计算末端统计"
+                        if cathodic_step != reverse_step
+                        else "阶段末个可用采样点" if cathodic_step == 2.0
+                        else "阶段最后 1 s 中位数"
+                    )
+                    for table in (cycles, segments, series):
+                        self.assertEqual(table.iloc[0]["endpoint_statistic"], expected_statistic)
+                    inventory = pd.DataFrame([{
+                        "included_in_analysis": True,
+                        "sha256": "mixed-sampling-fixture",
+                        "time_decrease_count": 0,
+                        "parse_error_rows": 0,
+                        "sample_interval_s": ANALYSIS.positive_median_step(frame["time_s"].to_numpy()),
+                    }])
+                    materials = [{
+                        "material_display_name": "golden-material",
+                        "material_relative_path": "lab/material",
+                    }]
+                    results = ANALYSIS.run_qa(inventory, materials, series, segments, cycles, overview)
+                    self.assertTrue(all(result["passed"] for result in results), results)
+                    if cathodic_step == reverse_step:
+                        # Old uniform-sampling CSVs have only the shared quality fields.
+                        legacy = cycles.drop(columns=[
+                            name for name in cycles if name.startswith(("cathodic_minimum_", "reverse_minimum_"))
+                        ])
+                        results = ANALYSIS.run_qa(inventory, materials, series, segments, legacy, overview)
+                        self.assertTrue(all(result["passed"] for result in results), results)
+
+    def test_mixed_sampling_incomplete_tail_is_excluded_from_statistics(self):
+        for cathodic_step, reverse_step in ((2.0, 0.1), (0.1, 2.0)):
+            for shortened_phase in ("cathodic", "reverse"):
+                with self.subTest(steps=(cathodic_step, reverse_step), phase=shortened_phase):
+                    complete = make_standard_cycle(
+                        sample_interval_s=cathodic_step,
+                        reverse_sample_interval_s=reverse_step,
+                    )
+                    incomplete = complete.copy()
+                    if shortened_phase == "cathodic":
+                        incomplete = incomplete[
+                            (incomplete["time_s"] < 26.0) | (incomplete["time_s"] >= 30.0)
+                        ].copy()
+                        incomplete.loc[incomplete["time_s"] >= 30.0, "time_s"] -= 4.0
+                    else:
+                        incomplete = incomplete[incomplete["time_s"] < 56.0].copy()
+                    incomplete["time_s"] += 60.0
+                    combined = pd.concat([complete, incomplete], ignore_index=True)
+                    pairs, profile = ANALYSIS.build_complete_cycle_pairs(combined, "standard_start_stop")
+                    cycles, _, _, _, segments, _ = analyze_one_frame(combined, test_type="standard_start_stop")
+                    expected, *_ = analyze_one_frame(complete, test_type="standard_start_stop")
+                    self.assertEqual(len(pairs), 1)
+                    self.assertEqual(profile["incomplete_cycle_candidates"], 1)
+                    self.assertEqual(segments.iloc[0]["complete_cycles"], 1)
+                    self.assertEqual(len(cycles), 1)
+                    for column in (
+                        "cathodic_last1s_median_raw_v", "reverse_last1s_median_raw_v",
+                        "cathodic_initial_raw_median_v", "reverse_initial_raw_median_v",
+                    ):
+                        self.assertAlmostEqual(cycles.iloc[0][column], expected.iloc[0][column])
 
     def test_standard_ten_minute_work_step_passes_final_scientific_qa(self):
         frame = make_standard_cycle(

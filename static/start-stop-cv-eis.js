@@ -273,10 +273,10 @@ async function saveCvEisReview(event) {
         instrument_ir_applied: ir === "" ? null : ir === "true",
       }),
     });
-    await loadCvEisWorkspace();
-    const refreshed = cvEisState.catalog.materials.find(item => item.cv_source_version_id === record.cv_source_version_id);
-    if (refreshed) await selectCvEisRecord(refreshed.analysis_id);
-    setCvEisNotice("确认已保存，当前曲线已按确认结果更新。", "success");
+    const refreshed = await loadCvEisWorkspace({ preferredCvSourceVersionId: record.cv_source_version_id });
+    setCvEisNotice(refreshed
+      ? "确认已保存，当前曲线已按确认结果更新。"
+      : "确认已保存，但当前曲线未能刷新；请重新读取数据库后核对结果。", refreshed ? "success" : "warning");
   } catch (error) {
     cvEisElements.cvEisReviewState.textContent = error.message;
   } finally {
@@ -337,8 +337,23 @@ function updateCvEisSelectionHeader(record) {
   if (!record.ir_correction_available) cvEisElements.showCvRaw.checked = true;
 }
 
+function clearCvEisSelection() {
+  cvEisState.requestId = (cvEisState.requestId || 0) + 1;
+  cvEisState.requestController?.abort();
+  cvEisState.selectedId = "";
+  cvEisState.curve = null;
+  cvEisState.chartView = null;
+  cvEisState.baseDomain = null;
+  cvEisState.loadingCurve = false;
+  cvEisElements.cvEisTooltip.hidden = true;
+  updateCvEisSelectionHeader(null);
+  renderCvEisEvidence(null);
+  renderCvEisOverpotentials(null);
+  renderCvEisChart();
+}
+
 async function selectCvEisRecord(analysisId) {
-  if (!analysisId) return;
+  if (!analysisId) return false;
   const requestId = (cvEisState.requestId || 0) + 1;
   cvEisState.requestId = requestId;
   cvEisState.requestController?.abort();
@@ -347,6 +362,8 @@ async function selectCvEisRecord(analysisId) {
   cvEisState.selectedId = analysisId;
   cvEisState.curve = null;
   cvEisState.chartView = null;
+  cvEisState.baseDomain = null;
+  cvEisElements.cvEisTooltip.hidden = true;
   renderCvEisMaterialList();
   const record = currentCvEisRecord();
   updateCvEisSelectionHeader(record);
@@ -358,14 +375,16 @@ async function selectCvEisRecord(analysisId) {
   cvEisElements.cvEisChartEmpty.textContent = "正在读取并校验 CV 曲线…";
   try {
     const curve = await cvEisRequest(`/api/start-stop/cv-eis/curve?analysis_id=${encodeURIComponent(analysisId)}`, {signal:controller.signal});
-    if (cvEisState.requestId !== requestId) return;
+    if (cvEisState.requestId !== requestId) return false;
     cvEisState.curve = curve;
     cvEisState.chartView = null;
     renderCvEisChart();
+    return true;
   } catch (error) {
-    if (cvEisState.requestId !== requestId || controller.signal.aborted) return;
+    if (cvEisState.requestId !== requestId || controller.signal.aborted) return false;
     setCvEisNotice(error.message, "error");
     cvEisElements.cvEisChartEmpty.textContent = "无法读取该材料的 CV 曲线";
+    return false;
   } finally {
     if (cvEisState.requestId === requestId) cvEisState.loadingCurve = false;
   }
@@ -613,10 +632,16 @@ function closeCvEisContextMenu() {
   cvEisElements.cvEisContextMenu.hidden = true;
 }
 
-async function loadCvEisWorkspace() {
+async function loadCvEisWorkspace({ preferredCvSourceVersionId = null } = {}) {
   cvEisElements.cvEisMaterialList.setAttribute("aria-busy", "true");
   cvEisElements.reloadCvEis.disabled = true;
   setCvEisNotice();
+  cvEisState.catalog = null;
+  clearCvEisSelection();
+  cvEisElements.cvEisMaterialList.replaceChildren(cvEisElement("div", "start-stop-loading", "正在读取数据库中的 CV/EIS…"));
+  for (const key of ["cvEisCvCount", "cvEisEisCount", "cvEisPairedCount", "cvEisReadyCount", "cvEisAttentionCount"]) {
+    cvEisElements[key].textContent = "—";
+  }
   try {
     const [status, catalog, materials] = await Promise.all([
       cvEisRequest("/api/start-stop/status"),
@@ -631,18 +656,26 @@ async function loadCvEisWorkspace() {
     renderCvEisMetrics();
     cvEisElements.sidebarCvEisState.textContent = `${formatCvEisInteger(catalog.counts?.ready)} 项可计算过电位`;
     renderCvEisMaterialList();
-    const preferred = (catalog.materials || []).find((item) => recordIsFavorite(item) && item.status === "ready")
-      || (catalog.materials || []).find((item) => item.status === "ready")
-      || (catalog.materials || []).find((item) => item.status !== "invalid");
-    if (preferred) await selectCvEisRecord(preferred.analysis_id);
-    else updateCvEisSelectionHeader(null);
+    const preferred = preferredCvSourceVersionId !== null
+      ? (catalog.materials || []).find((item) => item.cv_source_version_id === preferredCvSourceVersionId && item.status !== "invalid")
+      : (catalog.materials || []).find((item) => recordIsFavorite(item) && item.status === "ready")
+        || (catalog.materials || []).find((item) => item.status === "ready")
+        || (catalog.materials || []).find((item) => item.status !== "invalid");
+    if (preferred) {
+      if (!(await selectCvEisRecord(preferred.analysis_id))) return false;
+    } else if (preferredCvSourceVersionId !== null) {
+      setCvEisNotice("未找到刚确认的 CV 原始版本，请重新读取数据库后核对。", "error");
+      return false;
+    }
     if (catalog.counts?.attention) {
       setCvEisNotice(`${formatCvEisInteger(catalog.counts.attention)} 项未通过全部计算门槛；页面保留原因，不会跨材料借用 Rs 或强制计算。`);
     }
+    return true;
   } catch (error) {
     setCvEisNotice(error.message, "error");
     cvEisElements.sidebarCvEisState.textContent = "CV/EIS 分析不可用";
     cvEisElements.cvEisMaterialList.replaceChildren(cvEisElement("div", "start-stop-loading", "无法读取 CV/EIS 数据"));
+    return false;
   } finally {
     cvEisElements.reloadCvEis.disabled = false;
     cvEisElements.cvEisMaterialList.setAttribute("aria-busy", "false");

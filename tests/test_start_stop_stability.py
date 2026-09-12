@@ -148,6 +148,10 @@ class FakeDatabase:
                     "category": "反向启停" if mode == "start_stop" else "恒流长时运行",
                     "label": "−300/+30 mA" if mode == "start_stop" else "−500 mA",
                     "key": f"key-{source_version_id}",
+                    "steps": [
+                        {"current_ma": current, "duration_s": 20.0}
+                        for current in levels
+                    ],
                 },
                 "protocol_current_levels_ma": levels,
                 "classification_method": "embedded_protocol",
@@ -298,6 +302,8 @@ class StabilityRepositoryAnalyzerTests(unittest.TestCase):
         database.contents[11] = out.getvalue().encode()
         database.rows = [database.source(11,"lanbts_start_stop","start_stop","large-full",[-300,30])]
         database.rows[0]["metadata"].update(record_count=cycle_count*600,exported_point_count=cycle_count*600)
+        for step in database.rows[0]["metadata"]["protocol"]["steps"]:
+            step["duration_s"] = 30.0
         analyzer = StabilityRepositoryAnalyzer(database)
         identifier = analyzer.catalog()["series"][0]["series_id"]
         sparse = analyzer.chart(series_ids=[identifier],analysis_mode="start_stop",metric="minimum_time",max_points=100)["series"][0]

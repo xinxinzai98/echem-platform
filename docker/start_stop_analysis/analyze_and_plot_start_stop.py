@@ -1739,40 +1739,35 @@ def analyze_all_series(
                 reverse_values = potentials_raw[reverse_start:reverse_end]
                 cathodic_currents = currents[cathodic_start:cathodic_end]
                 reverse_currents = currents[reverse_start:reverse_end]
+                cathodic_step_s = positive_median_step(cathodic_elapsed)
+                reverse_step_s = positive_median_step(reverse_elapsed)
                 cathodic_duration_s = float(
-                    cathodic_elapsed[-1]
-                    + positive_median_step(cathodic_elapsed)
+                    cathodic_elapsed[-1] + cathodic_step_s
                 )
                 reverse_duration_s = float(
-                    reverse_elapsed[-1] + positive_median_step(reverse_elapsed)
+                    reverse_elapsed[-1] + reverse_step_s
                 )
                 cathodic_last_mask, cathodic_endpoint_window_s = (
                     phase_endpoint_mask(
                         cathodic_elapsed,
                         cathodic_duration_s,
-                        sample_interval_s,
+                        cathodic_step_s,
                     )
                 )
                 reverse_last_mask, reverse_endpoint_window_s = (
                     phase_endpoint_mask(
                         reverse_elapsed,
                         reverse_duration_s,
-                        sample_interval_s,
+                        reverse_step_s,
                     )
                 )
                 cathodic_phase_mask = np.ones(
                     len(cathodic_elapsed), dtype=bool
                 )
-                if sample_interval_s >= STEADY_WINDOW_S:
+                if cathodic_step_s >= STEADY_WINDOW_S:
                     cathodic_initial_mask = np.isclose(
                         cathodic_elapsed,
-                        min(sample_interval_s, cathodic_elapsed[-1]),
-                        rtol=0.0,
-                        atol=TIME_ATOL_S,
-                    )
-                    reverse_initial_mask = np.isclose(
-                        reverse_elapsed,
-                        min(sample_interval_s, reverse_elapsed[-1]),
+                        min(cathodic_step_s, cathodic_elapsed[-1]),
                         rtol=0.0,
                         atol=TIME_ATOL_S,
                     )
@@ -1781,12 +1776,26 @@ def analyze_all_series(
                         (cathodic_elapsed >= 0.5)
                         & (cathodic_elapsed < 1.5)
                     )
+                if reverse_step_s >= STEADY_WINDOW_S:
+                    reverse_initial_mask = np.isclose(
+                        reverse_elapsed,
+                        min(reverse_step_s, reverse_elapsed[-1]),
+                        rtol=0.0,
+                        atol=TIME_ATOL_S,
+                    )
+                else:
                     reverse_initial_mask = (
                         (reverse_elapsed >= 0.5)
                         & (reverse_elapsed < 1.5)
                     )
                 cathodic_last_values = cathodic_values[cathodic_last_mask]
                 reverse_last_values = reverse_values[reverse_last_mask]
+                if not len(cathodic_last_values) or not len(reverse_last_values):
+                    raise RuntimeError(
+                        "{} 第 {} 循环的阶段末端窗口为空，无法计算统计量".format(
+                            record["relative_path"], local_cycle
+                        )
+                    )
                 cathodic_phase_values = cathodic_values[cathodic_phase_mask]
                 cathodic_phase_elapsed = cathodic_elapsed[cathodic_phase_mask]
 
@@ -1832,6 +1841,22 @@ def analyze_all_series(
                         record["test_type"],
                     )
                 )
+                cathodic_min_phase_points, cathodic_min_endpoint_points = (
+                    sampling_point_requirements(cathodic_step_s, record["test_type"])
+                )
+                reverse_min_phase_points, reverse_min_endpoint_points = (
+                    sampling_point_requirements(reverse_step_s, record["test_type"])
+                )
+                cathodic_endpoint_statistic = (
+                    "阶段末个可用采样点"
+                    if cathodic_step_s >= STEADY_WINDOW_S
+                    else "阶段最后 1 s 中位数"
+                )
+                reverse_endpoint_statistic = (
+                    "阶段末个可用采样点"
+                    if reverse_step_s >= STEADY_WINDOW_S
+                    else "阶段最后 1 s 中位数"
+                )
 
                 series_cycle_rows.append(
                     {
@@ -1867,12 +1892,22 @@ def analyze_all_series(
                             cathodic_duration_s + reverse_duration_s
                         ),
                         "sample_interval_s": sample_interval_s,
+                        # Keep the legacy file-level fields for existing exports;
+                        # phase-specific fields below are the actual quality gates.
                         "minimum_phase_point_count": minimum_phase_points,
                         "minimum_endpoint_point_count": minimum_endpoint_points,
+                        "cathodic_sample_interval_s": cathodic_step_s,
+                        "reverse_sample_interval_s": reverse_step_s,
+                        "cathodic_minimum_phase_point_count": cathodic_min_phase_points,
+                        "reverse_minimum_phase_point_count": reverse_min_phase_points,
+                        "cathodic_minimum_endpoint_point_count": cathodic_min_endpoint_points,
+                        "reverse_minimum_endpoint_point_count": reverse_min_endpoint_points,
+                        "cathodic_endpoint_statistic": cathodic_endpoint_statistic,
+                        "reverse_endpoint_statistic": reverse_endpoint_statistic,
                         "endpoint_statistic": (
-                            "阶段末个可用采样点"
-                            if sample_interval_s >= STEADY_WINDOW_S
-                            else "阶段最后 1 s 中位数"
+                            cathodic_endpoint_statistic
+                            if cathodic_endpoint_statistic == reverse_endpoint_statistic
+                            else "按各阶段采样间隔计算末端统计"
                         ),
                         "cathodic_endpoint_window_s": (
                             cathodic_endpoint_window_s
@@ -2019,7 +2054,7 @@ def analyze_all_series(
                             [
                                 times[cathodic_end - 1]
                                 - times[cathodic_start]
-                                + sample_interval_s
+                                + positive_median_step(times[cathodic_start:cathodic_end])
                                 for (
                                     cathodic_start,
                                     cathodic_end,
@@ -2036,7 +2071,7 @@ def analyze_all_series(
                             [
                                 times[reverse_end - 1]
                                 - times[reverse_start]
-                                + sample_interval_s
+                                + positive_median_step(times[reverse_start:reverse_end])
                                 for (
                                     _,
                                     _,
@@ -2062,9 +2097,11 @@ def analyze_all_series(
                     "file_name_kind": record["file_name_kind"],
                     "source_program_type": record["source_program_type"],
                     "endpoint_statistic": (
-                        "阶段末个可用采样点"
-                        if sample_interval_s >= STEADY_WINDOW_S
-                        else "阶段最后 1 s 中位数"
+                        "；".join(dict.fromkeys(
+                            row["endpoint_statistic"]
+                            for row in series_cycle_rows[-len(pairs):]
+                        ))
+                        if pairs else "无完整循环"
                     ),
                 }
             )
@@ -2137,10 +2174,7 @@ def analyze_all_series(
                     cycle_frame["recovery_current_median_a_cm2"].median()
                 ),
                 "endpoint_statistic": (
-                    "阶段末个可用采样点"
-                    if float(cycle_frame["sample_interval_s"].median())
-                    >= STEADY_WINDOW_S
-                    else "阶段最后 1 s 中位数"
+                    "；".join(cycle_frame["endpoint_statistic"].unique())
                 ),
                 "is_primary_series": spec["is_primary_series"],
                 "is_special_series": spec["is_special_series"],
@@ -5346,19 +5380,31 @@ def run_qa(
             bool(
                 (
                     square_wave_cycles["cathodic_last1s_point_count"]
-                    >= square_wave_cycles["minimum_endpoint_point_count"]
+                    >= square_wave_cycles.get(
+                        "cathodic_minimum_endpoint_point_count",
+                        square_wave_cycles["minimum_endpoint_point_count"],
+                    )
                 ).all()
                 and (
                     square_wave_cycles["cathodic_phase_point_count"]
-                    >= square_wave_cycles["minimum_phase_point_count"]
+                    >= square_wave_cycles.get(
+                        "cathodic_minimum_phase_point_count",
+                        square_wave_cycles["minimum_phase_point_count"],
+                    )
                 ).all()
                 and (
                     square_wave_cycles["reverse_last1s_point_count"]
-                    >= square_wave_cycles["minimum_endpoint_point_count"]
+                    >= square_wave_cycles.get(
+                        "reverse_minimum_endpoint_point_count",
+                        square_wave_cycles["minimum_endpoint_point_count"],
+                    )
                 ).all()
                 and (
                     square_wave_cycles["reverse_phase_point_count"]
-                    >= square_wave_cycles["minimum_phase_point_count"]
+                    >= square_wave_cycles.get(
+                        "reverse_minimum_phase_point_count",
+                        square_wave_cycles["minimum_phase_point_count"],
+                    )
                 ).all()
             ),
             "方波启停每循环都有足够的全段与最后 1 s 采样点",
@@ -5368,19 +5414,31 @@ def run_qa(
             bool(
                 (
                     adt_cycles["cathodic_last1s_point_count"]
-                    >= adt_cycles["minimum_endpoint_point_count"]
+                    >= adt_cycles.get(
+                        "cathodic_minimum_endpoint_point_count",
+                        adt_cycles["minimum_endpoint_point_count"],
+                    )
                 ).all()
                 and (
                     adt_cycles["cathodic_phase_point_count"]
-                    >= adt_cycles["minimum_phase_point_count"]
+                    >= adt_cycles.get(
+                        "cathodic_minimum_phase_point_count",
+                        adt_cycles["minimum_phase_point_count"],
+                    )
                 ).all()
                 and (
                     adt_cycles["reverse_last1s_point_count"]
-                    >= adt_cycles["minimum_endpoint_point_count"]
+                    >= adt_cycles.get(
+                        "reverse_minimum_endpoint_point_count",
+                        adt_cycles["minimum_endpoint_point_count"],
+                    )
                 ).all()
                 and (
                     adt_cycles["reverse_phase_point_count"]
-                    >= adt_cycles["minimum_phase_point_count"]
+                    >= adt_cycles.get(
+                        "reverse_minimum_phase_point_count",
+                        adt_cycles["minimum_phase_point_count"],
+                    )
                 ).all()
             ),
             "ADT 每循环都有足够的全段采样点和阶段末端采样点",

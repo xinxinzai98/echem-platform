@@ -122,7 +122,9 @@ def _closed_live_cycles(rows, classification, completed):
         if index == len(steps)-1 and not completed:
             return result, number
         canonical = [dict(row, cycle_id=number) for row in (*pending, *step)]
-        computed = _start_stop_cycles(canonical, {'metadata':classification})
+        # The pair is closed by the next SDK step or the instrument's completed
+        # state above; preserve that evidence when passing only this pair.
+        computed = _start_stop_cycles(canonical, {'metadata':classification}, last_cycle_closed=True)
         if computed:
             result.append(computed[0])
         pending = None

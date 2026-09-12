@@ -304,6 +304,10 @@ function liveItemsForActiveStep() {
   ));
 }
 
+function liveNumber(value) {
+  return value === null || value === undefined || String(value).trim() === "" ? NaN : Number(value);
+}
+
 function plottableLivePreviewItems(payload) {
   const raw = Array.isArray(payload?.preview?.items) ? payload.preview.items : [];
   const seen = new Set();
@@ -315,9 +319,9 @@ function plottableLivePreviewItems(payload) {
     if (!sourceId || seen.has(sourceId) || !liveWorkStepKey(item) || (!overview.length && !cycles.length)) return false;
     seen.add(sourceId);
     return overview.some((point) => (
-      Number.isFinite(Number(point?.continuous_time_h))
-      && Number.isFinite(Number(point?.potential_raw_v))
-    )) || cycles.some((point) => Number.isFinite(Number(point?.cycle)));
+      Number.isFinite(liveNumber(point?.continuous_time_h))
+      && Number.isFinite(liveNumber(point?.potential_raw_v))
+    )) || cycles.some((point) => Number.isFinite(liveNumber(point?.cycle)));
   });
 }
 
@@ -1104,16 +1108,16 @@ function liveChartPoints(item, variant, maxPoints) {
     : Array.isArray(analysis.cycle_points) ? analysis.cycle_points : [];
   const points = rows.map((row) => {
     const x = overview
-      ? Number(row?.continuous_time_h)
+      ? liveNumber(row?.continuous_time_h)
       : state.xAxis === "time"
-        ? Number(state.metric === "reverse" ? row?.reverse_endpoint_time_h : row?.cathodic_endpoint_time_h)
-        : Number(row?.cycle);
+        ? liveNumber(state.metric === "reverse" ? row?.reverse_endpoint_time_h : row?.cathodic_endpoint_time_h)
+        : liveNumber(row?.cycle);
     return {
       x,
-      y: Number(row?.[field]),
-      cycle: Number(row?.cycle),
+      y: liveNumber(row?.[field]),
+      cycle: liveNumber(row?.cycle),
       status: String(row?.status || ""),
-      current_a_cm2: Number(
+      current_a_cm2: liveNumber(
         overview
           ? row?.current_a_cm2
           : state.metric === "reverse"
@@ -1121,7 +1125,7 @@ function liveChartPoints(item, variant, maxPoints) {
             : row?.cathodic_current_median_a_cm2,
       ),
       source_file: String(row?.source_file || item?.file_name || ""),
-      segment_index: Number(row?.segment_index),
+      segment_index: liveNumber(row?.segment_index),
       captured_at_utc: String(item?.captured_at_utc || ""),
     };
   }).filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
@@ -1149,6 +1153,7 @@ function emptyLiveChartPayload() {
 function mergeLiveComparisonChart(payload, selectedLiveIds, maxPoints) {
   const merged = {
     ...payload,
+    live_water_unavailable_count: 0,
     series: (payload?.series || []).map((item) => ({
       ...item,
       points: [...(item.points || [])],
@@ -1169,7 +1174,11 @@ function mergeLiveComparisonChart(payload, selectedLiveIds, maxPoints) {
         ));
       }
     }
-    const variants = isAnomalyMode()
+    const waterAvailable = analysis.water_compensation_available === true;
+    if (!isAnomalyMode() && state.mode !== "raw" && !waterAvailable) {
+      merged.live_water_unavailable_count += 1;
+    }
+    const variants = isAnomalyMode() || !waterAvailable
       ? ["raw"]
       : state.mode === "compare" ? ["raw", "water"] : [state.mode];
     for (const variant of variants) {
@@ -2004,6 +2013,9 @@ function updateChartHeading() {
   if (workStep) subtitle = `${workStep.work_step_label} · ${subtitle}`;
   const liveCount = liveItemsForActiveStep().length;
   if (liveCount) subtitle = `${subtitle} · 已按正式规则接续 ${liveCount} 条正在测试曲线`;
+  if (state.chartData?.live_water_unavailable_count) {
+    subtitle += ` · ${state.chartData.live_water_unavailable_count} 条实时快照缺少水位补偿模型，已保留原始曲线`;
+  }
   if (isAnomalyMode() && state.anomalyMaterialKey) {
     const material = state.materials.find((item) => item.key === state.anomalyMaterialKey);
     if (material) subtitle = `${material.plot_name} · ${subtitle}`;

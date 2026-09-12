@@ -31,6 +31,33 @@ class LanbtsLiveTests(unittest.TestCase):
         self.assertEqual(live['connection']['complete_records'],len(rows))
         self.assertEqual(live['cycles'][0],completed['cycles'][0])
 
+    def test_unknown_duration_requires_explicit_closure_not_source_metadata(self):
+        from echem_platform.start_stop_stability import _read_rows, _start_stop_cycles
+        rows = _read_rows(csv_bytes(start_stop_rows()[:40]))
+        source = {'metadata': {**self.classification, 'last_cycle_closed': True, 'completed': True}}
+        self.assertEqual(_start_stop_cycles(rows, source), [])
+        closed = _start_stop_cycles(rows, source, last_cycle_closed=True)
+        self.assertEqual(len(closed), 1)
+        self.assertEqual(closed[0]['status'], 'abnormal')
+
+    def test_instrument_completion_cannot_rescue_single_point_phases(self):
+        rows = start_stop_rows()[:40] + [start_stop_rows()[40], start_stop_rows()[60]]
+        result = analyze_snapshot(csv_bytes(rows), self.metadata(len(rows)),
+                                  dict(self.channel, status='completed'), self.classification)
+        self.assertEqual(result['summary']['complete_cycles'], 1)
+        self.assertEqual(result['connection']['complete_records'], 42)
+
+    def test_instrument_completion_still_checks_identified_protocol_duration(self):
+        rows = start_stop_rows()[:70]
+        classification = {**self.classification, 'protocol': {'steps': [
+            {'current_ma': -300.0, 'duration_s': 20.0},
+            {'current_ma': 30.0, 'duration_s': 20.0},
+        ]}}
+        result = analyze_snapshot(csv_bytes(rows), self.metadata(len(rows)),
+                                  dict(self.channel, status='completed'), classification)
+        self.assertEqual(result['summary']['complete_cycles'], 1)
+        self.assertEqual(result['connection']['complete_records'], 70)
+
     def test_refresh_replaces_same_run_and_does_not_double_count(self):
         rows=start_stop_rows()
         first=analyze_snapshot(csv_bytes(rows),self.metadata(len(rows)),self.channel,self.classification)

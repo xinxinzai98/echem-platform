@@ -7,7 +7,8 @@ import json
 import math
 import statistics
 import threading
-from collections import OrderedDict, defaultdict
+from collections import OrderedDict
+from itertools import groupby
 from typing import Any, Iterable, Mapping, Sequence
 
 
@@ -20,7 +21,7 @@ class StabilityAnalysisError(ValueError):
 MAX_SERIES = 16
 MAX_POINTS = 20_000
 DEFAULT_POINTS = 6000
-STATISTICS_VERSION = "lanbts-stability-statistics/2-full"
+STATISTICS_VERSION = "lanbts-stability-statistics/3-complete-steps"
 STATISTICS_CACHE_BYTES = 64 * 1024 * 1024
 MAX_SOURCE_BYTES = 128 * 1024 * 1024
 MAX_TOTAL_BYTES = 256 * 1024 * 1024
@@ -243,6 +244,8 @@ def _protocol_levels(source: Mapping[str, Any]) -> list[float]:
 def _start_stop_cycles(
     rows: Sequence[dict[str, Any]],
     source: Mapping[str, Any],
+    *,
+    last_cycle_closed: bool = False,
 ) -> list[dict[str, Any]]:
     levels = _protocol_levels(source)
     if len(levels) < 2:
@@ -252,25 +255,76 @@ def _start_stop_cycles(
         return []
     stress_level = levels[0] if levels[0] < 0 else max(levels, key=abs)
     recovery_level = max(levels, key=lambda value: (value != stress_level, value))
-    grouped: dict[int, list[dict[str, Any]]] = defaultdict(list)
-    for row in rows:
-        cycle = row.get("cycle_id")
-        if isinstance(cycle, int):
-            grouped[cycle].append(row)
+
+    def phase(current: float) -> str:
+        return "stress" if abs(current - stress_level) <= abs(current - recovery_level) else "recovery"
+
+    metadata = source.get("metadata", {})
+    protocol = metadata.get("protocol", {}) if isinstance(metadata, Mapping) else {}
+    steps = protocol.get("steps", []) if isinstance(protocol, Mapping) else []
+    # Embedded bipolar protocols put optional conditioning steps before the
+    # final repeating pair. SDK step_id may reset per cycle or keep increasing.
+    expected: list[tuple[str, float | None]] = []
+    if isinstance(steps, list) and len(steps) >= 2:
+        for step in steps[-2:]:
+            if not isinstance(step, Mapping):
+                break
+            current = _safe_float(step.get("current_ma"))
+            if current is None:
+                break
+            expected.append((phase(current), _safe_float(step.get("duration_s"))))
+    if len(expected) != 2 or {item[0] for item in expected} != {"stress", "recovery"}:
+        expected = []
+
+    grouped = [(cycle, list(group)) for cycle, group in groupby(rows, key=lambda row: row.get("cycle_id"))]
     result: list[dict[str, Any]] = []
-    for cycle in sorted(grouped):
-        cycle_rows = grouped[cycle]
-        stress_rows: list[dict[str, Any]] = []
-        recovery_rows: list[dict[str, Any]] = []
-        for row in cycle_rows:
-            if abs(row["current_ma"] - stress_level) <= abs(
-                row["current_ma"] - recovery_level
-            ):
-                stress_rows.append(row)
-            else:
-                recovery_rows.append(row)
-        if not stress_rows or not recovery_rows:
+    for cycle_index, (cycle, cycle_rows) in enumerate(grouped):
+        if not isinstance(cycle, int):
             continue
+        segments = [(key, list(group)) for key, group in groupby(
+            cycle_rows, key=lambda row: (row.get("step_id"), phase(row["current_ma"]))
+        )]
+        if (
+            len(segments) != 2
+            or any(not isinstance(key[0], int) for key, _ in segments)
+            or segments[0][0][0] == segments[1][0][0]
+            or {key[1] for key, _ in segments} != {"stress", "recovery"}
+            or (expected and [key[1] for key, _ in segments] != [item[0] for item in expected])
+        ):
+            continue
+        complete = True
+        for index, (key, segment) in enumerate(segments):
+            intervals = [right["time_s"] - left["time_s"] for left, right in zip(segment, segment[1:])
+                         if right["time_s"] > left["time_s"]]
+            if not intervals:
+                complete = False
+                break
+            duration = expected[index][1] if expected else None
+            if duration is not None and duration > 0:
+                # A phase's own interval covers its final sampling bin. One
+                # point cannot establish an interval, even with a known timer.
+                covered = segment[-1]["time_s"] - segment[0]["time_s"] + statistics.median(intervals)
+                if covered < duration - max(1e-9, duration * 1e-9):
+                    complete = False
+                    break
+            else:
+                # Without an identified timer only an observed next SDK step
+                # or explicit caller evidence proves closure. Source metadata
+                # cannot claim closure for an otherwise unknown EOF tail.
+                following = segments[1][1][0] if index == 0 else (
+                    grouped[cycle_index + 1][1][0] if cycle_index + 1 < len(grouped) else None
+                )
+                externally_closed = last_cycle_closed is True and index == 1 and cycle_index == len(grouped) - 1
+                if not externally_closed and (
+                    following is None or not isinstance(following.get("step_id"), int)
+                    or (following.get("cycle_id"), following["step_id"]) == (cycle, key[0])
+                ):
+                    complete = False
+                    break
+        if not complete:
+            continue
+        phase_rows = {key[1]: segment for key, segment in segments}
+        stress_rows, recovery_rows = phase_rows["stress"], phase_rows["recovery"]
         stress_endpoint = _median_last_window(stress_rows)
         recovery_endpoint = _median_last_window(recovery_rows)
         if stress_endpoint is None or recovery_endpoint is None:
@@ -352,7 +406,8 @@ class StabilityRepositoryAnalyzer:
         """Compute once per immutable data+rules identity; cache only bounded previews and statistics."""
         key = json.dumps([
             public["sha256"], public["size_bytes"], public["analysis_mode"],
-            public["downsample_stride"], _protocol_levels(raw_source), STATISTICS_VERSION,
+            public["downsample_stride"], _protocol_levels(raw_source),
+            raw_source.get("metadata", {}).get("protocol"), STATISTICS_VERSION,
         ], separators=(",", ":"))
         with self._statistics_lock:
             cached = self._statistics_cache.pop(key, None)

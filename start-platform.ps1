@@ -64,7 +64,7 @@ for ($attempt = 0; $attempt -lt 40; $attempt++) {
     try {
         $status = Invoke-RestMethod -Uri "$uri/api/status" -Method Get -TimeoutSec 2
         if ($status.loopback_only -and -not $status.serial_access -and
-            -not $status.instrument_control) {
+            $status.control_stage -eq 'ocp_60s_preflight') {
             $healthy = $true
             break
         }
@@ -96,6 +96,7 @@ if ($AcceptanceOnly) {
             LoopbackOnly = $status.loopback_only
             SerialAccess = $status.serial_access
             InstrumentControl = $status.instrument_control
+            ControlStage = $status.control_stage
         } | ConvertTo-Json -Depth 3)
     )
     exit 0

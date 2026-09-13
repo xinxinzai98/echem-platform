@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "max_file_bytes": 52428800,
+  "max_points_per_curve": 2000,
+  "cases": [
+    {
+      "id": "chi-cv-text-01",
+      "file": "chi/cv-export.txt",
+      "expected": {
+        "status": "parsed",
+        "instrument": "CHI",
+        "technique": "CV",
+        "parser_id": "chi.delimited_text",
+        "min_points": 10
+      }
+    },
+    {
+      "id": "corrtest-eis-z60-01",
+      "file": "corrtest/eis-export.z60",
+      "expected": {
+        "status": "parsed",
+        "instrument": "CorrTest",
+        "technique": "EIS",
+        "parser_id": "corrtest.z60_text",
+        "min_points": 10
+      }
+    }
+  ]
+}

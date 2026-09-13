@@ -1,14 +1,42 @@
-# Security policy and safety boundary
+# Start–stop Studio 安全边界
 
-Echem Platform handles untrusted local files and exposes a local HTTP interface. Security reports are welcome, but public issues must not contain vulnerability details, private data, credentials, or vendor-proprietary material.
+本文件描述独立 `start_stop_service.py` Docker 程序。旧平台的 OCP 安全门和宏编译功能不进入此镜像；历史说明保存在 [旧安全文档](docs/legacy-echem-security.md)，不能作为当前独立服务已启用的能力。
 
-## Supported versions
+## 网络与权限
 
-| Version | Security support |
-|---|---|
-| Latest `0.1.x` release | Supported |
-| Unreleased development branches | Best effort; reports must name the commit |
-| Older tags | Not supported unless a maintainer states otherwise |
+- 管理端映射到服务器回环地址，局域网端是单独的只读进程。Host、Origin 和固定路由白名单限制浏览器请求；只读入口在读取请求体之前拒绝写操作。
+- 现有实验室 Windows 配置允许内网免登录访问。能访问该端口的设备可读取实验数据，这不是按用户隔离的系统。应限制防火墙来源网段，不得直接暴露公网。
+- 只读查看仍允许在临时空间计算图表与生成下载文件，不允许修改源数据库、材料配置、采集位置、人工科学确认或仪器设置。
+- 本机恶意进程、Docker 管理员或泄露的 SSH 密钥不在浏览器同源隔离的保护范围内。不要向局域网开放 Docker 管理接口。
+
+## 仪器与实验电脑
+
+程序不打开仪器串口、不发送实验控制命令、不启动 CHI 测试、不修改实验方案。工作站监控使用只读系统信息和文件增长证据；未确认的物理仪器映射必须显式说明。
+
+采集使用固定的 SSH 工作流。蓝博提取使用实验机已安装的软件读取组件，并可在专用支持缓存/临时目录生成辅助程序和派生 CSV，但不改写实验原件。应用的“只读采集”不等于 SSH 账户在操作系统层面只有只读权限；应使用最小权限账号和受限目录。
+
+## 原始数据与科学结论
+
+- 原始文件按版本保存完整字节与 SHA-256。派生记录绑定来源版本，分析发布使用私有临时目录、校验清单及原子切换。
+- 哈希证明内容一致性，不证明实验参数、样品身份或科学结论正确。
+- 启停不换算 RHE；蓝博电压参照未确认时不与 Hg/HgO 共用纵轴。模糊 CV/EIS 配对和在线 iR 未知状态不能自动变成可定量结果。
+- 完整统计必须来自全量记录。旧抽样来源只能预览，不能伪装成完整异常/循环统计或完整数据导出。
+- 下载期间变化的文件不会静默覆盖稳定版本。实时预览使用只读快照，与正式入库结果区分。
+- Excel 原始记录保留原值，外部文本不能变成可执行公式。导出前后复核所选来源，变化则要求重试。
+
+## 存储、发布与回退
+
+运行使用受限用户、只读容器文件系统、移除 Linux capabilities，并限定可写数据卷和临时空间。原始数据库、临时目录和网页缓存的容量分别检查；并发导出共享临时预算。
+
+普通代码更新不做无条件全量备份。数据库迁移/修复前必须完成可校验备份。历史派生内容存在不可变引用，清理工具默认只读预览，不得直接 DELETE 或 VACUUM 来绕过来源保护。
+
+正式镜像从固定官方基础摘要构建，记录源 commit、源码清单、测试和镜像摘要。保留上一镜像与原有配置供回退；数据模式变化不能仅靠换镜像回退。
+
+## 仓库卫生与报告问题
+
+私钥、口令、真实实验数据、SQLite 文件、未脱敏截图、临时部署目录和厂商受许可约束的二进制不能提交。部署模板可以包含必要的非秘密机器标识，但实际凭据必须独立挂载。
+
+报告问题时提供服务版本、脱敏的任务编号、失败阶段和最小复现。不要公开原始数据库、SSH 配置或含私钥内容的日志。优先保留源文件和校验值，不要先清库或删除失败记录。
 
 ## Reporting a vulnerability
 
@@ -21,62 +49,3 @@ Include the affected version or commit, operating system, minimal reproduction, 
 If private vulnerability reporting is unavailable, open a public issue containing only a request for a private contact channel. Do not include technical vulnerability details in that issue.
 
 The maintainer aims to acknowledge a report within 7 days and provide a status update within 30 days. These are best-effort targets, not a service-level agreement. Please allow time for validation and coordinated disclosure before publishing details.
-
-## Security-relevant scope
-
-High-value reports include:
-
-- malformed, oversized, or ambiguous files that escape parser limits or corrupt state
-- path traversal, symlink escape, or writes into watched source folders
-- DNS rebinding, non-loopback exposure, cross-origin mutation, or unsafe local HTTP behavior
-- SQLite integrity, unauthorized metadata changes, or audit-record tampering
-- command injection or unsafe behavior in Windows launcher scripts
-- credentials, private paths, real data, vendor binaries, or restricted artifacts in a release
-- vulnerable or unaccounted-for release dependencies
-
-Known `0.1.x` hardening limits, including watched-root symlink handling and the absence of a multi-user authentication layer, are listed in [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md). Documenting a limitation does not make an exploit report out of scope.
-
-Reports about scientific interpretation should normally use the bug template unless they also create a security impact.
-
-## 平台会写入的内容
-
-平台只在自身 `state` 目录中写入 SQLite 数据库及其事务文件。保存内容包括：
-
-- 原始文件路径、大小、修改时间与 SHA-256
-- 解析后的降采样曲线
-- 样品编号、材料、电解液、面积、标签和备注
-- 导入与人工编辑审计记录
-
-## 平台不会执行的操作
-
-- 不创建、重命名、覆盖或删除监控目录中的文件
-- 不打开 COM3、COM4 或其他串口
-- 不启动、停止或控制 CHI760E、CS Studio6 或其他仪器软件
-- 不执行 CHI 宏
-- 不加载 CorrTest SDK
-- 不监听局域网地址；程序拒绝 `0.0.0.0` 等非回环绑定
-- 不上传云端，不调用外部网络服务
-
-## 正在写入的文件
-
-当文件修改时间距当前不足配置中的 `stable_age_seconds`，平台会暂缓读取。读取前后若大小或修改时间发生变化，同样会放弃本次导入并等待下一轮扫描。
-
-## 文件完整性
-
-每条记录保存完整 SHA-256。相同路径、相同哈希和相同解析器版本不会重复导入；解析器升级时会重新解析，并保留平台中的样品信息。
-
-SHA-256 只能辅助检查文件身份，不能替代备份、访问控制、数字签名、实验记录审批或数据保留政策。
-
-## 数据与发布安全
-
-真实实验文件、厂商安装包、SDK、帮助文件、私有配置、日志、证书和密钥不得提交。发布前必须运行：
-
-```sh
-python3 scripts/check_public_tree.py
-```
-
-详细数据规则见 [DATA_POLICY.md](DATA_POLICY.md)，依赖范围见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
-
-## 明确不承担的安全功能
-
-Echem Platform 不是仪器联锁、急停系统、备份系统或监管记录系统，不能替代工作站本身的电流、电压、时间限制，也不能替代本地人工巡视。解析成功不证明实验参数、单位或科学结论正确。

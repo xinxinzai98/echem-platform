@@ -3,8 +3,11 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import dataclasses
 import datetime as dt
 import hashlib
+import ipaddress
+import inspect
 import json
 import mimetypes
 import os
@@ -15,20 +18,49 @@ import threading
 import time
 import traceback
 import urllib.parse
-from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Iterable
 
+from echem_platform.analysis import AnalysisValidationError
+from echem_platform.configuration import load_config, resolve_watch_roots
+from echem_platform.control import (
+    STAGE_C_ID,
+    ControlSafetyError,
+    MacroValidationError,
+    ProtocolValidationError,
+    StageCManager,
+    build_dry_run,
+    default_dry_run_draft,
+    dry_run_capabilities,
+)
+from echem_platform.parsers import (
+    PARSER_VERSION,
+    ParsedCurve,
+    parse_curve,
+    parse_numeric_table,
+)
+from echem_platform.start_stop import (
+    StartStopWorkspace,
+    StartStopWorkspaceError,
+)
 
-APP_NAME = "电化学测试平台 V0"
-APP_VERSION = "0.1.4"
-PARSER_VERSION = "2026.07.24.1"
+
+APP_NAME = "电化学测试平台 V0.3 Stage C"
+APP_VERSION = "0.3.0-dev.15"
 APP_ROOT = Path(__file__).resolve().parent
 STATIC_ROOT = APP_ROOT / "static"
 DEFAULT_CONFIG = APP_ROOT / "config.json"
 DEFAULT_DATABASE = APP_ROOT / "state" / "echem-platform.sqlite3"
+MAX_JSON_REQUEST_BYTES = 1024 * 1024
+ANALYSIS_SCHEMA_VERSION = 1
+
+
+class AnalysisRequestError(Exception):
+    def __init__(self, message: str, status: int = HTTPStatus.BAD_REQUEST):
+        super().__init__(message)
+        self.status = int(status)
 
 
 def utc_now() -> str:
@@ -47,318 +79,214 @@ def as_local_time(value: str | None) -> str:
         return value
 
 
-def load_config(path: Path) -> dict[str, Any]:
-    with path.open("r", encoding="utf-8") as handle:
-        raw = json.load(handle)
-
-    config = {
-        "bind": str(raw.get("bind", "127.0.0.1")),
-        "port": int(raw.get("port", 8787)),
-        "scan_interval_seconds": max(3, int(raw.get("scan_interval_seconds", 15))),
-        "stable_age_seconds": max(0, int(raw.get("stable_age_seconds", 2))),
-        "max_file_bytes": max(1024, int(raw.get("max_file_bytes", 50 * 1024 * 1024))),
-        "max_points_per_curve": max(100, int(raw.get("max_points_per_curve", 2000))),
-        "watch_roots": list(raw.get("watch_roots", [])),
-        "extensions": [
-            str(item).lower() if str(item).startswith(".") else "." + str(item).lower()
-            for item in raw.get("extensions", [])
-        ],
-    }
-    if config["bind"] not in {"127.0.0.1", "::1", "localhost"}:
-        raise ValueError("V0 safety policy only permits a loopback bind address.")
-    return config
+def source_is_available(source_path: str) -> bool:
+    try:
+        return Path(source_path).is_file()
+    except OSError:
+        return False
 
 
-def resolve_watch_roots(config: dict[str, Any], base: Path) -> list[Path]:
-    roots: list[Path] = []
-    for raw in config["watch_roots"]:
-        candidate = Path(os.path.expandvars(os.path.expanduser(str(raw))))
-        if not candidate.is_absolute():
-            candidate = base / candidate
-        roots.append(candidate.resolve())
-    return roots
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        while True:
-            chunk = handle.read(1024 * 1024)
-            if not chunk:
-                break
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def decode_bytes(data: bytes) -> tuple[str, str]:
-    if data.startswith(b"\xff\xfe") or data.startswith(b"\xfe\xff"):
-        return data.decode("utf-16"), "utf-16"
-    if data.startswith(b"\xef\xbb\xbf"):
-        return data.decode("utf-8-sig"), "utf-8-sig"
-    for encoding in ("utf-8", "gb18030", "cp1252"):
+def resolve_path_within_roots(
+    path: Path,
+    roots: Iterable[Path],
+    *,
+    strict: bool = True,
+) -> Path:
+    """Resolve a source path and require it to remain under an active root."""
+    try:
+        resolved = path.resolve(strict=strict)
+    except RuntimeError as exc:
+        raise OSError("unable to resolve source path") from exc
+    for root in roots:
         try:
-            return data.decode(encoding), encoding
-        except UnicodeDecodeError:
+            resolved_root = root.resolve(strict=False)
+            resolved.relative_to(resolved_root)
+        except (OSError, RuntimeError, ValueError):
             continue
-    return data.decode("utf-8", errors="replace"), "utf-8-replace"
+        return resolved
+    raise ValueError("path is outside the configured data folders")
 
 
-def split_fields(line: str, delimiter: str) -> list[str]:
-    if delimiter == "whitespace":
-        return [part.strip() for part in re.split(r"\s+", line.strip()) if part.strip()]
-    return [part.strip().strip('"') for part in line.split(delimiter)]
-
-
-def choose_delimiter(line: str) -> str:
-    counts = {"\t": line.count("\t"), ",": line.count(","), ";": line.count(";")}
-    delimiter, count = max(counts.items(), key=lambda item: item[1])
-    return delimiter if count else "whitespace"
-
-
-def parse_float(value: str) -> float | None:
-    cleaned = (
-        value.strip()
-        .replace("\u2212", "-")
-        .replace("−", "-")
-        .replace("D+", "E+")
-        .replace("D-", "E-")
-        .replace("d+", "e+")
-        .replace("d-", "e-")
-    )
-    cleaned = cleaned.strip("()[]")
-    if not cleaned:
+def _loopback_authority(value: str) -> tuple[str, int | None] | None:
+    """Return a canonical loopback host and port for a valid HTTP authority."""
+    authority = str(value or "").strip()
+    if (
+        not authority
+        or any(character.isspace() for character in authority)
+        or any(character in authority for character in "/?#@\\")
+    ):
         return None
     try:
-        number = float(cleaned)
+        parsed = urllib.parse.urlsplit(f"//{authority}")
+        port = parsed.port
     except ValueError:
         return None
-    if number != number or number in (float("inf"), float("-inf")):
-        return None
-    return number
-
-
-def unit_from_header(header: str) -> str:
-    match = re.search(r"\(([^)]+)\)", header)
-    if match:
-        return match.group(1).strip()
-    if "/" in header:
-        return header.rsplit("/", 1)[-1].strip()
-    return ""
-
-
-def normalized_header(value: str) -> str:
-    return re.sub(r"[\s_\-]+", "", value.lower())
-
-
-def find_axis_indices(headers: list[str], technique: str = "") -> tuple[int, int]:
-    normalized = [normalized_header(item) for item in headers]
-
-    def first_matching(patterns: Iterable[str], excluded: set[int] | None = None) -> int | None:
-        excluded = excluded or set()
-        for index, header in enumerate(normalized):
-            if index in excluded:
-                continue
-            if any(pattern in header for pattern in patterns):
-                return index
-        return None
-
-    real_index = first_matching(("zreal", "z'", "rez", "zre"))
-    imag_index = first_matching(("zimag", "z''", "imz", "zim"))
-    if real_index is not None and imag_index is not None and real_index != imag_index:
-        return real_index, imag_index
-
-    frequency_index = first_matching(("frequency", "freq", "f(hz", "f/"))
-    if frequency_index is not None:
-        y_index = first_matching(
-            ("|z|", "zmod", "modulus", "phase", "zimag", "zreal"),
-            {frequency_index},
-        )
-        if y_index is not None:
-            return frequency_index, y_index
-
-    time_index = first_matching(("time", "t(s", "t/sec", "t/second"))
-    potential_index = first_matching(("potential", "voltage", "e(v", "e/v"))
-    current_index = first_matching(("current", "i(a", "i/ma", "i/ua", "i/a"))
-
-    if time_index is not None:
-        if technique in {"CP/GCD", "OCP"}:
-            y_index = potential_index if potential_index is not None else current_index
-        elif technique == "CA":
-            y_index = current_index if current_index is not None else potential_index
-        else:
-            y_index = current_index if current_index is not None else potential_index
-        if y_index is not None and y_index != time_index:
-            return time_index, y_index
-    if potential_index is not None and current_index is not None:
-        return potential_index, current_index
-
-    return (0, 1 if len(headers) > 1 else 0)
-
-
-def infer_instrument(path: Path, text: str) -> str:
-    probe = f"{path.name}\n{text[:3000]}".lower()
-    if path.suffix.lower() in {".cor", ".z60"} or "csstudiofile" in probe or "corrtest" in probe:
-        return "CorrTest"
-    if path.suffix.lower() == ".bin" or "chi instrument" in probe or re.search(r"\bchi\d", probe):
-        return "CHI"
-    return "未知"
-
-
-def infer_technique(path: Path, headers: list[str], text: str) -> str:
-    probe = " ".join([path.stem, *headers, text[:1000]]).lower()
-    if path.suffix.lower() == ".z60" or any(
-        token in probe for token in ("zreal", "zimag", "frequency", "freq(hz", "eis", "impedance")
+    if (
+        not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path
+        or parsed.query
+        or parsed.fragment
     ):
-        return "EIS"
-    ordered = (
-        ("OCP", ("ocp", "open circuit")),
-        ("LSV", ("lsv", "linear sweep")),
-        ("CV", ("cyclic volt", "cv_", "_cv", "cv1", "cv2")),
-        ("CA", ("chronoamper", "ca_", "_ca", "it_", "_it")),
-        ("CP/GCD", ("chronopot", "galstatic", "galvano", "gcd", "cp_", "_cp", "cc_")),
-        ("Tafel", ("tafel",)),
-    )
-    for technique, tokens in ordered:
-        if any(token in probe for token in tokens):
-            return technique
-    return "未识别"
+        return None
+    hostname = parsed.hostname.lower().rstrip(".")
+    if hostname == "localhost":
+        return hostname, port
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        return None
+    if not address.is_loopback:
+        return None
+    return address.compressed, port
 
 
-def decimate_points(points: list[list[float]], limit: int) -> list[list[float]]:
-    if len(points) <= limit:
-        return points
-    if limit <= 2:
-        return [points[0], points[-1]]
-    step = (len(points) - 1) / (limit - 1)
-    indices = [round(position * step) for position in range(limit)]
-    return [points[index] for index in indices]
+RFC1918_NETWORKS = (
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+)
 
 
-@dataclass
-class ParsedCurve:
-    status: str
-    encoding: str
-    delimiter: str
-    headers: list[str]
-    x_name: str
-    x_unit: str
-    y_name: str
-    y_unit: str
-    point_count: int
-    points: list[list[float]]
-    instrument: str
-    technique: str
-    error: str = ""
+def validate_server_bind(
+    bind: str,
+    *,
+    lan_read_only: bool,
+    container_mode: bool = False,
+) -> str:
+    """Allow RFC1918 listeners only behind the explicit read-only LAN mode."""
+    value = str(bind or "").strip()
+    if value == "localhost":
+        return value
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError as exc:
+        raise ValueError("监听地址必须是 localhost 或明确的数字 IP 地址。") from exc
+    if address.is_loopback:
+        return address.compressed
+    if container_mode and address.version == 4 and address.is_unspecified:
+        return address.compressed
+    if not lan_read_only:
+        raise ValueError("非回环监听只能通过 --lan-read-only 显式启用。")
+    if address.version != 4 or not any(address in network for network in RFC1918_NETWORKS):
+        raise ValueError("局域网只读监听仅允许 RFC1918 IPv4 地址。")
+    return address.compressed
 
 
-def parse_curve(path: Path, data: bytes, max_points: int) -> ParsedCurve:
-    if path.suffix.lower() == ".bin":
-        return ParsedCurve(
-            status="metadata_only",
-            encoding="binary",
-            delimiter="",
-            headers=[],
-            x_name="",
-            x_unit="",
-            y_name="",
-            y_unit="",
-            point_count=0,
-            points=[],
-            instrument="CHI",
-            technique=infer_technique(path, [], ""),
+def _numeric_authority(value: str) -> tuple[str, int | None] | None:
+    authority = str(value or "").strip()
+    if (
+        not authority
+        or any(character.isspace() for character in authority)
+        or any(character in authority for character in "/?#@\\")
+    ):
+        return None
+    try:
+        parsed = urllib.parse.urlsplit(f"//{authority}")
+        port = parsed.port
+    except ValueError:
+        return None
+    if (
+        not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path
+        or parsed.query
+        or parsed.fragment
+    ):
+        return None
+    try:
+        address = ipaddress.ip_address(parsed.hostname)
+    except ValueError:
+        return None
+    return address.compressed, port
+
+
+def validate_lan_read_only_host(*, host: str, bind: str, server_port: int) -> None:
+    authority = _numeric_authority(host)
+    if authority is None:
+        raise AnalysisRequestError(
+            "局域网只读访问必须使用服务器的数字 IP 地址。",
+            HTTPStatus.FORBIDDEN,
+        )
+    request_host, request_port = authority
+    effective_port = request_port if request_port is not None else 80
+    if request_host != bind or effective_port != int(server_port):
+        raise AnalysisRequestError(
+            "局域网只读访问的 Host 与服务地址不一致。",
+            HTTPStatus.FORBIDDEN,
         )
 
-    text, encoding = decode_bytes(data)
-    lines = [line.replace("\x00", "").strip() for line in text.splitlines()]
-    lines = [line for line in lines if line and not line.startswith(("#", "//"))]
-    candidates: list[tuple[int, int, str, list[str]]] = []
 
-    for index, line in enumerate(lines):
-        delimiter = choose_delimiter(line)
-        headers = split_fields(line, delimiter)
-        if not (2 <= len(headers) <= 30):
-            continue
-        if sum(parse_float(item) is None for item in headers) < 1:
-            continue
-        for next_index in range(index + 1, min(index + 3, len(lines))):
-            values = split_fields(lines[next_index], delimiter)
-            numeric_count = sum(parse_float(item) is not None for item in values)
-            if len(values) >= 2 and numeric_count >= 2:
-                header_probe = " ".join(normalized_header(item) for item in headers)
-                axis_terms = (
-                    "potential",
-                    "voltage",
-                    "current",
-                    "frequency",
-                    "freq",
-                    "zreal",
-                    "zimag",
-                    "time",
-                    "e(v",
-                    "i(a",
-                    "t(s",
-                )
-                axis_score = sum(term in header_probe for term in axis_terms)
-                distance_penalty = next_index - index - 1
-                score = axis_score * 100 + min(len(headers), 10) - distance_penalty
-                candidates.append((score, index, delimiter, headers))
-                break
-
-    selected = max(candidates, default=None, key=lambda item: item[0])
-
-    instrument = infer_instrument(path, text)
-    if not selected:
-        return ParsedCurve(
-            status="unparsed",
-            encoding=encoding,
-            delimiter="",
-            headers=[],
-            x_name="",
-            x_unit="",
-            y_name="",
-            y_unit="",
-            point_count=0,
-            points=[],
-            instrument=instrument,
-            technique=infer_technique(path, [], text),
-            error="未找到至少包含两列数值的表格。",
+def validate_local_json_request(
+    *,
+    host: str,
+    origin: str | None,
+    content_type: str,
+    server_port: int,
+) -> None:
+    """Protect local mutation endpoints from cross-origin and rebinding writes."""
+    media_type = str(content_type or "").split(";", 1)[0].strip().lower()
+    if media_type != "application/json":
+        raise AnalysisRequestError(
+            "分析请求必须使用 application/json。",
+            HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
         )
 
-    _, header_index, delimiter, headers = selected
-    technique = infer_technique(path, headers, text)
-    x_index, y_index = find_axis_indices(headers, technique)
-    points: list[list[float]] = []
-    for line in lines[header_index + 1 :]:
-        values = split_fields(line, delimiter)
-        if len(values) <= max(x_index, y_index):
-            continue
-        x_value = parse_float(values[x_index])
-        y_value = parse_float(values[y_index])
-        if x_value is not None and y_value is not None:
-            points.append([x_value, y_value])
+    request_authority = _loopback_authority(host)
+    if request_authority is None:
+        raise AnalysisRequestError(
+            "分析请求的 Host 必须是本机回环地址。",
+            HTTPStatus.FORBIDDEN,
+        )
+    request_host, request_port = request_authority
+    effective_request_port = request_port if request_port is not None else 80
+    if effective_request_port != int(server_port):
+        raise AnalysisRequestError(
+            "分析请求的 Host 端口与本机服务不一致。",
+            HTTPStatus.FORBIDDEN,
+        )
 
-    if not points:
-        status = "unparsed"
-        error = "表头已识别，但没有可用的二维数值点。"
-    else:
-        status = "parsed"
-        error = ""
-
-    return ParsedCurve(
-        status=status,
-        encoding=encoding,
-        delimiter="TAB" if delimiter == "\t" else delimiter,
-        headers=headers,
-        x_name=headers[x_index] if headers else "",
-        x_unit=unit_from_header(headers[x_index]) if headers else "",
-        y_name=headers[y_index] if headers else "",
-        y_unit=unit_from_header(headers[y_index]) if headers else "",
-        point_count=len(points),
-        points=decimate_points(points, max_points),
-        instrument=instrument,
-        technique=technique,
-        error=error,
-    )
+    if origin is None:
+        return
+    origin_value = origin.strip()
+    try:
+        parsed_origin = urllib.parse.urlsplit(origin_value)
+    except ValueError as exc:
+        raise AnalysisRequestError(
+            "分析请求的 Origin 无效。",
+            HTTPStatus.FORBIDDEN,
+        ) from exc
+    if (
+        parsed_origin.scheme.lower() != "http"
+        or not parsed_origin.netloc
+        or parsed_origin.path not in {"", "/"}
+        or parsed_origin.query
+        or parsed_origin.fragment
+        or parsed_origin.username is not None
+        or parsed_origin.password is not None
+    ):
+        raise AnalysisRequestError(
+            "分析请求的 Origin 必须与本机服务同源。",
+            HTTPStatus.FORBIDDEN,
+        )
+    origin_authority = _loopback_authority(parsed_origin.netloc)
+    if origin_authority is None:
+        raise AnalysisRequestError(
+            "分析请求的 Origin 必须与本机服务同源。",
+            HTTPStatus.FORBIDDEN,
+        )
+    origin_host, origin_port = origin_authority
+    effective_origin_port = origin_port if origin_port is not None else 80
+    if (
+        origin_host != request_host
+        or effective_origin_port != effective_request_port
+    ):
+        raise AnalysisRequestError(
+            "分析请求的 Origin 必须与本机服务同源。",
+            HTTPStatus.FORBIDDEN,
+        )
 
 
 class Database:
@@ -397,6 +325,7 @@ class Database:
                     parse_status TEXT NOT NULL,
                     parse_error TEXT NOT NULL DEFAULT '',
                     parser_version TEXT NOT NULL DEFAULT '',
+                    parser_id TEXT NOT NULL DEFAULT '',
                     sha256 TEXT NOT NULL,
                     size_bytes INTEGER NOT NULL,
                     modified_utc TEXT NOT NULL,
@@ -420,12 +349,130 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_runs_instrument ON runs(instrument);
                 CREATE INDEX IF NOT EXISTS idx_runs_technique ON runs(technique);
                 CREATE INDEX IF NOT EXISTS idx_runs_sha256 ON runs(sha256);
+                CREATE TABLE IF NOT EXISTS analysis_records (
+                    id INTEGER PRIMARY KEY,
+                    run_id INTEGER NOT NULL
+                        REFERENCES runs(id) ON DELETE RESTRICT,
+                    analysis_type TEXT NOT NULL,
+                    schema_version INTEGER NOT NULL,
+                    algorithm_id TEXT NOT NULL,
+                    algorithm_version TEXT NOT NULL,
+                    source_sha256 TEXT NOT NULL,
+                    parser_id TEXT NOT NULL,
+                    parser_version TEXT NOT NULL,
+                    parameters_json TEXT NOT NULL,
+                    result_json TEXT NOT NULL,
+                    created_utc TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_analysis_records_run
+                    ON analysis_records(run_id, id DESC);
+                CREATE TRIGGER IF NOT EXISTS analysis_records_no_update
+                BEFORE UPDATE ON analysis_records
+                BEGIN
+                    SELECT RAISE(ABORT, 'analysis records are immutable');
+                END;
+                CREATE TRIGGER IF NOT EXISTS analysis_records_no_delete
+                BEFORE DELETE ON analysis_records
+                BEGIN
+                    SELECT RAISE(ABORT, 'analysis records are immutable');
+                END;
                 CREATE TABLE IF NOT EXISTS audit (
                     id INTEGER PRIMARY KEY,
                     created_utc TEXT NOT NULL,
                     action TEXT NOT NULL,
                     target TEXT NOT NULL,
                     detail TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS protocol_drafts (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    protocol_json TEXT NOT NULL,
+                    output_folder TEXT NOT NULL,
+                    allowed_run_root TEXT NOT NULL,
+                    revision INTEGER NOT NULL,
+                    created_utc TEXT NOT NULL,
+                    updated_utc TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS automation_runs (
+                    id INTEGER PRIMARY KEY,
+                    run_id TEXT NOT NULL UNIQUE,
+                    protocol_sha256 TEXT NOT NULL,
+                    profile_sha256 TEXT NOT NULL,
+                    macro_sha256 TEXT NOT NULL,
+                    snapshot_manifest_sha256 TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    current_step_index INTEGER NOT NULL DEFAULT 0,
+                    created_utc TEXT NOT NULL,
+                    started_utc TEXT NOT NULL DEFAULT '',
+                    completed_utc TEXT NOT NULL DEFAULT '',
+                    chi_pid INTEGER,
+                    chi_exit_code INTEGER,
+                    output_root TEXT NOT NULL,
+                    run_directory TEXT NOT NULL,
+                    macro_path TEXT NOT NULL,
+                    completion_confirmed INTEGER NOT NULL DEFAULT 0,
+                    failure_reason TEXT NOT NULL DEFAULT '',
+                    arm_token_sha256 TEXT NOT NULL DEFAULT '',
+                    arm_expires_utc TEXT NOT NULL DEFAULT '',
+                    confirmations_json TEXT NOT NULL DEFAULT '{}'
+                );
+                CREATE INDEX IF NOT EXISTS idx_automation_runs_status
+                    ON automation_runs(status);
+                CREATE TABLE IF NOT EXISTS automation_steps (
+                    id INTEGER PRIMARY KEY,
+                    automation_run_id INTEGER NOT NULL
+                        REFERENCES automation_runs(id) ON DELETE CASCADE,
+                    step_index INTEGER NOT NULL,
+                    step_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    technique TEXT NOT NULL,
+                    params_json TEXT NOT NULL,
+                    save_basename TEXT NOT NULL,
+                    expected_seconds REAL,
+                    status TEXT NOT NULL,
+                    started_utc TEXT NOT NULL DEFAULT '',
+                    completed_utc TEXT NOT NULL DEFAULT '',
+                    binary_run_id INTEGER,
+                    text_run_id INTEGER,
+                    data_status TEXT NOT NULL DEFAULT '',
+                    binary_sha256 TEXT NOT NULL DEFAULT '',
+                    text_sha256 TEXT NOT NULL DEFAULT '',
+                    source_unchanged INTEGER NOT NULL DEFAULT 0,
+                    UNIQUE(automation_run_id, step_index)
+                );
+                CREATE TABLE IF NOT EXISTS automation_events (
+                    id INTEGER PRIMARY KEY,
+                    automation_run_id INTEGER NOT NULL
+                        REFERENCES automation_runs(id) ON DELETE CASCADE,
+                    created_utc TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    severity TEXT NOT NULL,
+                    detail_json TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_automation_events_run
+                    ON automation_events(automation_run_id, id);
+                CREATE TABLE IF NOT EXISTS automation_control_lock (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    run_id TEXT NOT NULL,
+                    owner_token TEXT NOT NULL,
+                    acquired_utc TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS start_stop_material_config (
+                    material_key TEXT PRIMARY KEY,
+                    plot_name TEXT NOT NULL,
+                    include_in_summary_atlas INTEGER NOT NULL
+                        CHECK (include_in_summary_atlas IN (0, 1)),
+                    favorite INTEGER NOT NULL DEFAULT 0
+                        CHECK (favorite IN (0, 1)),
+                    notes TEXT NOT NULL DEFAULT '',
+                    source_fingerprint TEXT NOT NULL,
+                    updated_utc TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS start_stop_config_state (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    dataset_fingerprint TEXT NOT NULL,
+                    revision INTEGER NOT NULL,
+                    updated_utc TEXT NOT NULL
                 );
                 """
             )
@@ -436,6 +483,22 @@ class Database:
                 connection.execute(
                     "ALTER TABLE runs ADD COLUMN parser_version TEXT NOT NULL DEFAULT ''"
                 )
+            if "parser_id" not in columns:
+                connection.execute(
+                    "ALTER TABLE runs ADD COLUMN parser_id TEXT NOT NULL DEFAULT ''"
+                )
+            material_columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(start_stop_material_config)"
+                ).fetchall()
+            }
+            if "favorite" not in material_columns:
+                connection.execute(
+                    "ALTER TABLE start_stop_material_config "
+                    "ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0 "
+                    "CHECK (favorite IN (0, 1))"
+                )
 
     def audit(self, action: str, target: str, detail: str) -> None:
         with self._lock, self.session() as connection:
@@ -443,6 +506,557 @@ class Database:
                 "INSERT INTO audit(created_utc, action, target, detail) VALUES (?, ?, ?, ?)",
                 (utc_now(), action, target, detail),
             )
+
+    def get_start_stop_config(self) -> dict[str, Any]:
+        with self.session() as connection:
+            state = connection.execute(
+                "SELECT dataset_fingerprint, revision, updated_utc "
+                "FROM start_stop_config_state WHERE id = 1"
+            ).fetchone()
+            rows = connection.execute(
+                "SELECT material_key, plot_name, include_in_summary_atlas, favorite, "
+                "notes, source_fingerprint, updated_utc "
+                "FROM start_stop_material_config ORDER BY material_key"
+            ).fetchall()
+        return {
+            "dataset_fingerprint": state["dataset_fingerprint"] if state else "",
+            "revision": int(state["revision"]) if state else 0,
+            "updated_utc": state["updated_utc"] if state else "",
+            "materials": [
+                {
+                    **dict(row),
+                    "include_in_summary_atlas": bool(
+                        row["include_in_summary_atlas"]
+                    ),
+                    "favorite": bool(row["favorite"]),
+                }
+                for row in rows
+            ],
+        }
+
+    def save_start_stop_config(
+        self,
+        *,
+        dataset_fingerprint: str,
+        expected_revision: int,
+        materials: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        now = utc_now()
+        with self._lock, self.session() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            state = connection.execute(
+                "SELECT revision FROM start_stop_config_state WHERE id = 1"
+            ).fetchone()
+            current_revision = int(state["revision"]) if state else 0
+            if int(expected_revision) != current_revision:
+                raise ValueError(
+                    "材料配置已在另一页中更新，请刷新后重试。"
+                )
+            revision = current_revision + 1
+            connection.execute(
+                "DELETE FROM start_stop_material_config"
+            )
+            connection.executemany(
+                """
+                INSERT INTO start_stop_material_config(
+                    material_key, plot_name, include_in_summary_atlas,
+                    favorite, notes, source_fingerprint, updated_utc
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        row["material_key"],
+                        row["plot_name"],
+                        int(bool(row["include_in_summary_atlas"])),
+                        int(bool(row.get("favorite", False))),
+                        row.get("notes", ""),
+                        row["source_fingerprint"],
+                        now,
+                    )
+                    for row in materials
+                ],
+            )
+            connection.execute(
+                """
+                INSERT INTO start_stop_config_state(
+                    id, dataset_fingerprint, revision, updated_utc
+                ) VALUES (1, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    dataset_fingerprint = excluded.dataset_fingerprint,
+                    revision = excluded.revision,
+                    updated_utc = excluded.updated_utc
+                """,
+                (dataset_fingerprint, revision, now),
+            )
+        return self.get_start_stop_config()
+
+    def save_protocol_draft(
+        self,
+        draft_id: str,
+        protocol: dict[str, Any],
+        output_folder: str,
+        allowed_run_root: str,
+    ) -> dict[str, Any]:
+        if not isinstance(draft_id, str) or not re.fullmatch(
+            r"[a-z0-9][a-z0-9_-]{0,63}",
+            draft_id,
+        ):
+            raise ValueError("草稿 id 只允许小写字母、数字、下划线和连字符。")
+        if not isinstance(protocol, dict):
+            raise ValueError("protocol 必须是 JSON 对象。")
+        if not isinstance(output_folder, str) or len(output_folder) > 240:
+            raise ValueError("output_folder 必须是长度不超过 240 的字符串。")
+        if not isinstance(allowed_run_root, str) or len(allowed_run_root) > 240:
+            raise ValueError("allowed_run_root 必须是长度不超过 240 的字符串。")
+        serialized = json.dumps(
+            protocol,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        if len(serialized.encode("utf-8")) > MAX_JSON_REQUEST_BYTES:
+            raise ValueError("协议草稿超过 1 MiB。")
+        name = str(protocol.get("name") or "未命名协议").strip()[:160] or "未命名协议"
+        now = utc_now()
+        with self._lock, self.session() as connection:
+            existing = connection.execute(
+                "SELECT revision, created_utc FROM protocol_drafts WHERE id = ?",
+                (draft_id,),
+            ).fetchone()
+            if existing:
+                revision = int(existing["revision"]) + 1
+                connection.execute(
+                    """
+                    UPDATE protocol_drafts
+                    SET name=?, protocol_json=?, output_folder=?, allowed_run_root=?,
+                        revision=?, updated_utc=?
+                    WHERE id=?
+                    """,
+                    (
+                        name,
+                        serialized,
+                        output_folder,
+                        allowed_run_root,
+                        revision,
+                        now,
+                        draft_id,
+                    ),
+                )
+            else:
+                revision = 1
+                connection.execute(
+                    """
+                    INSERT INTO protocol_drafts(
+                        id, name, protocol_json, output_folder, allowed_run_root,
+                        revision, created_utc, updated_utc
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        draft_id,
+                        name,
+                        serialized,
+                        output_folder,
+                        allowed_run_root,
+                        revision,
+                        now,
+                        now,
+                    ),
+                )
+        saved = self.get_protocol_draft(draft_id)
+        assert saved is not None
+        return saved
+
+    def get_protocol_draft(self, draft_id: str) -> dict[str, Any] | None:
+        with self.session() as connection:
+            row = connection.execute(
+                "SELECT * FROM protocol_drafts WHERE id = ?",
+                (draft_id,),
+            ).fetchone()
+        if not row:
+            return None
+        result = dict(row)
+        result["protocol"] = json.loads(result.pop("protocol_json"))
+        return result
+
+    def list_protocol_drafts(self) -> list[dict[str, Any]]:
+        with self.session() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, name, output_folder, allowed_run_root, revision,
+                       created_utc, updated_utc
+                FROM protocol_drafts
+                ORDER BY updated_utc DESC, id ASC
+                LIMIT 100
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def create_automation_run(
+        self,
+        record: dict[str, Any],
+        steps: list[dict[str, Any]],
+    ) -> None:
+        with self._lock, self.session() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO automation_runs(
+                    run_id, protocol_sha256, profile_sha256, macro_sha256,
+                    snapshot_manifest_sha256, status, current_step_index,
+                    created_utc, output_root, run_directory, macro_path,
+                    completion_confirmed, failure_reason
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record["run_id"],
+                    record["protocol_sha256"],
+                    record["profile_sha256"],
+                    record["macro_sha256"],
+                    record["snapshot_manifest_sha256"],
+                    record["status"],
+                    int(record.get("current_step_index", 0)),
+                    record["created_utc"],
+                    record["output_root"],
+                    record["run_directory"],
+                    record["macro_path"],
+                    int(bool(record.get("completion_confirmed", False))),
+                    record.get("failure_reason", ""),
+                ),
+            )
+            automation_run_id = int(cursor.lastrowid)
+            for step in steps:
+                connection.execute(
+                    """
+                    INSERT INTO automation_steps(
+                        automation_run_id, step_index, step_id, name, technique,
+                        params_json, save_basename, expected_seconds, status
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        automation_run_id,
+                        int(step["step_index"]),
+                        step["step_id"],
+                        step["name"],
+                        step["technique"],
+                        json.dumps(
+                            step["params"],
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ),
+                        step["save_basename"],
+                        step.get("expected_seconds"),
+                        step["status"],
+                    ),
+                )
+
+    def _automation_run_from_row(
+        self,
+        row: sqlite3.Row,
+        *,
+        include_secret: bool,
+        connection: sqlite3.Connection,
+    ) -> dict[str, Any]:
+        payload = dict(row)
+        payload["completion_confirmed"] = bool(payload["completion_confirmed"])
+        try:
+            payload["confirmations"] = json.loads(
+                payload.pop("confirmations_json") or "{}"
+            )
+        except json.JSONDecodeError:
+            payload["confirmations"] = {}
+        if not include_secret:
+            payload.pop("arm_token_sha256", None)
+        step_rows = connection.execute(
+            """
+            SELECT step_index, step_id, name, technique, params_json,
+                   save_basename, expected_seconds, status, started_utc,
+                   completed_utc, binary_run_id, text_run_id, data_status,
+                   binary_sha256, text_sha256, source_unchanged
+            FROM automation_steps
+            WHERE automation_run_id = ?
+            ORDER BY step_index
+            """,
+            (row["id"],),
+        ).fetchall()
+        payload["steps"] = []
+        for step_row in step_rows:
+            step = dict(step_row)
+            step["params"] = json.loads(step.pop("params_json"))
+            step["source_unchanged"] = bool(step["source_unchanged"])
+            payload["steps"].append(step)
+        return payload
+
+    def get_automation_run(
+        self,
+        run_id: str,
+        *,
+        include_secret: bool = False,
+    ) -> dict[str, Any] | None:
+        with self.session() as connection:
+            row = connection.execute(
+                "SELECT * FROM automation_runs WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+            if not row:
+                return None
+            return self._automation_run_from_row(
+                row,
+                include_secret=include_secret,
+                connection=connection,
+            )
+
+    def list_automation_runs(self, limit: int = 50) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 200))
+        with self.session() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM automation_runs
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            return [
+                self._automation_run_from_row(
+                    row,
+                    include_secret=False,
+                    connection=connection,
+                )
+                for row in rows
+            ]
+
+    def list_active_automation_runs(self) -> list[dict[str, Any]]:
+        with self.session() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM automation_runs
+                WHERE status IN ('starting', 'running', 'stop_requested')
+                ORDER BY id
+                """
+            ).fetchall()
+            return [
+                self._automation_run_from_row(
+                    row,
+                    include_secret=False,
+                    connection=connection,
+                )
+                for row in rows
+            ]
+
+    def active_automation_run_count(self) -> int:
+        with self.session() as connection:
+            row = connection.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM automation_runs
+                WHERE status IN ('starting', 'running', 'stop_requested')
+                """
+            ).fetchone()
+        return int(row["count"])
+
+    def automation_control_lock(self) -> dict[str, Any] | None:
+        with self.session() as connection:
+            row = connection.execute(
+                """
+                SELECT run_id, acquired_utc
+                FROM automation_control_lock
+                WHERE id = 1
+                """
+            ).fetchone()
+        return dict(row) if row else None
+
+    def acquire_automation_control_lock(
+        self,
+        run_id: str,
+        owner_token: str,
+    ) -> bool:
+        connection = self.connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                """
+                SELECT run_id, owner_token
+                FROM automation_control_lock
+                WHERE id = 1
+                """
+            ).fetchone()
+            if existing is not None:
+                connection.rollback()
+                return False
+            connection.execute(
+                """
+                INSERT INTO automation_control_lock(id, run_id, owner_token, acquired_utc)
+                VALUES (1, ?, ?, ?)
+                """,
+                (run_id, owner_token, utc_now()),
+            )
+            connection.commit()
+            return True
+        finally:
+            connection.close()
+
+    def release_automation_control_lock(self, run_id: str) -> None:
+        with self._lock, self.session() as connection:
+            connection.execute(
+                """
+                DELETE FROM automation_control_lock
+                WHERE id = 1 AND run_id = ?
+                """,
+                (run_id,),
+            )
+
+    def update_automation_run(
+        self,
+        run_id: str,
+        changes: dict[str, Any],
+    ) -> None:
+        allowed = {
+            "status",
+            "current_step_index",
+            "started_utc",
+            "completed_utc",
+            "chi_pid",
+            "chi_exit_code",
+            "completion_confirmed",
+            "failure_reason",
+            "arm_token_sha256",
+            "arm_expires_utc",
+            "confirmations_json",
+        }
+        unknown = sorted(set(changes) - allowed)
+        if unknown:
+            raise ValueError(
+                "不允许更新自动化运行字段：" + ", ".join(unknown)
+            )
+        if not changes:
+            return
+        normalized = dict(changes)
+        if "completion_confirmed" in normalized:
+            normalized["completion_confirmed"] = int(
+                bool(normalized["completion_confirmed"])
+            )
+        assignments = ", ".join(f"{key} = ?" for key in normalized)
+        values = [normalized[key] for key in normalized]
+        with self._lock, self.session() as connection:
+            cursor = connection.execute(
+                f"UPDATE automation_runs SET {assignments} WHERE run_id = ?",
+                (*values, run_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("自动化运行不存在。")
+
+    def update_automation_step(
+        self,
+        run_id: str,
+        step_index: int,
+        changes: dict[str, Any],
+    ) -> None:
+        allowed = {
+            "status",
+            "started_utc",
+            "completed_utc",
+            "binary_run_id",
+            "text_run_id",
+            "data_status",
+            "binary_sha256",
+            "text_sha256",
+            "source_unchanged",
+        }
+        unknown = sorted(set(changes) - allowed)
+        if unknown:
+            raise ValueError(
+                "不允许更新自动化工步字段：" + ", ".join(unknown)
+            )
+        if not changes:
+            return
+        normalized = dict(changes)
+        if "source_unchanged" in normalized:
+            normalized["source_unchanged"] = int(
+                bool(normalized["source_unchanged"])
+            )
+        assignments = ", ".join(f"{key} = ?" for key in normalized)
+        values = [normalized[key] for key in normalized]
+        with self._lock, self.session() as connection:
+            cursor = connection.execute(
+                f"""
+                UPDATE automation_steps
+                SET {assignments}
+                WHERE automation_run_id = (
+                    SELECT id FROM automation_runs WHERE run_id = ?
+                ) AND step_index = ?
+                """,
+                (*values, run_id, int(step_index)),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("自动化工步不存在。")
+
+    def append_automation_event(
+        self,
+        run_id: str,
+        event_type: str,
+        severity: str,
+        detail: dict[str, Any],
+    ) -> dict[str, Any]:
+        created = utc_now()
+        serialized = json.dumps(
+            detail,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        with self._lock, self.session() as connection:
+            row = connection.execute(
+                "SELECT id FROM automation_runs WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+            if not row:
+                raise ValueError("自动化运行不存在。")
+            cursor = connection.execute(
+                """
+                INSERT INTO automation_events(
+                    automation_run_id, created_utc, event_type, severity, detail_json
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (row["id"], created, event_type, severity, serialized),
+            )
+        return {
+            "id": int(cursor.lastrowid),
+            "run_id": run_id,
+            "created_utc": created,
+            "event_type": event_type,
+            "severity": severity,
+            "detail": detail,
+        }
+
+    def automation_events(
+        self,
+        run_id: str,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 500))
+        with self.session() as connection:
+            rows = connection.execute(
+                """
+                SELECT e.id, e.created_utc, e.event_type, e.severity, e.detail_json
+                FROM automation_events AS e
+                JOIN automation_runs AS r ON r.id = e.automation_run_id
+                WHERE r.run_id = ?
+                ORDER BY e.id
+                LIMIT ?
+                """,
+                (run_id, limit),
+            ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "run_id": run_id,
+                "created_utc": row["created_utc"],
+                "event_type": row["event_type"],
+                "severity": row["severity"],
+                "detail": json.loads(row["detail_json"]),
+            }
+            for row in rows
+        ]
 
     def upsert_run(
         self,
@@ -460,6 +1074,7 @@ class Database:
             curve.status,
             curve.error,
             PARSER_VERSION,
+            curve.parser_id,
             fingerprint,
             size,
             modified_utc,
@@ -491,7 +1106,7 @@ class Database:
                     """
                     UPDATE runs SET
                         source_name=?, instrument=?, technique=?, parse_status=?, parse_error=?,
-                        parser_version=?, sha256=?, size_bytes=?, modified_utc=?, imported_utc=?, encoding=?,
+                        parser_version=?, parser_id=?, sha256=?, size_bytes=?, modified_utc=?, imported_utc=?, encoding=?,
                         delimiter=?, headers_json=?, x_name=?, x_unit=?, y_name=?, y_unit=?,
                         point_count=?, points_json=?
                     WHERE source_path=?
@@ -504,15 +1119,20 @@ class Database:
                     """
                     INSERT INTO runs (
                         source_name, instrument, technique, parse_status, parse_error,
-                        parser_version, sha256, size_bytes, modified_utc, imported_utc, encoding,
+                        parser_version, parser_id, sha256, size_bytes, modified_utc, imported_utc, encoding,
                         delimiter, headers_json, x_name, x_unit, y_name, y_unit,
                         point_count, points_json, source_path
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     payload,
                 )
                 action = "imported"
-        self.audit(action, path.name, f"{curve.instrument} / {curve.technique} / {curve.point_count} points")
+        self.audit(
+            action,
+            path.name,
+            f"{curve.instrument} / {curve.technique} / {curve.parser_id} / "
+            f"{curve.point_count} points",
+        )
         return action
 
     def list_runs(self, instrument: str = "", technique: str = "", query: str = "") -> list[dict[str, Any]]:
@@ -534,16 +1154,67 @@ class Database:
         with self.session() as connection:
             rows = connection.execute(
                 f"""
-                SELECT id, source_name, instrument, technique, parse_status, sha256,
+                SELECT id, source_name, instrument, technique, parse_status, parser_id, sha256,
                        size_bytes, modified_utc, imported_utc, point_count, sample_id,
-                       material, electrolyte, area_cm2, tags, x_name, x_unit, y_name, y_unit
+                       material, electrolyte, area_cm2, tags, x_name, x_unit, y_name, y_unit,
+                       source_path
                 FROM runs{where}
                 ORDER BY modified_utc DESC, id DESC
                 LIMIT 500
                 """,
                 parameters,
             ).fetchall()
-        return [dict(row) for row in rows]
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            result = dict(row)
+            result["source_available"] = source_is_available(result.pop("source_path"))
+            results.append(result)
+        return results
+
+    def list_run_sources(
+        self,
+        technique: str = "",
+        query: str = "",
+        limit: int = 2000,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """Return indexed source paths for trusted, server-side tree construction."""
+        conditions: list[str] = []
+        parameters: list[Any] = []
+        if technique:
+            conditions.append("technique = ?")
+            parameters.append(technique)
+        if query:
+            conditions.append(
+                """
+                (
+                    source_name LIKE ? OR source_path LIKE ? OR sample_id LIKE ?
+                    OR material LIKE ? OR tags LIKE ?
+                )
+                """
+            )
+            wildcard = f"%{query[:200]}%"
+            parameters.extend([wildcard] * 5)
+        where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+        bounded_limit = min(max(int(limit), 1), 5000)
+        with self.session() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT id, source_path, source_name, instrument, technique,
+                       parse_status, parser_id, point_count, modified_utc,
+                       sample_id
+                FROM runs{where}
+                ORDER BY modified_utc DESC, id DESC
+                LIMIT ?
+                """,
+                [*parameters, bounded_limit + 1],
+            ).fetchall()
+        truncated = len(rows) > bounded_limit
+        results: list[dict[str, Any]] = []
+        for row in rows[:bounded_limit]:
+            result = dict(row)
+            result["source_available"] = source_is_available(result["source_path"])
+            results.append(result)
+        return results, truncated
 
     def get_run(self, run_id: int) -> dict[str, Any] | None:
         with self.session() as connection:
@@ -553,7 +1224,143 @@ class Database:
         result = dict(row)
         result["headers"] = json.loads(result.pop("headers_json"))
         result["points"] = json.loads(result.pop("points_json"))
+        result["source_available"] = source_is_available(result["source_path"])
         return result
+
+    def get_run_by_source_path(self, source_path: Path) -> dict[str, Any] | None:
+        with self.session() as connection:
+            row = connection.execute(
+                """
+                SELECT id, source_path, parse_status, parser_id, sha256, point_count
+                FROM runs
+                WHERE source_path = ?
+                """,
+                (str(source_path),),
+            ).fetchone()
+        return dict(row) if row else None
+
+    @staticmethod
+    def _analysis_record_from_row(row: sqlite3.Row) -> dict[str, Any]:
+        record = {
+            "id": int(row["id"]),
+            "run_id": int(row["run_id"]),
+            "analysis_type": row["analysis_type"],
+            "schema_version": int(row["schema_version"]),
+            "algorithm_id": row["algorithm_id"],
+            "algorithm_version": row["algorithm_version"],
+            "source_sha256": row["source_sha256"],
+            "parser_id": row["parser_id"],
+            "parser_version": row["parser_version"],
+            "parameters": json.loads(row["parameters_json"]),
+            "result": json.loads(row["result_json"]),
+            "created_utc": row["created_utc"],
+            "preview": False,
+        }
+        keys = set(row.keys())
+        if "current_sha256" in keys:
+            record["stale"] = row["source_sha256"] != row["current_sha256"]
+        return record
+
+    def list_analyses(self, run_id: int) -> list[dict[str, Any]] | None:
+        with self.session() as connection:
+            run = connection.execute(
+                "SELECT id FROM runs WHERE id = ?",
+                (run_id,),
+            ).fetchone()
+            if not run:
+                return None
+            rows = connection.execute(
+                """
+                SELECT a.*, r.sha256 AS current_sha256
+                FROM analysis_records AS a
+                JOIN runs AS r ON r.id = a.run_id
+                WHERE a.run_id = ?
+                ORDER BY a.id DESC
+                LIMIT 200
+                """,
+                (run_id,),
+            ).fetchall()
+        return [self._analysis_record_from_row(row) for row in rows]
+
+    def save_analysis(
+        self,
+        *,
+        run_id: int,
+        analysis_type: str,
+        schema_version: int,
+        algorithm_id: str,
+        algorithm_version: str,
+        source_sha256: str,
+        parser_id: str,
+        parser_version: str,
+        parameters: dict[str, Any],
+        result: dict[str, Any],
+    ) -> dict[str, Any]:
+        parameters_json = json.dumps(
+            parameters,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        result_json = json.dumps(
+            result,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        if len(parameters_json.encode("utf-8")) > MAX_JSON_REQUEST_BYTES:
+            raise ValueError("分析参数超过 1 MiB。")
+        if len(result_json.encode("utf-8")) > MAX_JSON_REQUEST_BYTES:
+            raise ValueError("分析结果超过 1 MiB。")
+        created = utc_now()
+        with self._lock, self.session() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            run = connection.execute(
+                "SELECT sha256 FROM runs WHERE id = ?",
+                (run_id,),
+            ).fetchone()
+            if not run:
+                raise AnalysisRequestError("记录不存在。", HTTPStatus.NOT_FOUND)
+            if run["sha256"] != source_sha256:
+                raise AnalysisRequestError(
+                    "数据文件索引已变化，请重新预览后再保存。",
+                    HTTPStatus.CONFLICT,
+                )
+            cursor = connection.execute(
+                """
+                INSERT INTO analysis_records(
+                    run_id, analysis_type, schema_version, algorithm_id,
+                    algorithm_version, source_sha256, parser_id, parser_version,
+                    parameters_json, result_json, created_utc
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    analysis_type,
+                    int(schema_version),
+                    algorithm_id,
+                    algorithm_version,
+                    source_sha256,
+                    parser_id,
+                    parser_version,
+                    parameters_json,
+                    result_json,
+                    created,
+                ),
+            )
+            row = connection.execute(
+                """
+                SELECT a.*, r.sha256 AS current_sha256
+                FROM analysis_records AS a
+                JOIN runs AS r ON r.id = a.run_id
+                WHERE a.id = ?
+                """,
+                (int(cursor.lastrowid),),
+            ).fetchone()
+        assert row is not None
+        return self._analysis_record_from_row(row)
 
     def update_metadata(self, run_id: int, values: dict[str, Any]) -> dict[str, Any] | None:
         allowed = ("sample_id", "material", "electrolyte", "area_cm2", "tags", "notes")
@@ -603,10 +1410,19 @@ class Database:
                     "SELECT instrument AS name, COUNT(*) AS count FROM runs GROUP BY instrument"
                 ).fetchall()
             ]
+            source_paths = [
+                row["source_path"]
+                for row in connection.execute("SELECT source_path FROM runs").fetchall()
+            ]
+        unavailable_sources = sum(
+            not source_is_available(source_path) for source_path in source_paths
+        )
         return {
             "total": total,
             "parsed": parsed,
             "metadata_only": metadata_only,
+            "available_sources": total - unavailable_sources,
+            "unavailable_sources": unavailable_sources,
             "instruments": instruments,
         }
 
@@ -640,14 +1456,26 @@ class Scanner:
 
     def iter_files(self) -> Iterable[Path]:
         for root in self.roots:
-            if not root.exists() or not root.is_dir():
+            try:
+                resolved_root = root.resolve(strict=True)
+            except OSError:
                 continue
-            for directory, dirnames, filenames in os.walk(root):
+            if not resolved_root.is_dir():
+                continue
+            for directory, dirnames, filenames in os.walk(resolved_root):
                 dirnames[:] = [name for name in dirnames if not name.startswith(".")]
                 for filename in filenames:
                     path = Path(directory) / filename
-                    if path.suffix.lower() in self.extensions:
-                        yield path
+                    if path.suffix.lower() not in self.extensions:
+                        continue
+                    try:
+                        yield resolve_path_within_roots(
+                            path,
+                            [resolved_root],
+                            strict=True,
+                        )
+                    except (OSError, ValueError):
+                        continue
 
     def scan(self) -> dict[str, Any]:
         if not self.lock.acquire(blocking=False):
@@ -665,6 +1493,11 @@ class Scanner:
             for path in self.iter_files():
                 counters["seen"] += 1
                 try:
+                    path = resolve_path_within_roots(
+                        path,
+                        self.roots,
+                        strict=True,
+                    )
                     before = path.stat()
                     if before.st_size > self.max_file_bytes:
                         counters["skipped"] += 1
@@ -674,7 +1507,10 @@ class Scanner:
                         continue
                     data = path.read_bytes()
                     after = path.stat()
-                    if before.st_size != after.st_size or before.st_mtime_ns != after.st_mtime_ns:
+                    if (
+                        before.st_size != after.st_size
+                        or before.st_mtime_ns != after.st_mtime_ns
+                    ):
                         counters["skipped"] += 1
                         self.database.audit("deferred", path.name, "File changed while being read.")
                         continue
@@ -684,7 +1520,7 @@ class Scanner:
                     ).isoformat(timespec="seconds")
                     curve = parse_curve(path, data, self.max_points)
                     action = self.database.upsert_run(
-                        path.resolve(), fingerprint, after.st_size, modified, curve
+                        path, fingerprint, after.st_size, modified, curve
                     )
                     counters[action] += 1
                 except (OSError, UnicodeError, ValueError) as exc:
@@ -704,11 +1540,379 @@ class RuntimeState:
         self.config = config
         self.started = time.monotonic()
         self.stop_event = threading.Event()
+        self.start_stop = StartStopWorkspace(
+            database,
+            config.get("start_stop_analysis_dir", ""),
+            collection_script=config.get("start_stop_collection_script", ""),
+            python_executable=config.get("start_stop_python", ""),
+            node_executable=config.get("start_stop_node", ""),
+            timeout_seconds=config.get("start_stop_job_timeout_seconds", 3600),
+        )
+        self.control = StageCManager(
+            database,
+            config,
+            output_importer=self._import_control_outputs,
+        )
+
+    def _import_control_outputs(
+        self,
+        binary_path: Path,
+        text_path: Path,
+    ) -> dict[str, Any]:
+        self.scanner.scan()
+        binary = self.database.get_run_by_source_path(binary_path)
+        text = self.database.get_run_by_source_path(text_path)
+        return {
+            "binary_run_id": binary["id"] if binary else None,
+            "text_run_id": text["id"] if text else None,
+            "parse_status": text["parse_status"] if text else "not_imported",
+        }
 
     def watcher(self) -> None:
         while not self.stop_event.is_set():
             self.scanner.scan()
             self.stop_event.wait(self.config["scan_interval_seconds"])
+
+    def control_watcher(self) -> None:
+        while not self.stop_event.is_set():
+            try:
+                self.control.poll_all()
+            except Exception:
+                traceback.print_exc()
+            self.stop_event.wait(1.0)
+
+    def control_capabilities(self) -> dict[str, Any]:
+        capabilities = self.control.capabilities()
+        capabilities["dry_run"] = dry_run_capabilities()
+        return capabilities
+
+    @staticmethod
+    def _json_object(value: Any, label: str) -> dict[str, Any]:
+        if dataclasses.is_dataclass(value) and not isinstance(value, type):
+            value = dataclasses.asdict(value)
+        elif hasattr(value, "to_dict") and callable(value.to_dict):
+            value = value.to_dict()
+        if not isinstance(value, dict):
+            raise ValueError(f"{label}必须是 JSON 对象。")
+        try:
+            serialized = json.dumps(
+                value,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{label}包含无法保存的值。") from exc
+        if len(serialized.encode("utf-8")) > MAX_JSON_REQUEST_BYTES:
+            raise ValueError(f"{label}超过 1 MiB。")
+        return json.loads(serialized)
+
+    @classmethod
+    def _public_analysis_value(cls, value: Any) -> Any:
+        if dataclasses.is_dataclass(value) and not isinstance(value, type):
+            value = dataclasses.asdict(value)
+        elif hasattr(value, "to_dict") and callable(value.to_dict):
+            value = value.to_dict()
+        if isinstance(value, dict):
+            return {
+                str(key): cls._public_analysis_value(item)
+                for key, item in value.items()
+                if str(key).lower() not in {"source_path", "absolute_path"}
+            }
+        if isinstance(value, (list, tuple)):
+            return [cls._public_analysis_value(item) for item in value]
+        return value
+
+    @staticmethod
+    def _canonical_analysis_type(value: Any) -> str:
+        normalized = str(value or "").strip().lower().replace("-", "_")
+        aliases = {
+            "eis": "eis_resistance",
+            "eis_resistance": "eis_resistance",
+            "resistance": "eis_resistance",
+            "cv": "cv_overpotential",
+            "cv_overpotential": "cv_overpotential",
+            "overpotential": "cv_overpotential",
+        }
+        analysis_type = aliases.get(normalized)
+        if not analysis_type:
+            raise ValueError("analysis_type 必须是 eis_resistance 或 cv_overpotential。")
+        return analysis_type
+
+    @staticmethod
+    def _call_analysis_function(
+        function: Any,
+        table: Any,
+        parameters: dict[str, Any],
+    ) -> Any:
+        signature = inspect.signature(function)
+        try:
+            signature.bind(table, parameters)
+        except TypeError:
+            try:
+                signature.bind(table, params=parameters)
+            except TypeError:
+                signature.bind(table)
+                return function(table)
+            return function(table, params=parameters)
+        return function(table, parameters)
+
+    def _analysis_source(self, run_id: int) -> tuple[dict[str, Any], bytes]:
+        run = self.database.get_run(run_id)
+        if not run:
+            raise AnalysisRequestError("记录不存在。", HTTPStatus.NOT_FOUND)
+        try:
+            source_path = resolve_path_within_roots(
+                Path(run["source_path"]),
+                self.scanner.roots,
+                strict=True,
+            )
+            before = source_path.stat()
+            if not source_path.is_file():
+                raise OSError("not a regular file")
+            if before.st_size > self.scanner.max_file_bytes:
+                raise AnalysisRequestError(
+                    "源数据文件超过当前安全读取上限。",
+                    HTTPStatus.CONFLICT,
+                )
+            with source_path.open("rb") as source:
+                data = source.read()
+            after_path = resolve_path_within_roots(
+                source_path,
+                self.scanner.roots,
+                strict=True,
+            )
+            if after_path != source_path:
+                raise AnalysisRequestError(
+                    "源数据文件在读取过程中离开了当前数据目录。",
+                    HTTPStatus.CONFLICT,
+                )
+            after = after_path.stat()
+        except AnalysisRequestError:
+            raise
+        except ValueError as exc:
+            raise AnalysisRequestError(
+                "源数据文件不在当前配置的数据目录内。",
+                HTTPStatus.FORBIDDEN,
+            ) from exc
+        except OSError as exc:
+            raise AnalysisRequestError(
+                "源数据文件当前不可读取，无法进行全分辨率分析。",
+                HTTPStatus.CONFLICT,
+            ) from exc
+        if (
+            before.st_size != after.st_size
+            or before.st_mtime_ns != after.st_mtime_ns
+        ):
+            raise AnalysisRequestError(
+                "源数据文件在读取过程中发生变化，请稍后重试。",
+                HTTPStatus.CONFLICT,
+            )
+        source_sha256 = hashlib.sha256(data).hexdigest()
+        if source_sha256 != run["sha256"]:
+            raise AnalysisRequestError(
+                "源数据文件已变化，请先重新扫描后再分析。",
+                HTTPStatus.CONFLICT,
+            )
+        run = dict(run)
+        run["source_path"] = str(source_path)
+        return run, data
+
+    def calculate_analysis(
+        self,
+        run_id: int,
+        analysis_type: str,
+        parameters: dict[str, Any],
+        *,
+        persist: bool,
+    ) -> dict[str, Any]:
+        from echem_platform.analysis import (
+            calculate_cv_overpotential,
+            calculate_eis_resistance,
+        )
+
+        analysis_type = self._canonical_analysis_type(analysis_type)
+        parameters = self._json_object(parameters, "parameters")
+        run, data = self._analysis_source(run_id)
+        technique = str(run.get("technique") or "").strip().upper()
+        expected = "EIS" if analysis_type == "eis_resistance" else "CV"
+        if technique != expected:
+            raise ValueError(f"当前记录是 {technique or '未知'} 数据，不能执行 {expected} 分析。")
+
+        table = parse_numeric_table(Path(run["source_path"]), data)
+        function = (
+            calculate_eis_resistance
+            if analysis_type == "eis_resistance"
+            else calculate_cv_overpotential
+        )
+        calculated = self._call_analysis_function(function, table, parameters)
+        calculated = self._public_analysis_value(calculated)
+        if not isinstance(calculated, dict):
+            raise ValueError("分析算法返回了无效结果。")
+
+        algorithm = calculated.pop("algorithm", {})
+        if not isinstance(algorithm, dict):
+            algorithm = {}
+        default_algorithm = (
+            "eis_high_frequency_intercept"
+            if analysis_type == "eis_resistance"
+            else "cv_rhe_ir_target_current_interpolation"
+        )
+        algorithm_id = str(
+            calculated.pop("algorithm_id", "")
+            or algorithm.get("id")
+            or default_algorithm
+        )[:160]
+        algorithm_version = str(
+            calculated.pop("algorithm_version", "")
+            or algorithm.get("version")
+            or "2026.07.26.1"
+        )[:80]
+        normalized_parameters = calculated.pop("parameters", parameters)
+        normalized_parameters = self._json_object(
+            self._public_analysis_value(normalized_parameters),
+            "分析参数",
+        )
+        calculated.pop("analysis_type", None)
+        calculated.pop("schema_version", None)
+        warnings = calculated.pop("warnings", [])
+        nested_result = calculated.pop("result", None)
+        if nested_result is not None:
+            if not isinstance(nested_result, dict):
+                raise ValueError("分析算法的 result 必须是 JSON 对象。")
+            result_payload = dict(nested_result)
+            for key, value in calculated.items():
+                result_payload.setdefault(key, value)
+        else:
+            result_payload = calculated
+        if warnings:
+            result_payload.setdefault("warnings", warnings)
+        result = self._json_object(
+            self._public_analysis_value(result_payload),
+            "分析结果",
+        )
+        quality = result.get("quality")
+        quality_level = (
+            str(quality.get("level", "")).strip()
+            if isinstance(quality, dict)
+            else ""
+        )
+        if persist:
+            if quality_level == "not_calculable":
+                raise AnalysisValidationError(
+                    "当前分析结果不可计算，不能保存；请根据质量原因调整数据或参数后重新预览。",
+                    field="quality",
+                    code="analysis_not_calculable",
+                    details={"quality": quality},
+                )
+            if quality_level not in {"quantitative", "screening"}:
+                raise AnalysisValidationError(
+                    "分析算法没有返回受信任的质量等级，不能保存当前结果。",
+                    field="quality",
+                    code="analysis_quality_untrusted",
+                    details={"quality": quality},
+                )
+
+        common = {
+            "run_id": int(run_id),
+            "analysis_type": analysis_type,
+            "schema_version": ANALYSIS_SCHEMA_VERSION,
+            "algorithm_id": algorithm_id,
+            "algorithm_version": algorithm_version,
+            "source_sha256": run["sha256"],
+            "parser_id": run.get("parser_id", ""),
+            "parser_version": run.get("parser_version", "") or PARSER_VERSION,
+            "parameters": normalized_parameters,
+            "result": result,
+        }
+        if not persist:
+            return {
+                **common,
+                "created_utc": utc_now(),
+                "preview": True,
+                "stale": False,
+            }
+        saved = self.database.save_analysis(**common)
+        self.database.audit(
+            "analysis_saved",
+            str(run_id),
+            f"{analysis_type} / {algorithm_id} / source {run['sha256'][:12]}",
+        )
+        return saved
+
+    def list_analyses(self, run_id: int) -> list[dict[str, Any]]:
+        records = self.database.list_analyses(run_id)
+        if records is None:
+            raise AnalysisRequestError("记录不存在。", HTTPStatus.NOT_FOUND)
+        return records
+
+    def file_tree(self, technique: str = "", query: str = "") -> dict[str, Any]:
+        """Build a read-only folder/file index without exposing absolute source paths."""
+        rows, truncated = self.database.list_run_sources(
+            technique=technique,
+            query=query,
+        )
+        roots: list[dict[str, Any]] = []
+        root_entries: list[tuple[Path, dict[str, Any]]] = []
+        label_counts: dict[str, int] = {}
+        for index, root in enumerate(self.scanner.roots, start=1):
+            base_label = root.name or str(root)
+            label_counts[base_label] = label_counts.get(base_label, 0) + 1
+            suffix = label_counts[base_label]
+            entry = {
+                "id": f"root-{index}",
+                "name": base_label if suffix == 1 else f"{base_label} ({suffix})",
+                "available": root.exists() and root.is_dir(),
+                "file_count": 0,
+                "files": [],
+            }
+            roots.append(entry)
+            try:
+                comparable_root = root.resolve()
+            except OSError:
+                comparable_root = root
+            root_entries.append((comparable_root, entry))
+
+        cached_entry: dict[str, Any] | None = None
+        for row in rows:
+            source = Path(row.pop("source_path"))
+            matches: list[tuple[Path, dict[str, Any], Path]] = []
+            for root, entry in root_entries:
+                try:
+                    relative = source.relative_to(root)
+                except ValueError:
+                    continue
+                matches.append((root, entry, relative))
+            if matches:
+                _, entry, relative = max(
+                    matches,
+                    key=lambda item: len(item[0].parts),
+                )
+            else:
+                if cached_entry is None:
+                    cached_entry = {
+                        "id": "cached",
+                        "name": "历史缓存",
+                        "available": False,
+                        "file_count": 0,
+                        "files": [],
+                    }
+                    roots.append(cached_entry)
+                entry = cached_entry
+                relative = Path(row["source_name"])
+
+            file_entry = {
+                **row,
+                "relative_path": relative.as_posix(),
+            }
+            entry["files"].append(file_entry)
+            entry["file_count"] += 1
+
+        return {
+            "roots": roots,
+            "total": sum(root["file_count"] for root in roots),
+            "truncated": truncated,
+        }
 
     def status(self) -> dict[str, Any]:
         counts = self.database.status_counts()
@@ -719,10 +1923,18 @@ class RuntimeState:
         return {
             "app": APP_NAME,
             "version": APP_VERSION,
-            "mode": "read_only_sources",
+            "mode": (
+                "read_only_sources_and_stage_c_ocp_control"
+                if self.config["instrument_control_enabled"]
+                else "read_only_sources_and_stage_c_locked"
+            ),
             "loopback_only": True,
-            "instrument_control": False,
+            "instrument_control": self.config["instrument_control_enabled"],
+            "control_stage": STAGE_C_ID,
+            "launch_available": self.config["instrument_control_enabled"],
             "serial_access": False,
+            "local_override_active": self.config["local_override_active"],
+            "config_sources": self.config["config_sources"],
             "uptime_seconds": round(time.monotonic() - self.started),
             "last_scan": self.scanner.last_scan,
             "last_scan_result": self.scanner.last_result,
@@ -731,9 +1943,174 @@ class RuntimeState:
         }
 
 
-def create_handler(runtime: RuntimeState):
+LAN_START_STOP_GET_PATHS = frozenset(
+    {
+        "/",
+        "/start-stop",
+        "/start-stop/analysis",
+        "/start-stop/config",
+        "/api/start-stop/status",
+        "/api/start-stop/materials",
+        "/api/start-stop/series",
+        "/api/start-stop/chart",
+        "/api/start-stop/pdf",
+    }
+)
+LAN_START_STOP_STATIC_PATHS = frozenset(
+    {
+        "/static/styles.css",
+        "/static/workbench.css",
+        "/static/start-stop.css",
+        "/static/start-stop.js",
+        "/static/start-stop-config.css",
+        "/static/start-stop-config.html",
+        "/static/start-stop-config.js",
+        "/static/icons/gear.svg",
+    }
+)
+
+
+def lan_start_stop_get_allowed(path: str) -> bool:
+    return path in LAN_START_STOP_GET_PATHS or path in LAN_START_STOP_STATIC_PATHS
+
+
+LAN_JOB_RESULT_KEYS = frozenset(
+    {
+        "stage",
+        "materials_analyzed",
+        "materials_in_atlas",
+        "materials_excluded_from_atlas",
+        "included_files",
+        "analysis_series",
+        "series_in_atlas",
+        "complete_cycles",
+        "normal_cycles",
+        "abnormal_cycles",
+        "materials",
+        "start_stop_candidates",
+        "included_start_stop_files",
+        "included_standard_files",
+        "included_adt_files",
+        "collection_outcome",
+        "collection_machines_total",
+        "collection_machines_with_errors",
+        "collection_roots_total",
+        "collection_roots_ok",
+        "collection_roots_failed",
+        "collection_inventoried",
+        "collection_already_collected",
+        "collection_planned_files",
+        "collection_planned_bytes",
+        "collection_copied",
+        "collection_versioned",
+        "collection_unchanged_content",
+        "collection_unsettled_skipped",
+        "collection_changed_during_collection",
+        "collection_errors",
+    }
+)
+
+
+def start_stop_capabilities(
+    payload: dict[str, Any],
+    *,
+    lan_read_only: bool,
+) -> dict[str, Any]:
+    execution = payload.get("execution")
+    update_ready = bool(
+        isinstance(execution, dict)
+        and execution.get("update_ready", execution.get("ready")) is True
+    )
+    render_ready = bool(
+        isinstance(execution, dict)
+        and execution.get("render_ready", execution.get("ready")) is True
+    )
+    available = payload.get("available") is True
+    job = payload.get("job")
+    busy = bool(
+        isinstance(job, dict) and job.get("status") in {"queued", "running"}
+    )
+    server_ready = available and update_ready
+    render_server_ready = available and render_ready
+    allowed_here = not lan_read_only
+    can_process = server_ready and allowed_here and not busy
+    can_render = render_server_ready and allowed_here and not busy
+    if lan_read_only:
+        message = (
+            "当前为局域网只读入口；采集与更新能力请以服务器本机页面为准。"
+        )
+    elif not available:
+        message = str(payload.get("message") or "启停数据工作区当前不可用。")
+    elif not update_ready:
+        message = str(
+            ((execution or {}).get("message") if isinstance(execution, dict) else "")
+            or "更新运行环境尚未就绪。"
+        )
+    elif busy:
+        message = "本机正在处理启停数据，请等待当前任务完成。"
+    else:
+        message = "可从实验电脑安全增量采集新文件，并随后更新材料表。"
+    return {
+        "server_ready": server_ready,
+        "render_server_ready": render_server_ready,
+        "allowed_here": allowed_here,
+        "busy": busy,
+        "can_start_update": can_process,
+        "can_update_data": can_process,
+        "can_save_configuration": available and allowed_here and not busy,
+        "can_render_atlas": can_render,
+        "data_scope": "remote_collect_then_local_repository",
+        "remote_sync_available": bool(
+            isinstance(execution, dict) and execution.get("collection_ready") is True
+        ),
+        "message": message,
+    }
+
+
+def local_start_stop_status(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **payload,
+        "access_mode": "local_read_write",
+        "capabilities": start_stop_capabilities(
+            payload,
+            lan_read_only=False,
+        ),
+    }
+
+
+def lan_start_stop_status(payload: dict[str, Any]) -> dict[str, Any]:
+    sanitized = dict(payload)
+    sanitized["access_mode"] = "lan_read_only"
+    sanitized["capabilities"] = start_stop_capabilities(
+        payload,
+        lan_read_only=True,
+    )
+    job = payload.get("job")
+    if isinstance(job, dict):
+        safe_job = dict(job)
+        result = job.get("result")
+        safe_job["result"] = {
+            key: value
+            for key, value in (result.items() if isinstance(result, dict) else [])
+            if key in LAN_JOB_RESULT_KEYS
+        }
+        if safe_job.get("status") == "failed":
+            safe_job["message"] = "任务失败，请在服务器本机查看详情。"
+        sanitized["job"] = safe_job
+    return sanitized
+
+
+def create_handler(
+    runtime: RuntimeState,
+    *,
+    lan_read_only: bool = False,
+    lan_bind_host: str = "",
+    lan_public_port: int | None = None,
+    local_public_port: int | None = None,
+    trusted_container_proxy: bool = False,
+):
     class Handler(BaseHTTPRequestHandler):
-        server_version = "EchemPlatform/0.1"
+        server_version = "EchemPlatform/0.3"
 
         def log_message(self, fmt: str, *args: Any) -> None:
             sys.stdout.write(
@@ -747,17 +2124,106 @@ def create_handler(runtime: RuntimeState):
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+            self.send_header("Referrer-Policy", "no-referrer")
             self.end_headers()
             self.wfile.write(data)
 
         def send_error_json(self, status: int, message: str) -> None:
             self.send_json({"error": message}, status)
 
+        def send_file_download(
+            self,
+            path: Path,
+            *,
+            content_type: str,
+            filename: str,
+        ) -> None:
+            size = path.stat().st_size
+            encoded_name = urllib.parse.quote(filename, safe="")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(size))
+            self.send_header(
+                "Content-Disposition",
+                f"attachment; filename*=UTF-8''{encoded_name}",
+            )
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.end_headers()
+            with path.open("rb") as source:
+                while chunk := source.read(1024 * 1024):
+                    self.wfile.write(chunk)
+
+        def require_local_json_request(self) -> None:
+            try:
+                peer = ipaddress.ip_address(self.client_address[0])
+            except (ValueError, IndexError) as exc:
+                raise AnalysisRequestError(
+                    "分析请求的客户端地址无效。",
+                    HTTPStatus.FORBIDDEN,
+                ) from exc
+            if not peer.is_loopback and not trusted_container_proxy:
+                raise AnalysisRequestError(
+                    "写操作只允许来自本机回环地址。",
+                    HTTPStatus.FORBIDDEN,
+                )
+            content_types = self.headers.get_all("Content-Type", [])
+            if len(content_types) != 1:
+                raise AnalysisRequestError(
+                    "分析请求必须且只能声明一个 application/json Content-Type。",
+                    HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
+                )
+            hosts = self.headers.get_all("Host", [])
+            if len(hosts) != 1:
+                raise AnalysisRequestError(
+                    "分析请求必须且只能使用一个本机回环 Host。",
+                    HTTPStatus.FORBIDDEN,
+                )
+            origins = self.headers.get_all("Origin", [])
+            if len(origins) > 1:
+                raise AnalysisRequestError(
+                    "分析请求的 Origin 无效。",
+                    HTTPStatus.FORBIDDEN,
+                )
+            validate_local_json_request(
+                host=hosts[0],
+                origin=origins[0] if origins else None,
+                content_type=content_types[0],
+                server_port=int(
+                    local_public_port or self.server.server_address[1]
+                ),
+            )
+
+        def require_lan_read_only_host(self) -> None:
+            hosts = self.headers.get_all("Host", [])
+            if len(hosts) != 1:
+                raise AnalysisRequestError(
+                    "局域网只读访问必须且只能使用一个 Host。",
+                    HTTPStatus.FORBIDDEN,
+                )
+            validate_lan_read_only_host(
+                host=hosts[0],
+                bind=lan_bind_host,
+                server_port=int(
+                    lan_public_port or self.server.server_address[1]
+                ),
+            )
+
         def read_json(self) -> dict[str, Any]:
             length = int(self.headers.get("Content-Length", "0"))
-            if length <= 0 or length > 65536:
+            if length <= 0 or length > MAX_JSON_REQUEST_BYTES:
                 raise ValueError("请求内容为空或过大。")
-            return json.loads(self.rfile.read(length).decode("utf-8"))
+            try:
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            except UnicodeDecodeError as exc:
+                raise ValueError("请求 JSON 必须使用 UTF-8。") from exc
+            if not isinstance(payload, dict):
+                raise ValueError("请求 JSON 顶层必须是对象。")
+            return payload
 
         def send_static(self, relative: str) -> None:
             candidate = (STATIC_ROOT / relative).resolve()
@@ -775,6 +2241,16 @@ def create_handler(runtime: RuntimeState):
             ))
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-cache")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header(
+                "Content-Security-Policy",
+                "default-src 'self'; style-src 'self'; script-src 'self'; "
+                "connect-src 'self'; img-src 'self' data:; "
+                "object-src 'none'; form-action 'self'; "
+                "base-uri 'none'; frame-ancestors 'none'",
+            )
             self.end_headers()
             self.wfile.write(data)
 
@@ -783,8 +2259,62 @@ def create_handler(runtime: RuntimeState):
             path = parsed.path
             query = urllib.parse.parse_qs(parsed.query)
             try:
+                if lan_read_only:
+                    self.require_lan_read_only_host()
+                    if not lan_start_stop_get_allowed(path):
+                        self.send_error_json(HTTPStatus.NOT_FOUND, "Not found")
+                        return
                 if path == "/api/status":
                     self.send_json(runtime.status())
+                elif path == "/api/control/capabilities":
+                    self.send_json(runtime.control_capabilities())
+                elif path == "/api/control/preflight":
+                    self.send_json(runtime.control.preflight())
+                elif path == "/api/control/runs":
+                    if not runtime.config["instrument_control_enabled"]:
+                        self.send_error_json(HTTPStatus.NOT_FOUND, "Not found")
+                    else:
+                        limit = int(query.get("limit", ["50"])[0])
+                        self.send_json(runtime.database.list_automation_runs(limit))
+                elif re.fullmatch(
+                    r"/api/control/runs/RUN-[A-Z0-9-]+/events",
+                    path,
+                ):
+                    if not runtime.config["instrument_control_enabled"]:
+                        self.send_error_json(HTTPStatus.NOT_FOUND, "Not found")
+                    else:
+                        run_id = path.split("/")[-2]
+                        self.send_json(runtime.database.automation_events(run_id))
+                elif re.fullmatch(r"/api/control/runs/RUN-[A-Z0-9-]+", path):
+                    if not runtime.config["instrument_control_enabled"]:
+                        self.send_error_json(HTTPStatus.NOT_FOUND, "Not found")
+                    else:
+                        run_id = path.rsplit("/", 1)[-1]
+                        run = runtime.database.get_automation_run(run_id)
+                        if run:
+                            self.send_json(run)
+                        else:
+                            self.send_error_json(
+                                HTTPStatus.NOT_FOUND,
+                                "自动化运行不存在。",
+                            )
+                elif path == "/api/protocols":
+                    self.send_json(runtime.database.list_protocol_drafts())
+                elif re.fullmatch(r"/api/protocols/[a-z0-9][a-z0-9_-]{0,63}", path):
+                    draft_id = path.rsplit("/", 1)[-1]
+                    draft = runtime.database.get_protocol_draft(draft_id)
+                    if draft:
+                        self.send_json(draft)
+                    elif draft_id == "draft-main":
+                        self.send_json(
+                            {
+                                **default_dry_run_draft(),
+                                "revision": 0,
+                                "persisted": False,
+                            }
+                        )
+                    else:
+                        self.send_error_json(HTTPStatus.NOT_FOUND, "协议草稿不存在。")
                 elif path == "/api/runs":
                     self.send_json(
                         runtime.database.list_runs(
@@ -793,6 +2323,16 @@ def create_handler(runtime: RuntimeState):
                             query=query.get("q", [""])[0],
                         )
                     )
+                elif path == "/api/files/tree":
+                    self.send_json(
+                        runtime.file_tree(
+                            technique=query.get("technique", [""])[0],
+                            query=query.get("q", [""])[0],
+                        )
+                    )
+                elif re.fullmatch(r"/api/runs/\d+/analyses", path):
+                    run_id = int(path.split("/")[-2])
+                    self.send_json(runtime.list_analyses(run_id))
                 elif re.fullmatch(r"/api/runs/\d+", path):
                     run_id = int(path.rsplit("/", 1)[-1])
                     run = runtime.database.get_run(run_id)
@@ -803,12 +2343,74 @@ def create_handler(runtime: RuntimeState):
                 elif path == "/api/audit":
                     limit = int(query.get("limit", ["30"])[0])
                     self.send_json(runtime.database.recent_audit(limit))
+                elif path == "/api/start-stop/status":
+                    start_stop_status = runtime.start_stop.status()
+                    start_stop_status = (
+                        lan_start_stop_status(start_stop_status)
+                        if lan_read_only
+                        else local_start_stop_status(start_stop_status)
+                    )
+                    self.send_json(start_stop_status)
+                elif path == "/api/start-stop/materials":
+                    self.send_json(runtime.start_stop.materials())
+                elif path == "/api/start-stop/series":
+                    self.send_json(runtime.start_stop.series())
+                elif path == "/api/start-stop/chart":
+                    series_ids = [
+                        item
+                        for value in query.get("series", [])
+                        for item in value.split(",")
+                        if item
+                    ]
+                    self.send_json(
+                        runtime.start_stop.chart_data(
+                            series_ids=series_ids,
+                            metric=query.get("metric", ["cathodic"])[0],
+                            x_axis=query.get("x", ["cycle"])[0],
+                            mode=query.get("mode", ["raw"])[0],
+                            max_points=int(query.get("max_points", ["4000"])[0]),
+                        )
+                    )
+                elif path == "/api/start-stop/pdf":
+                    pdf_path, filename = runtime.start_stop.pdf(
+                        query.get("kind", ["standard"])[0]
+                    )
+                    self.send_file_download(
+                        pdf_path,
+                        content_type="application/pdf",
+                        filename=filename,
+                    )
                 elif path == "/":
-                    self.send_static("index.html")
+                    self.send_static(
+                        "start-stop-config.html" if lan_read_only else "index.html"
+                    )
+                elif path in {"/steps", "/steps.html", "/protocol", "/protocol.html"}:
+                    self.send_static("protocol.html")
+                elif path in {"/analysis", "/analysis.html"}:
+                    self.send_static("analysis.html")
+                elif path in {"/start-stop", "/start-stop/config"}:
+                    self.send_static("start-stop-config.html")
+                elif path == "/start-stop/analysis":
+                    self.send_static("start-stop.html")
+                elif path in {
+                    "/environment",
+                    "/environment.html",
+                    "/monitor",
+                    "/monitor.html",
+                }:
+                    self.send_static("monitor.html")
                 elif path.startswith("/static/"):
                     self.send_static(path[len("/static/") :])
                 else:
                     self.send_error_json(HTTPStatus.NOT_FOUND, "Not found")
+            except AnalysisRequestError as exc:
+                self.send_error_json(exc.status, str(exc))
+            except StartStopWorkspaceError as exc:
+                self.send_error_json(exc.status, str(exc))
+            except ControlSafetyError as exc:
+                self.send_json(exc.to_dict(), exc.status)
+            except (ValueError, json.JSONDecodeError) as exc:
+                self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
             except Exception:
                 traceback.print_exc()
                 self.send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, "服务器内部错误。")
@@ -816,8 +2418,190 @@ def create_handler(runtime: RuntimeState):
         def do_POST(self) -> None:
             path = urllib.parse.urlparse(self.path).path
             try:
+                if lan_read_only:
+                    self.require_lan_read_only_host()
+                    self.send_error_json(
+                        HTTPStatus.FORBIDDEN,
+                        "局域网入口为只读模式，不能执行保存、扫描或重绘。",
+                    )
+                    return
                 if path == "/api/scan":
                     self.send_json(runtime.scanner.scan())
+                    return
+                if path == "/api/start-stop/materials":
+                    self.require_local_json_request()
+                    payload = self.read_json()
+                    unknown = sorted(
+                        set(payload)
+                        - {"dataset_fingerprint", "expected_revision", "materials"}
+                    )
+                    if unknown:
+                        raise ValueError(
+                            "材料配置请求包含未知字段："
+                            + ", ".join(unknown)
+                        )
+                    self.send_json(
+                        runtime.start_stop.save_materials(
+                            dataset_fingerprint=str(
+                                payload.get("dataset_fingerprint") or ""
+                            ),
+                            expected_revision=int(
+                                payload.get("expected_revision", -1)
+                            ),
+                            materials=payload.get("materials"),
+                        )
+                    )
+                    return
+                if path == "/api/start-stop/jobs":
+                    self.require_local_json_request()
+                    payload = self.read_json()
+                    unknown = sorted(set(payload) - {"action"})
+                    if unknown:
+                        raise ValueError(
+                            "启停任务请求包含未知字段："
+                            + ", ".join(unknown)
+                        )
+                    self.send_json(
+                        runtime.start_stop.start_job(
+                            str(payload.get("action") or "")
+                        ),
+                        HTTPStatus.ACCEPTED,
+                    )
+                    return
+                if path == "/api/protocols":
+                    payload = self.read_json()
+                    unknown = sorted(
+                        set(payload)
+                        - {
+                            "id",
+                            "protocol",
+                            "output_folder",
+                            "allowed_run_root",
+                        }
+                    )
+                    if unknown:
+                        raise ValueError(
+                            f"协议草稿请求包含未知字段：{', '.join(unknown)}"
+                        )
+                    draft = runtime.database.save_protocol_draft(
+                        str(payload.get("id", "draft-main")),
+                        payload.get("protocol"),
+                        payload.get("output_folder", ""),
+                        payload.get("allowed_run_root", ""),
+                    )
+                    self.send_json(draft)
+                    return
+                if path == "/api/protocols/validate":
+                    self.send_json(
+                        build_dry_run(
+                            self.read_json(),
+                            include_macro_preview=False,
+                        )
+                    )
+                    return
+                if path == "/api/protocols/compile":
+                    self.send_json(
+                        build_dry_run(
+                            self.read_json(),
+                            include_macro_preview=True,
+                        )
+                    )
+                    return
+                if path == "/api/control/runs":
+                    payload = self.read_json()
+                    unknown = sorted(set(payload) - {"protocol"})
+                    if unknown:
+                        raise ValueError(
+                            "创建运行请求包含未知字段：" + ", ".join(unknown)
+                        )
+                    protocol = payload.get("protocol")
+                    if not isinstance(protocol, dict):
+                        raise ValueError("protocol 必须是 JSON 对象。")
+                    self.send_json(
+                        runtime.control.create_run(protocol),
+                        HTTPStatus.CREATED,
+                    )
+                    return
+                control_match = re.fullmatch(
+                    r"/api/control/runs/(RUN-[A-Z0-9-]+)/(arm|start|request-stop)",
+                    path,
+                )
+                if control_match:
+                    run_id, action = control_match.groups()
+                    payload = self.read_json()
+                    if action == "arm":
+                        unknown = sorted(
+                            set(payload) - {"confirmations", "typed_confirmation"}
+                        )
+                        if unknown:
+                            raise ValueError(
+                                "确认请求包含未知字段：" + ", ".join(unknown)
+                            )
+                        confirmations = payload.get("confirmations")
+                        if not isinstance(confirmations, dict):
+                            raise ValueError("confirmations 必须是 JSON 对象。")
+                        self.send_json(
+                            runtime.control.arm(
+                                run_id,
+                                confirmations,
+                                str(payload.get("typed_confirmation", "")),
+                            )
+                        )
+                        return
+                    if action == "start":
+                        unknown = sorted(set(payload) - {"arm_token"})
+                        if unknown:
+                            raise ValueError(
+                                "启动请求包含未知字段：" + ", ".join(unknown)
+                            )
+                        self.send_json(
+                            runtime.control.start(
+                                run_id,
+                                str(payload.get("arm_token", "")),
+                            ),
+                            HTTPStatus.ACCEPTED,
+                        )
+                        return
+                    if payload:
+                        raise ValueError("停止请求不接受参数。")
+                    self.send_json(runtime.control.request_stop(run_id))
+                    return
+                analysis_match = re.fullmatch(
+                    r"/api/runs/(\d+)/analyses(?:/(preview))?",
+                    path,
+                )
+                if analysis_match:
+                    self.require_local_json_request()
+                    payload = self.read_json()
+                    unknown = sorted(
+                        set(payload)
+                        - {"analysis_type", "type", "parameters", "params"}
+                    )
+                    if unknown:
+                        raise ValueError(
+                            "分析请求包含未知字段：" + ", ".join(unknown)
+                        )
+                    analysis_type = payload.get(
+                        "analysis_type",
+                        payload.get("type", ""),
+                    )
+                    parameters = payload.get(
+                        "parameters",
+                        payload.get("params", {}),
+                    )
+                    if not isinstance(parameters, dict):
+                        raise ValueError("parameters 必须是 JSON 对象。")
+                    preview = analysis_match.group(2) == "preview"
+                    result = runtime.calculate_analysis(
+                        int(analysis_match.group(1)),
+                        str(analysis_type),
+                        parameters,
+                        persist=not preview,
+                    )
+                    self.send_json(
+                        result,
+                        HTTPStatus.OK if preview else HTTPStatus.CREATED,
+                    )
                     return
                 match = re.fullmatch(r"/api/runs/(\d+)/metadata", path)
                 if match:
@@ -829,6 +2613,24 @@ def create_handler(runtime: RuntimeState):
                         self.send_error_json(HTTPStatus.NOT_FOUND, "记录不存在。")
                     return
                 self.send_error_json(HTTPStatus.NOT_FOUND, "Not found")
+            except AnalysisRequestError as exc:
+                self.send_error_json(exc.status, str(exc))
+            except StartStopWorkspaceError as exc:
+                self.send_error_json(exc.status, str(exc))
+            except AnalysisValidationError as exc:
+                self.send_json(
+                    {
+                        "error": exc.message,
+                        "analysis_error": exc.as_dict(),
+                    },
+                    HTTPStatus.BAD_REQUEST,
+                )
+            except ProtocolValidationError as exc:
+                self.send_json(exc.to_dict(), HTTPStatus.BAD_REQUEST)
+            except MacroValidationError as exc:
+                self.send_json(exc.to_dict(), HTTPStatus.BAD_REQUEST)
+            except ControlSafetyError as exc:
+                self.send_json(exc.to_dict(), exc.status)
             except (ValueError, json.JSONDecodeError) as exc:
                 self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
             except Exception:
@@ -841,6 +2643,10 @@ def create_handler(runtime: RuntimeState):
 def build_runtime(config_path: Path, database_path: Path) -> RuntimeState:
     config = load_config(config_path)
     roots = resolve_watch_roots(config, config_path.parent)
+    if config["instrument_control_enabled"]:
+        control_run_root = Path(config["run_root"]).resolve()
+        if control_run_root not in roots:
+            roots.append(control_run_root)
     database = Database(database_path)
     scanner = Scanner(
         database=database,
@@ -860,27 +2666,112 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scan-once", action="store_true")
     parser.add_argument("--no-watch", action="store_true")
     parser.add_argument("--port", type=int)
+    parser.add_argument("--bind")
+    parser.add_argument(
+        "--container-mode",
+        action="store_true",
+        help="仅供受约束的 Docker 端口映射使用",
+    )
+    parser.add_argument(
+        "--public-host",
+        help="Docker 局域网只读入口对外使用的明确 RFC1918 地址",
+    )
+    parser.add_argument(
+        "--public-port",
+        type=int,
+        help="Docker 局域网只读入口对外端口",
+    )
+    parser.add_argument(
+        "--lan-read-only",
+        action="store_true",
+        help="仅开放启停查看页和只读接口到指定 RFC1918 地址",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     runtime = build_runtime(args.config.resolve(), args.database.resolve())
-    result = runtime.scanner.scan()
+    container_mode = bool(args.container_mode)
+    if container_mode and os.environ.get("ECHEM_CONTAINER_MODE") != "1":
+        raise ValueError("Docker 监听模式必须由容器环境显式启用。")
+    if container_mode and runtime.config["instrument_control_enabled"]:
+        raise ValueError("Docker 模式禁止启用仪器控制。")
+    if not container_mode and (args.public_host or args.public_port):
+        raise ValueError("--public-host/--public-port 只能用于 Docker 模式。")
+    requested_bind = args.bind or runtime.config["bind"]
+    bind = validate_server_bind(
+        requested_bind,
+        lan_read_only=bool(args.lan_read_only),
+        container_mode=container_mode,
+    )
+    if args.lan_read_only and not args.bind:
+        raise ValueError("局域网只读模式必须通过 --bind 指定明确的 RFC1918 地址。")
+    if args.lan_read_only and runtime.config["instrument_control_enabled"]:
+        raise ValueError("启用仪器控制时禁止开放局域网入口。")
+    if args.lan_read_only and args.scan_once:
+        raise ValueError("局域网只读模式不能与 --scan-once 同时使用。")
+    if container_mode and bind != "0.0.0.0":
+        raise ValueError("Docker 模式必须在容器内监听 0.0.0.0。")
+
+    port = args.port or runtime.config["port"]
+    lan_public_host = bind
+    lan_public_port = port
+    local_public_port = port
+    if container_mode and args.lan_read_only:
+        if not args.public_host:
+            raise ValueError("Docker 局域网只读入口必须指定 --public-host。")
+        lan_public_host = validate_server_bind(
+            args.public_host,
+            lan_read_only=True,
+        )
+        lan_public_port = int(args.public_port or port)
+        if not 1 <= lan_public_port <= 65535:
+            raise ValueError("Docker 局域网对外端口无效。")
+    elif container_mode:
+        if args.public_host:
+            raise ValueError("--public-host 只用于局域网只读容器。")
+        local_public_port = int(args.public_port or port)
+        if not 1 <= local_public_port <= 65535:
+            raise ValueError("Docker 本机入口对外端口无效。")
+
+    result = runtime.scanner.scan() if not args.lan_read_only else {"errors": 0}
     if args.scan_once:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0 if result.get("errors", 0) == 0 else 1
 
-    if not args.no_watch:
+    if not args.no_watch and not args.lan_read_only:
         watcher = threading.Thread(target=runtime.watcher, name="file-watcher", daemon=True)
         watcher.start()
+    if not args.lan_read_only:
+        control_watcher = threading.Thread(
+            target=runtime.control_watcher,
+            name="stage-c-supervisor",
+            daemon=True,
+        )
+        control_watcher.start()
 
-    bind = runtime.config["bind"]
-    port = args.port or runtime.config["port"]
-    server = ThreadingHTTPServer((bind, port), create_handler(runtime))
+    server = ThreadingHTTPServer(
+        (bind, port),
+        create_handler(
+            runtime,
+            lan_read_only=bool(args.lan_read_only),
+            lan_bind_host=lan_public_host,
+            lan_public_port=lan_public_port,
+            local_public_port=local_public_port,
+            trusted_container_proxy=container_mode and not args.lan_read_only,
+        ),
+    )
     print(f"{APP_NAME} {APP_VERSION}")
-    print("只读源文件模式：开启；串口和仪器控制：关闭")
-    print(f"浏览器地址：http://{bind}:{port}")
+    if runtime.config["instrument_control_enabled"]:
+        print("只读源文件模式：开启；阶段 C 60 s OCP：本机私有配置已启用；串口直连：关闭")
+    else:
+        print("只读源文件模式：开启；阶段 C 60 s OCP：锁定；串口和仪器控制：关闭")
+    if args.lan_read_only:
+        print("访问模式：局域网启停只读；保存、扫描、重绘和其他平台模块：关闭")
+        print(f"局域网地址：http://{bind}:{port}/start-stop")
+    else:
+        print(f"浏览器地址：http://{bind}:{port}")
     try:
         server.serve_forever(poll_interval=0.5)
     except KeyboardInterrupt:

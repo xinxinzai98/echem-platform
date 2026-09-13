@@ -11,17 +11,43 @@ venv/
 runtime/
 packages/
 logs/
-dist/
-release-artifacts/
-output/
 config.local.json
+.env
+.env.*.local
 private_data/
 private_fixtures/
 inventory/
+/work/
+
+# Generated platform state
+state/*
+!state/.gitkeep
+*.sqlite3
+*.sqlite3-*
+server.pid
+
+# Local editor files
+.idea/
+.vscode/
+*.swp
+*~
+
+# Local developer scratch and dated internal archives
+.codex_work/
+.playwright-cli/
+/tmp/
+归档/开发历史_*/
+
+# Generated analysis, audit screenshots and deployment/image archives
+/output/
+/outputs/
+
+# Public repository exclusions retained from main
+dist/
+release-artifacts/
+output/
 diagnostics/
 remote_tools/
-
-# Local instrument exports and vendor installers
 Windows测试数据_*/
 *.msi
 *.exe
@@ -41,16 +67,3 @@ Windows测试数据_*/
 *.p12
 *.pem
 *.key
-
-# Generated platform state
-state/*
-!state/.gitkeep
-*.sqlite3
-*.sqlite3-*
-server.pid
-
-# Local editor files
-.idea/
-.vscode/
-*.swp
-*~

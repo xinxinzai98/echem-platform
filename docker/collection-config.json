@@ -1,0 +1,97 @@
+{
+  "version": 1,
+  "settle_seconds": 300,
+  "known_hosts_file": "/Users/hive/.ssh/known_hosts",
+  "extensions": [
+    ".txt",
+    ".bin",
+    ".cor",
+    ".z60",
+    ".dta",
+    ".mpr",
+    ".mpt",
+    ".csv",
+    ".tsv",
+    ".xls",
+    ".xlsx",
+    ".dat",
+    ".zip",
+    ".json",
+    ".jsonl",
+    ".log"
+  ],
+  "machines": [
+    {
+      "id": "01_测试室1_AGHID-G_192.168.110.153",
+      "name": "测试室1",
+      "hostname": "AGHID-G",
+      "ip": "192.168.110.153",
+      "user": "aghid-g\\aghid",
+      "identity_file": "/Users/hive/.ssh/aghid_windows_codex_ed25519",
+      "roots": [
+        {
+          "label": "D盘_data_XY",
+          "remote_path": "D:\\data\\XY",
+          "exclude_directories": []
+        },
+        {
+          "label": "D盘_data_yx",
+          "remote_path": "D:\\data\\yx",
+          "exclude_directories": [
+            "Control_Programs"
+          ]
+        },
+        {
+          "label": "D盘_data_mode",
+          "remote_path": "D:\\data\\mode",
+          "exclude_directories": []
+        },
+        {
+          "label": "桌面_工艺优化",
+          "remote_path": "C:\\Users\\aghid\\Desktop\\工艺优化",
+          "exclude_directories": []
+        }
+      ]
+    },
+    {
+      "id": "02_测试室2_AGHID-H_192.168.110.155",
+      "name": "测试室2",
+      "hostname": "AGHID-H",
+      "ip": "192.168.110.155",
+      "user": "aghid",
+      "identity_file": "/Users/hive/.ssh/id_ed25519_192_168_110_155",
+      "roots": [
+        {
+          "label": "D盘_数据",
+          "remote_path": "D:\\数据",
+          "exclude_directories": []
+        },
+        {
+          "label": "桌面_电镀工艺",
+          "remote_path": "C:\\Users\\aghid\\Desktop\\电镀工艺",
+          "exclude_directories": []
+        }
+      ]
+    },
+    {
+      "id": "03_制备室_A-9_192.168.110.164",
+      "name": "制备室",
+      "hostname": "A-9",
+      "ip": "192.168.110.164",
+      "user": "89464",
+      "identity_file": "/Users/hive/.ssh/windows_192_168_110_164_ed25519",
+      "roots": [
+        {
+          "label": "桌面_XY电镀工艺",
+          "remote_path": "C:\\Users\\89464\\Desktop\\XY电镀工艺",
+          "exclude_directories": []
+        },
+        {
+          "label": "桌面_保护膜",
+          "remote_path": "C:\\Users\\89464\\Desktop\\保护膜",
+          "exclude_directories": []
+        }
+      ]
+    }
+  ]
+}

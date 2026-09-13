@@ -1,103 +1,76 @@
-# 电化学测试平台 V0
+# Start–stop Studio
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/xinxinzai98/echem-platform?display_name=tag)](https://github.com/xinxinzai98/echem-platform/releases)
+独立的电化学稳定性分析程序。默认 Docker 发布只包含数据采集、材料管理、启停/恒流分析、CV–EIS 分析和只读监控，不包含旧平台的仪器控制入口。
 
-[中文](README.md) | [English](README.en.md)
+旧电化学平台的源码仍保留，但不进入此镜像。其历史说明见 [旧平台文档](docs/legacy-echem-platform.md) 和 [旧安全说明](docs/legacy-echem-security.md)。
 
-> Echem Platform is a local-first, read-only workbench for indexing and visualizing CHI and CorrTest electrochemistry exports. It fingerprints every source with SHA-256 and keeps experimental files unchanged.
+## 当前工作流
 
-当前稳定版本：`0.1.4`
+1. 在服务器本机配置实验电脑的搜索位置，下载稳定文件或上传本地数据。
+2. 在材料库保存完整名称、收藏、备注和入图选择。
+3. 更新平台分析，选择原始数据或水位补偿。首次建立计算缓存后，未变化材料复用结果；参照模型更新会使相关补偿结果重新计算。
+4. 在稳定性分析中按工步选线、高亮、缩放或检查异常。工作站与蓝博的电压标尺分开，未知工步不能混合比较。
+5. PDF 按需生成，不是分析的必经步骤。材料库从已完成分析导出图集；高亮导出提供 Excel 完整记录和处理数据，以及 PDF 图。
 
-这是一个刚公开、处于早期阶段的本地电化学数据工作台。它面向数据索引、二维曲线预览和可追溯元数据，不连接串口、不启动仪器软件，也不修改原始测试文件。目前尚无经确认的独立外部采用者。
+CV–EIS 不跨测试阶段借用 EIS。模糊配对和未知在线 iR 状态须在管理端确认；未知或已在线补偿时不再次离线补偿。启停分析不进行 RHE 换算。
 
-![使用合成示例数据的只读工作台](docs/images/dashboard-demo.jpg)
+## 访问方式
 
-## V0 能做什么
+| 入口 | 默认位置 | 权限 |
+| --- | --- | --- |
+| 服务器管理端 | 服务器上的 `http://127.0.0.1:18787/start-stop` | 上传、采集、配置、计算、确认 |
+| 局域网查看端 | `http://<服务器局域网IP>:18788/start-stop` | 查看、选线、高亮、导出 |
+| 健康检查 | 同入口的 `/healthz` | 仅表示 HTTP 服务存活 |
 
-- 监听指定数据目录并建立文件索引
-- 识别常见 CHI 文本导出和 CorrTest `.cor` / `.z60` 文本数据
-- 对 CHI `.bin` 文件只登记元数据和 SHA-256，不尝试逆向解析或修改
-- 展示 CV、LSV、EIS、OCP、CA/CP 等二维曲线
-- 在平台自己的 SQLite 数据库中保存样品编号、材料、电解液、面积、标签和备注
-- 记录导入、更新和人工编辑审计日志
-- 默认只监听 `127.0.0.1`，仅供本机浏览器访问
+当前实验室主机为 192.168.110.225。Windows 部署的局域网入口按既有设置无登录，只适用于受信任的实验室网络。不要直接映射到公网。完整边界见 [SECURITY.md](SECURITY.md)。
 
-## 安全边界
+## Docker 构建与运行
 
-- 不打开 COM3、COM4 或其他串口
-- 不执行 CHI 宏，不调用 CorrTest SDK
-- 不启动、停止或控制仪器软件
-- 不向监控目录写入、重命名或删除文件
-- 文件仍在写入时暂缓导入
-- 每个源文件以完整 SHA-256 指纹标识
-- 不上传云端，不调用外部网络服务
+使用唯一的正式构建入口 `Dockerfile`。基础镜像固定为官方 Python 3.12.13 slim-bookworm 的 SHA-256；运行依赖版本由 `requirements.docker.txt` 固定。历史 hotfix Dockerfile 不作为新发布基础。
 
-完整边界和漏洞报告方式见 [SECURITY.md](SECURITY.md)，已知限制见 [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md)。
+Windows 在手动打开 Docker Desktop 后，用现有部署的 `.env` 保留数据卷、SSH 目录、缓存目录、端口和备份配置，再更新镜像版本：
 
-## 三分钟合成数据演示
+```powershell
+.\scripts\docker-compose.ps1 build local
+.\scripts\docker-compose.ps1 up -d --no-build
+```
 
-需要 Python 3.9 或更高版本，不需要安装第三方包：
+macOS/Linux 使用 `scripts/docker-compose.sh`。脚本不会安装或自动启动 Docker Desktop。
+
+正式发布应从已提交源码打包，记录 commit、每个文件的 SHA-256、测试结果和最终镜像摘要。不能把未提交的临时补丁当作可复现发布。详见 [发布与回退](docs/start-stop-release.md)。
+
+## 数据与恢复
+
+- 原始字节、文件版本、材料配置、任务、分析来源及派生产物保存在独立 SQLite 仓库中。Windows 使用 Docker 原生 Linux 数据卷，避免把 SQLite 放在 NTFS 共享绑定目录上。
+- 网页缓存可以由数据库恢复；不要把缓存当成唯一数据副本。运行状态投影有有效期，过期或缺失时显示“未提供”，不推断为零。
+- 计算缓存可丢弃，按源哈希、算法和数值库版本复用；不替代原始数据或封存结果。
+- 普通下载、绘图和代码更新不强制全量备份。数据库结构迁移或修复前必须完成校验备份；定期备份按现有低频策略运行。
+- 历史产物清理必须先做只读保留计划。当前结果、指定回退版本和原始来源受保护；逻辑字节数不等于可直接回收空间，禁止绕过不可变引用删除。
 
 ```sh
-python3 scripts/run_demo.py
+python scripts/plan_start_stop_retention.py --database /path/to/start-stop.sqlite3
 ```
 
-预期结果是发现并索引 4 个合成文件，其中 3 个可绘制、1 个仅登记元数据、0 个读取错误。完整步骤、预期字段和截图见 [docs/quickstart-demo.md](docs/quickstart-demo.md)。示例来源和校验值见 [demo_data/README.md](demo_data/README.md)。
+## 开发与验收
 
-## 本地运行
+Python 环境安装 `requirements.docker.txt` 后运行：
 
 ```sh
-python3 app.py
+python -m unittest discover -s tests -b
 ```
 
-浏览器打开 `http://127.0.0.1:8787`。
+正式验收还需 Node.js 执行真实 JavaScript 行为测试，并完成浏览器的上传、配置、计算、只读读取、选线及导出流程。跳过的测试不能记为通过。
 
-只扫描一次并退出：
+整改状态和仍待验证的项目记录在 [审计执行记录](docs/platform-audit-execution.md)。隔离浏览器样例、截图和生成的导出文件仅用于测试，不是实验数据。
 
-```sh
-python3 app.py --scan-once
-```
+## 模块边界
 
-Windows 源码用户可使用 `py -3 app.py`。仓库中的 `start-windows.cmd` 只适用于维护者构建且包含 `runtime/python.exe` 的便携包；源码归档本身不捆绑 Python 运行时。
+`start_stop_service.py` 负责固定 HTTP 路由和权限边界。`echem_platform/start_stop.py` 组合材料、查询、任务运行、发布、导出等独立模块。科学计算脚本位于 `docker/start_stop_analysis/`；原始记录统计和显示抽样分离。
 
-## 配置实际数据目录
+监控仅反映软件、串口枚举和文件写入证据。六个活动任务槽位未绑定具体 COM 口时，不代表六台物理仪器的可靠身份映射；它不能代替现场巡视、仪器保护或急停。
 
-编辑 `config.json` 中的 `watch_roots`。绝对路径可以直接使用；相对路径以配置文件所在目录为基准。
+## 开源与历史版本
 
-```json
-{
-  "watch_roots": [
-    "D:\\电化学数据\\CorrTest",
-    "D:\\电化学数据\\CHI"
-  ]
-}
-```
+代码采用 [MIT License](LICENSE)。贡献与数据要求见 [CONTRIBUTING.md](CONTRIBUTING.md) 和 [DATA_POLICY.md](DATA_POLICY.md)。
 
-提交任何数据样例前必须阅读 [DATA_POLICY.md](DATA_POLICY.md)。真实实验数据、厂商安装包、SDK、帮助文件、私有配置和日志不得进入公开仓库。
-
-## 测试与发布检查
-
-```sh
-python3 -m unittest discover -s tests -v
-python3 scripts/run_demo.py
-python3 scripts/check_public_tree.py
-python3 scripts/check_docs.py
-node --check static/app.js
-```
-
-本项目当前不使用托管 CI。发布证据来自在干净提交上运行上述可复现命令，并从解压后的发布包再次执行相同检查；这不构成跨操作系统 CI 覆盖声明。验证记录见 [VALIDATION.md](VALIDATION.md)，发布流程见 [docs/RELEASING.md](docs/RELEASING.md)。
-
-## 项目状态与参与方式
-
-- 真实使用与采用口径：[ADOPTION.md](ADOPTION.md)
-- 贡献指南：[CONTRIBUTING.md](CONTRIBUTING.md)
-- 版本记录：[CHANGELOG.md](CHANGELOG.md)
-- 路线图：[ROADMAP.md](ROADMAP.md)
-- 维护者：[MAINTAINERS.md](MAINTAINERS.md)
-- 引用信息：[CITATION.cff](CITATION.cff)
-- 第三方依赖：[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
-
-## 许可证
-
-代码以 [MIT License](LICENSE) 发布。示例数据的适用范围见 [DATA_POLICY.md](DATA_POLICY.md)。
+[English: legacy Echem Platform 0.1.4](README.en.md) 描述旧版工作台；当前独立程序以本页和 [发布与回退](docs/start-stop-release.md) 为准。历史验证记录见 [0.1.4 验证](docs/releases/v0.1.4-validation.md)。

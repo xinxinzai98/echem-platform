@@ -1,109 +1,359 @@
-# V0.1.4 validation record
+# V0.2 数据工作台与 V0.3 阶段 C 开发验证记录
 
-This record is scoped to version `0.1.4`. It separates reproducible synthetic-fixture checks from maintainer-operated Windows acceptance. It does not claim independent adoption or compatibility with every real instrument export.
+验证日期：2026-07-26
+数据工作台版本：0.2.0-dev.3
 
-## Clean-checkout automated tests
+网页 Dry-run 版本：0.3.0-dev.2
 
-Validation date: 2026-08-02
+CHI 离线协议编译器版本：0.3.0-dev.1
 
-Command:
+桌面工作台、数据文件夹视图、方法分析与 60 秒 OCP 安全门版本：0.3.0-dev.11
 
-```sh
-python3 -m unittest discover -s tests -v
-```
+## 自动化测试
 
-Expected result: 10 tests pass.
+共 120 项，全部通过：
 
-The tests cover:
+- 原有 51 项 V0.2、阶段 A 和阶段 B 回归全部保留
+- 19 项阶段 C 新增安全测试
+  - 参数指纹忽略样品显示元数据，但锁定所有 OCP 执行参数
+  - 拒绝非 60 秒、非 OCP 或多工步协议
+  - 只读预检能识别已有 CHI 实例，且不创建运行目录
+  - 非交互 Session 0 与当前 Explorer 桌面会话不一致时阻止实机启动
+  - 控制关闭时在任何文件写入前返回 404
+  - 运行快照独占创建协议、规范化协议、宏、清单和事件
+  - 快照或宏被修改后不能进入确认状态
+  - 点击启动时再次检查 CHI 实例，并消费一次性确认令牌
+  - SQLite 跨进程运行锁阻止第二个平台实例启动仪器
+  - 只有返回码 0、稳定文件对、文本解析成功和源文件不变同时满足时才确认完成
+  - CHI 返回码为 0 但输出缺失时仍判为失败，并保留返回码证据
+  - 平台重启会使未使用的确认令牌失效
+  - 只有被 Git 忽略的本机覆盖配置可以启用控制
+  - 阶段 C 启用状态不会解锁协议页的 Dry-run 能力
+  - 桌面启动器使用相对部署路径和独立的 8788 旁路端口
+  - 桌面启动器在创建平台进程前拒绝 Session 0 和非 Explorer 会话
+  - 普通双击入口拒绝控制已启用的配置，不包含 CHI、宏或串口命令
+  - 停止器只匹配本部署平台进程，并在活动任务存在时拒绝停止
+  - CMD 包装器只调用同目录中受版本控制的 PowerShell 脚本
+- 4 项 `0.3.0-dev.6` 共享侧栏结构测试
+- 4 项 `0.3.0-dev.7` 页面职责、数据分析模块、设置入口和桌面首页测试
+- 3 项 `0.3.0-dev.8` 双解析器真实表头、混合目录树和目录设置迁移测试
+- 21 项 `0.3.0-dev.9` 全分辨率表格、EIS 截距、CV 过电位、路径/请求安全、不可变分析记录和方法界面测试
+- 8 项解析器 `2026.07.26.5` 真实表头优先级、方法行和文件名回退测试
+- 1 项 `0.3.0-dev.10` 分析页职责精简与 CV 自动预填结构测试
+- 9 项 `0.3.0-dev.11` 文件范围、补偿安全默认值、稳定数据段和分析质量门测试
 
-1. CHI CV text recognition and axes
-2. CorrTest EIS Nyquist axes
-3. CorrTest GalStatic potential-versus-time selection
-4. CHI `.bin` metadata-only behavior
-5. curve downsampling with preserved endpoints
-6. source bytes, size, and modification time unchanged by scanning
-7. sample metadata written only to the platform database
-8. deferral of a recently modified file
-9. rejection of a non-loopback bind address
-10. resolution of relative watch roots from the configuration directory
+Python 模块编译与前端 JavaScript 语法检查均通过。
 
-The test suite uses temporary directories and closes SQLite connections explicitly.
+## V0.3 阶段 A 离线编译验收
 
-## Reproducible synthetic demo
+- 公开示例协议可在 Mac 上完成 JSON 校验、规范化、内存编译和静态复核
+- 二进制以 `43 02 00 00 0A` 开头，正文为 ASCII 且以 LF 换行
+- 编译报告明确返回 `instrument_started=false` 和
+  `instrument_control_enabled=false`
+- `--macro-output` 使用独占创建；第二次写入同一路径时拒绝覆盖且原文件不变
+- 控制配置设为 `true` 时立即失败
+- 本阶段未连接 Windows、未启动 CHI、未执行宏、未访问串口或仪器
 
-Command:
+## V0.3 阶段 B 网页 Dry-run 验收
 
-```sh
-python3 scripts/run_demo.py
-```
+- 默认单工步草稿可生成内存预览，显示 20 s 预计时长、BIN/TXT 目标文件、固定
+  文件头、协议摘要和宏摘要
+- CV、OCP、LSV、EIS 四种工步均可添加；复制、排序、删除、启用和禁用操作正常
+- 5 个工步、其中 4 个启用的草稿可保存并在刷新后完整恢复名称、顺序、保存名和
+  启用状态
+- 含 EIS 时显示 `40 s + 未知工步`，并明确提示 Points/Decade 与时长需要人工复核
+- 重复输出文件名会返回字段级错误，旧宏预览立即隐藏
+- 输出目录越出允许根目录会返回 `run_root_escape`，不生成可见宏
+- 正常页面刷新后浏览器控制台错误和警告均为 0
+- 页面请求仅包含能力查询、草稿读写、校验和编译预览，没有启动或运行接口
+- 原有数据工作台可正常打开，控制台错误和警告均为 0，并可返回协议页面
+- 本轮真实浏览器验收只连接 Mac 本机回环服务；未连接 Windows 或仪器
 
-Expected result:
+## V0.3 阶段 C Mac 开发验收
 
-| Metric | Expected |
-|---|---:|
-| Files seen | 4 |
-| Files indexed | 4 |
-| Parsed curves | 3 |
-| Metadata-only files | 1 |
-| Read errors | 0 |
+- 基线分支：`agent/v0.3-ocp-preflight`
+- 桌面启动器分支：`codex/v0.3-desktop-launcher`
+- 首个阶段 C 提交：`2b804b1`
+- 默认配置继续关闭控制，创建运行接口返回 HTTP 404
+- `/monitor` 能显示逐项只读预检、固定范围、不可变快照和现场确认门
+- 协议页与阶段 C 使用分离的能力声明；即使阶段 C 配置启用，Dry-run 页面仍不能
+  启动软件
+- Windows 启动器只在专用模块中使用 `subprocess`，参数数组、
+  `shell=False`，不包含串口、网络控制、进程强杀或用户命令拼接
+- 实机启动新增交互桌面会话门：平台进程必须与当前 Explorer 位于相同的非零
+  Windows 会话，OpenSSH 和服务进程所在的 Session 0 会被阻止
+- 仓库内新增路径无关的阶段 C 桌面启动/停止器；普通入口保持控制锁定，停止器不
+  结束 CHI
+- 跨进程 SQLite 锁、启动前二次 CHI 检查、一次性令牌和快照哈希均有自动化覆盖
+- Mac 本机浏览器确认控制锁定页、协议页和数据工作台均可加载
 
-Covered fixture categories:
+## V0.3 阶段 C Windows 旁路验收
 
-- CHI CV text
-- CHI `.bin` metadata-only placeholder
-- CorrTest EIS text
-- CorrTest GalStatic / CP text
+- 源码归档 SHA-256：
+  `9ffaa87102368990577db9b2de0acd12f9a0f7d420b4d6a2d1f9de6b6418acbe`
+- 部署到新的旁路目录 `D:\EchemPlatform-stageC-2b804b1`
+- 复用此前已验收的便携 Python，不改系统 Python、PATH 或注册表
+- Windows 63 项测试全部通过
+- 临时服务只监听 `127.0.0.1:8788`，验收结束后已停止
+- 服务状态为 `read_only_sources_and_stage_c_locked`
+- `instrument_control=false`、`launch_available=false`、`serial_access=false`
+- `/monitor` 与 `/protocol` 均返回 HTTP 200
+- 控制关闭时 `POST /api/control/runs` 返回 HTTP 404
+- 只读预检检测到已有 CHI 实例，因此 `single_instance_clear` 正确阻断
+- OCP 参数指纹未配置，`ocp_profile_pinned` 正确阻断
+- 预检返回 `writes_performed=false`、`instrument_started=false`
+- Windows Edge 桌面截图 SHA-256：
+  `3e82c0fefc50c16942c440f7b3c3167f74e607470b1cebce7c0ab17081e1d817`
+- 生产平台监听进程、版本和控制状态前后不变
+- CHI / CorrTest 进程集合前后不变
+- 真实实验目录的文件数、总大小和最新修改时间前后不变
+- 统一运行根目录的存在状态前后不变
+- 生成 `.mcr` 数量为 0
+- 未读取真实实验内容，未访问 COM3 / COM4，未替换生产目录
 
-All four files are synthetic. Provenance, expected fields, and SHA-256 values are in [demo_data/README.md](demo_data/README.md).
+## V0.3 阶段 C 首次实机启动取证
 
-## Release-readiness commands
+- 参数指纹、可执行文件哈希、单实例、全局锁和现场确认均通过后，平台创建了唯一
+  不可变快照并提交一次启动
+- CHI 进程提前退出，未生成 `.bin/.txt`；平台正确标记为失败，没有误报完成
+- 控制配置随后恢复默认锁定，生产只读平台、CHI/CorrTest 进程和串口边界未改变
+- 取证确认启动平台位于 OpenSSH 的 Session 0，而当前 Windows Explorer 桌面位于
+  另一个非零交互会话；历史已成功的 OCP 启动器也明确采用交互启动路径
+- 该失败直接转化为新的硬门槛与回归测试；修复后没有自动执行第二次实验
 
-The release candidate must pass all of the following from a clean checkout:
+## V0.3 阶段 C 固定旁路目录与桌面启动器锁定验收
 
-```sh
-python3 -m unittest discover -s tests -v
-python3 scripts/run_demo.py
-python3 scripts/check_public_tree.py
-python3 scripts/check_docs.py
-python3 -m compileall -q app.py tests scripts
-node --check static/app.js
-```
+- 源码提交：`2e7885707369154a0bdd1252b3b2e1459a0dd67b`
+- 固定旁路目录：`D:\EchemPlatform-next`
+- Windows 70 项测试全部通过，Python 模块编译通过
+- 两个 PowerShell 启动脚本由 Windows PowerShell 解析，错误数均为 0
+- 从 OpenSSH Session 0 调用桌面启动器时，在创建平台监听器前正确拒绝
+- 锁定服务返回 `0.3.0-dev.5`、`instrument_control=false`、
+  `launch_available=false`、`serial_access=false`
+- 控制关闭时运行列表接口返回 HTTP 404，预检返回
+  `writes_performed=false`、`instrument_started=false`
+- 8788 验收服务已停止，正式版 8787 的版本、监听进程和控制状态未改变
+- 既有仪器进程集合在部署前后保持不变；部署没有启动或停止 CHI / CorrTest
+- 上一版旁路目录已移入 `D:\EchemPlatform-archive\20260725`，D 盘根目录只保留一个
+  固定旁路目录
+- 已在当前 Windows 用户桌面创建只指向固定旁路目录的锁定启动入口
+- 首次失败运行的五个快照文件保持不变，没有执行第二次 OCP
 
-Version `0.1.4` does not claim hosted CI or an operating-system/Python matrix. The primary maintainer runs these exact commands from a clean release commit, builds the fixed source ZIP, and repeats the checks from the extracted archive before publication. Command output, environment versions, the tagged commit, and the final artifact digest are retained as release evidence.
+## V0.3 桌面工作台侧边栏本地验收
 
-## Browser acceptance with synthetic data
+- 应用版本：`0.3.0-dev.6`
+- 数据工作台、协议编辑和阶段 C 安全门共享同一套桌面侧边栏
+- 三个导航入口均指向现有真实页面，每页只有一个 `aria-current="page"` 选中态
+- 阶段 C 页侧边栏安全状态由实际控制能力动态更新
+- Mac 完整回归共 74 项测试，全部通过
+- 浏览器在 1280 px 桌面宽度下没有横向溢出，立即扫描按钮保持可见
+- 1440 × 1200 Windows 验收尺寸下，原有协议编辑、审查和安全信息层级保持完整
+- 浏览器实测 `/` → `/protocol` → `/monitor` 导航正常
+- 协议页“仅校验”返回“通过”，浏览器控制台错误和警告均为 0
+- 设计对照报告：`design-qa.md`，`final result: passed`
+- 本地验收没有连接 Windows、访问 COM3 / COM4 或启动仪器
 
-- Status cards show 4 data files, 3 parsed curves, and 4 integrity records.
-- CHI and CorrTest filters show the expected fixtures.
-- CV, EIS, and CP/GCD method filters work.
-- The EIS fixture renders as a Nyquist curve.
-- The GalStatic fixture renders potential versus time.
-- Metadata edits are stored in SQLite and create an audit event.
-- A second scan reports no new or updated source file.
-- Browser console errors: 0.
+## V0.3.0-dev.7 工作台职责重排验收
 
-The public screenshot in `docs/images/dashboard-demo.jpg` must be regenerated only from these synthetic fixtures and reviewed according to [DATA_POLICY.md](DATA_POLICY.md).
+- 工作台首页只保留“仪器当前活动”“系统指标”“最近活动”三个信息区域
+- CHI760E 与 CorrTest 活动由最近数据文件推断，并明确标注为文件侧观察
+- “协议编辑”更名为“工步设置”，主入口改为 `/steps`
+- 原数据曲线、筛选、样品元数据和完整性界面迁移到独立 `/analysis` 模块
+- 原阶段 C 页面改为 `/environment`“环境检测与设置”，入口缩到左下角齿轮
+- 兼容保留 `/protocol` 与 `/monitor` 旧地址
+- Windows 桌面启动器改为打开工作台首页，Session 0 和控制锁定门保持不变
+- Mac 完整回归共 78 项测试，全部通过
+- 浏览器实测 `/` → `/steps` → `/analysis` → `/environment` 正常
+- 工步设置“仅校验”返回“校验通过 / 通过”
+- 四个页面浏览器控制台错误和警告均为 0
+- 设计对照报告：`design-qa.md`，`final result: passed`
+- 本轮未访问 COM3 / COM4、未启动仪器、未执行第二次 OCP
 
-## Maintainer-operated Windows acceptance
+## V0.3.0-dev.8 数据文件夹视图本地验收
 
-Original acceptance date: 2026-07-24
+- 数据分析不再要求选择工作站，所有配置目录统一呈现为“文件夹 → 文件”树
+- CHI 与 CorrTest 解析类型作为文件徽标显示，两类文件可同时存在于同一目录树
+- 新增只读 `/api/files/tree`，仅返回根目录标签和相对路径，不返回绝对源路径
+- 目录树支持搜索、测试方法筛选、展开/收起和文件详情选择
+- “监控目录”从分析页迁移到 `/environment`，设置页显示完整路径、可用性和只读边界
+- 使用实际工作站文件头结构补充 CHI760E 与 CS Studio 文本解析回归
+- CHI EIS 的 `Z'` / `Z"` 表头已映射为 Nyquist 实部/虚部坐标
+- Mac 完整回归共 81 项测试，全部通过
+- Python 模块编译、前端 JavaScript 语法和浏览器交互检查均通过
+- 浏览器搜索 `chi` 返回 2 个文件，EIS 筛选返回 1 个 CorrTest 文件
+- 目录展开/收起、设置页路径迁移和详情加载均正常，浏览器控制台错误为 0
+- 同窗口、同视口的新旧设计对照见 `design-qa.md`，`final result: passed`
+- 本地验收未访问 COM3 / COM4、未启动仪器、未执行 OCP
 
-- Local launcher health check returned HTTP 200.
-- The service listened only on `127.0.0.1:8787`.
-- The acceptance flow started, checked, and stopped the platform.
-- No platform process or listening port remained after acceptance.
-- `serial_access=false`.
-- `instrument_control=false`.
+## V0.3.0-dev.9 方法分析本地验收
 
-The source archive does not contain `runtime/python.exe`; launcher acceptance applies to a separately constructed maintainer portable environment.
+- CHI 与 CorrTest 文本数据仍先显示原始曲线，方法分析位于原始曲线之后
+- EIS 使用全分辨率源数据和频率顺序寻找实轴零交点；没有交点时不外推
+- EIS 截距和表观弧直径仅作筛查，不标记为正式 Rct 或等效电路拟合
+- CV 显式保存溶液、pH、HER/OER、参比偏移、iR 补偿、Rs、电极面积、目标电流密度、扫描分支和在线补偿状态
+- RHE 输入不会重复加入 pH 或参比偏移；已在线补偿或状态不确定时，非零离线补偿均被阻止
+- `mA cm⁻²`、`mA cm−2` 和 `A m⁻²` 等常见 Unicode 单位写法已纳入换算回归
+- HER/OER 先校验有符号过电位方向；方向不一致时拒绝用绝对值生成看似合理的结果
+- CV 仅在选定扫描分支的实测范围内插值，不对目标电流密度外推
+- 预览不会保存；确认保存后生成含源 SHA-256、解析器、算法版本、参数和结果的不可变记录
+- 分析源文件在扫描和计算时均须位于当前配置目录内，符号链接和历史目录逃逸会被拒绝
+- 分析写接口要求本机回环 Host、`application/json` 及同源 Origin，并允许无 Origin 的本机客户端
+- 源 SHA 校验与不可变记录插入在同一个 SQLite 写事务中完成
+- Mac 完整回归共 102 项测试，全部通过
+- Python 模块编译、前端 JavaScript 语法和补丁空白检查均通过
+- 浏览器实测 CV 多分支选择；有效的 OER / Hg-HgO 条件返回 `110.12 mV` 并成功保存，同一曲线误设为 RHE 时因反应方向不一致被拒绝
+- 浏览器实测 EIS 无交点保守结果和非专用方法原始曲线
+- 浏览器控制台错误和警告均为 0
+- 同输入设计对照见 `design-qa.md`，`final result: passed`
+- 本地验收未访问 COM3 / COM4、未启动仪器、未执行 OCP
 
-## Not validated for `0.1.4`
+## V0.3.0-dev.10 数据分析页面精简验收
 
-- No real experimental directory was indexed as part of the `0.1.4` record.
-- No serial port was accessed.
-- No CHI macro was executed.
-- No CorrTest SDK was installed or called.
-- No independent external user or laboratory deployment was confirmed.
-- No Windows installer or portable runtime is included in the source release.
+- 删除分析页顶部四个统计卡片，并停止对应状态接口的页面轮询
+- 分析页暂不展示样品信息、文件树样品徽标和最近活动；相关后端数据未删除
+- CV 溶液改为 1.0/0.1 M KOH、1.0/0.1 M NaOH 与自定义选项
+- 四个碱性溶液按 25 ℃名义浓度预填 pH 14.00 或 13.00，用户可改成实测值
+- 参比选项明确到内部填充液；Hg/HgO（1 M KOH）预填 `+0.098 V vs SHE`，Ag/AgCl（饱和 KCl）预填 `+0.197 V vs SHE`
+- SHE 与 RHE 预填 0；RHE 仍由计算模块跳过 pH 项，避免重复换算
+- 未知填充液、非 25 ℃或实测标定条件使用自定义参比值，不从测试溶液推断参比内部填充液
+- 自定义参比同时保存电极/填充液说明和实测标定值，不把记录压缩成无法追溯的 `custom`
+- 切换到自定义溶液或参比时清空上一预设值，必填项为空会阻止预览
+- Mac 完整回归共 111 项，全部通过；前端 JavaScript 语法和补丁空白检查均通过
 
-Separate development-line evidence is labeled in [ADOPTION.md](ADOPTION.md) and must not be presented as `0.1.4` validation.
+## V0.3.0-dev.11 数据分析 P0 安全修复验收
+
+- 分析页默认只显示实验数据；`Control_Programs`、`diagnostics`、`DIAG_*` 和
+  `Rejected_Data` 目录被隔离到“其他文件”，仍可按需检视但不会占据默认首屏
+- 首次进入优先选择源文件可用、解析成功、有数值点且支持 CV/EIS 专用分析的
+  最新实验文件；没有合适文件时保持等待选择状态
+- 搜索、文件范围和测试方法筛选只更新左侧列表，不再自动切换右侧已打开文件
+- CV 在线补偿状态默认“不确定”，离线 iR 补偿默认 `0%`；切换状态不会恢复旧的
+  非零补偿值
+- 补偿为 `0%` 时 Rs 可留空并规范化保存为 `null`；只有确认未在线补偿且补偿
+  大于 0 时，Rs 才成为必须大于 0 的参数
+- 确认未在线补偿但离线补偿仍为 `0%` 时，结果降为“仅筛查”；即使 API 传入
+  Rs，参数快照也会规范化为 `null`，避免记录未参与计算的电阻值
+- CV 分支以稳定的 `segment_N` 保存，界面同时显示段号、起止电位、电位递增/递减
+  和源行范围；旧 `forward/reverse` 输入仍可读取，但结果快照统一规范化
+- 多分支文件不会默认选择第一段；平台先返回可用数据段，要求实验员显式选择后
+  再预览
+- EIS/CV 结果增加“可定量 / 仅筛查 / 不可计算”质量等级和原因；筛查结果明确以
+  “保存为筛查记录”呈现
+- “不可计算”结果允许只读预览，但前端禁用保存，后端保存接口也返回结构化错误，
+  并验证不会新增分析记录或 `analysis_saved` 审计
+- 后端保存使用质量等级白名单，只接受“可定量”或“仅筛查”；缺少质量等级或
+  返回未知等级的算法结果一律拒绝保存
+- EIS 与 CV 算法版本由 `1.0.0` 更新为 `1.1.0`；分析 schema 保持 1
+- Mac 完整回归共 120 项，全部通过；Python 编译、前端 JavaScript 语法和补丁
+  空白检查均通过
+
+## 解析器 2026.07.26.5 真实四样本验收
+
+四个只读样本均完成全分辨率解析；真实数据文件未加入仓库：
+
+| 样本类型 | SHA-256 | 数据行数 | 原始曲线坐标（横轴 × 纵轴） |
+| --- | --- | ---: | --- |
+| CHI CV | `50c9f6517257752cd192a0808e56890e69faf7683ae5d769c62c8dd560c80d67` | 1500 | `Potential/V` × `Current/A` |
+| CHI EIS | `58f04f15ccafdeb9c801f89e80b32b939f5f94652370ed781bc72933d2899fce` | 72 | `Z'/ohm` × `Z"/ohm` |
+| CorrTest CV | `f65ea21a32d1729948fcb051b3ae811bc51ee6317fa552573acb4a61287064c0` | 3799 | `E(V)` × `i(A/cm²)` |
+| CorrTest EIS | `deaddf3b7be94f1ffdf04993a49fedf4dae102d6a7ac567818b6fcbb4ee42ace` | 60 | `Z'(Ohm.cm²)` × `Z''(Ohm.cm²)` |
+
+- 本机私有样例的 17 个文本导出逐份复核为 17/17 可解析；其中包含 1 份已知复制件，不把文件数等同于独立实验数
+- Mac 完整回归共 110 项，全部通过；Python 模块编译、前端 JavaScript 语法和补丁空白检查均通过
+- EIS 零交点和截距结果仅用于筛查，不等同于正式 Rct 或等效电路拟合结果
+- 本轮未自动计算 CV 过电位；溶液、pH、参比偏移、补偿因子、溶液电阻、在线补偿状态、电极面积、目标电流密度和扫描分支须按实验逐项确认
+
+## V0.3.0-dev.9 Windows 固定旁路验收
+
+- 源码提交：`2b7d271`
+- 部署归档 SHA-256：`9c7def818ab67ac01331394ac849946e7f67d05eb729e1faf7a406f11184e317`
+- 仅原位更新固定旁路目录 `D:\EchemPlatform-next`，版本由 `0.3.0-dev.8` 更新为 `0.3.0-dev.9`
+- 便携 Python、`config.local.json` 和 `state` 均保留，未新建 D 盘版本目录
+- Windows 完整回归共 102 项，全部通过；Python 模块编译通过
+- 8788 临时服务返回 `read_only_sources_and_stage_c_locked`，分析页 HTTP 200
+- `instrument_control=false`、`launch_available=false`、`serial_access=false`
+- 只使用候选目录内公开演示数据执行预览：CV OER 结果为 `110.11927350427332 mV`，EIS 无实轴交点时返回 0 个交点且不外推
+- smoke 只调用预览接口，没有保存分析记录；验收后 8788 已停止
+- 正式版仍为 `0.3.0-dev.2`，8787 监听 PID 始终为 `30852`
+- CHI760E PID `29480`、CorrTest CSAnalysis PID `27552`、CSStudio PID `3912` 前后不变
+- D 盘根目录只保留 `D:\EchemPlatform` 与 `D:\EchemPlatform-next`
+- 10 个 smoke 临时脚本、数据库和日志及 1 个临时清理脚本已精确删除，复核无同前缀遗留
+- 未访问 COM3 / COM4，未执行 OCP，未启动或停止 CHI / CorrTest
+
+### 解析器 2026.07.26.5 Windows 真实数据补丁验收
+
+- 源码提交：`b3f0bc5`
+- 部署归档 SHA-256：`e4ac04e5edeb10bde5f3b8a49784b165aa18f5d87fabea4c6eaef38183bdc33b`
+- 候选应用版本仍为 `0.3.0-dev.9`，解析器更新为 `2026.07.26.5`；仅原位更新 `D:\EchemPlatform-next`
+- Windows 完整回归共 110 项，全部通过；Python 模块编译通过
+- 只读定向扫描两组真实实验目录共 16 个文件：导入 16、跳过 0、错误 0
+- CHI CV 1500 行、CHI EIS 72 行、CorrTest CV 3799 行、CorrTest EIS 60 行；类型、曲线坐标和 SHA-256 与 Mac 验收一致
+- 四个真实源文件在验收前后 SHA-256 不变，`config.local.json` 与便携 Python 哈希不变
+- 8788 临时分析页返回 HTTP 200，状态为 `read_only_sources_and_stage_c_locked`；验收后监听已停止
+- 正式版 8787 监听 PID `30852` 未变；CHI760E PID `29480`、CorrTest CSAnalysis PID `27552`、CSStudio PID `3912` 前后不变
+- 部署归档、临时配置、数据库、日志和一次性脚本均已精确删除，无同前缀遗留
+- 未访问 COM3 / COM4，未执行 OCP，未启动或停止 CHI / CorrTest
+
+## 私有样例验证器冒烟测试
+
+- 使用 1 个 CHI CV 和 1 个 CorrTest EIS 公开演示文件模拟私有目录
+- 2 个 case 全部通过
+- `read_only=true`
+- 两个 case 均为 `source_unchanged=true`
+- 输出包含解析器版本和完整 SHA-256
+- 输出不包含绝对路径、文件名或原始实验内容
+
+## 模拟数据扫描
+
+- 首次扫描：发现 4，导入 4，错误 0
+- 重复扫描：发现 4，unchanged 4，错误 0
+- 可绘制曲线：3
+- 二进制元数据记录：1
+- 每条记录均保存解析器标识与解析器版本
+
+解析器标识覆盖：
+
+- `chi.delimited_text`
+- `chi.binary.metadata`
+- `corrtest.z60_text`
+- `corrtest.delimited_text`
+
+## 本地浏览器验收
+
+- 状态卡显示 4 条记录、3 条可绘制曲线
+- CHI / CorrTest 仪器筛选正常
+- CHI 筛选后只显示 2 条 CHI 记录
+- 曲线详情显示解析器标识
+- 状态卡、记录列表和详情均显示源文件可用性
+- 源文件不可用时，缓存曲线和人工填写的样品信息仍可查看
+- 旧记录缺少解析器标识时不会显示空白标签
+- 审计记录显示解析器标识
+- 浏览器控制台错误：0
+- 服务只监听 `127.0.0.1:8787`
+
+## Windows 只读盘点
+
+- 只读取路径、扩展名、数量、大小和修改时间
+- 未读取或复制实验文件内容
+- 未访问 COM3 / COM4
+- 未调用 CHI 宏或 CorrTest SDK
+- 已确认 CHI v18.04 可执行文件存在且 SHA-256 与本机私有配置一致
+- 已确认控制程序根目录存在，统一运行根目录尚未由阶段 C 创建
+- 精确路径、进程号和实验名称不写入公开仓库
+
+## 尚未执行
+
+- Stage C 尚未替换当前 Windows 生产目录
+- `instrument_control_enabled` 尚未设为 `true`
+- 已验证 OCP 参数指纹尚未写入本机配置
+- 现存 CHI 实例尚未由操作者现场确认和安全关闭
+- 尚未创建任何阶段 C 运行快照或 `.mcr`
+- 尚未在本平台执行或远程触发 CHI 宏
+- 尚未进行 60 秒 OCP 真实仪器闭环
+- 尚未读取或复制新的真实实验样例
+- 尚未访问 COM3 / COM4
+- 尚未安装或调用 CorrTest SDK
+
+## 其他版本记录
+
+旧版公开发布的验证范围单独保存在 [0.1.4 验证记录](docs/releases/v0.1.4-validation.md)。当前 Start–stop Studio 的验证见 [审计记录](docs/platform-audit-execution.md) 和 [dev.5 更新](docs/start-stop-0.7.0-dev.5.md)。
